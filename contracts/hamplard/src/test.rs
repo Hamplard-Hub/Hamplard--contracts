@@ -34,6 +34,7 @@ fn setup() -> (Env, Address, Address, Address, Address, Address) {
     // Init contract
     let client = HamplardContractClient::new(&env, &contract_id);
     client.init(&admin, &treasury, &20u32); // 20% platform fee
+    client.add_approved_token(&admin, &token_id);
 
     (env, contract_id, token_id, admin, treasury, instructor)
 }
@@ -63,7 +64,7 @@ fn register_and_approve_course(
 
 #[test]
 fn test_init_success() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, _token_id, _admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Platform fee should be 20%
@@ -114,7 +115,7 @@ fn test_treasury_instance_ttl_extended_on_transfer_admin() {
 
 #[test]
 fn test_register_course_success() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-TAILORING-001");
@@ -135,7 +136,7 @@ fn test_register_course_success() {
 
 #[test]
 fn test_register_course_custom_fee() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     client.register_course(
@@ -153,7 +154,7 @@ fn test_register_course_custom_fee() {
 #[test]
 #[should_panic(expected = "course already registered")]
 fn test_register_duplicate_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-DUP");
@@ -167,7 +168,7 @@ fn test_register_duplicate_course() {
 
 #[test]
 fn test_approve_course_success() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-BAKING-001");
@@ -181,7 +182,7 @@ fn test_approve_course_success() {
 #[test]
 #[should_panic(expected = "unauthorized: caller is not admin")]
 fn test_approve_course_unauthorized() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-HAIR-001");
@@ -193,7 +194,7 @@ fn test_approve_course_unauthorized() {
 #[test]
 #[should_panic(expected = "course is not pending approval")]
 fn test_approve_already_active_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-NAILS-001");
@@ -248,7 +249,7 @@ fn test_enroll_success_with_payment_split() {
 #[test]
 #[should_panic(expected = "already enrolled in this course")]
 fn test_enroll_duplicate() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -266,7 +267,7 @@ fn test_enroll_duplicate() {
 #[test]
 #[should_panic(expected = "course is not available for enrollment")]
 fn test_enroll_pending_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -286,7 +287,7 @@ fn test_enroll_pending_course() {
 
 #[test]
 fn test_is_enrolled_check() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -309,7 +310,7 @@ fn test_is_enrolled_check() {
 
 #[test]
 fn test_full_lifecycle_enroll_complete_certify() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -352,7 +353,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
 #[test]
 #[should_panic(expected = "student has not completed this course")]
 fn test_certificate_requires_completion() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -376,7 +377,7 @@ fn test_certificate_requires_completion() {
 
 #[test]
 fn test_revoke_certificate() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -412,7 +413,7 @@ fn test_revoke_certificate() {
 
 #[test]
 fn test_pause_and_unpause_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-BAKING-001");
@@ -441,7 +442,7 @@ fn test_update_platform_fee() {
 
 #[test]
 fn test_multiple_students_same_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     register_and_approve_course(
@@ -468,7 +469,7 @@ fn test_multiple_students_same_course() {
 
 #[test]
 fn test_mark_completed_no_evidence_requires_student_auth() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -500,7 +501,7 @@ fn test_mark_completed_no_evidence_requires_student_auth() {
 
 #[test]
 fn test_mark_completed_with_evidence_does_not_require_student_auth() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -537,7 +538,7 @@ fn test_mark_completed_with_evidence_does_not_require_student_auth() {
 #[test]
 #[should_panic(expected = "course must be paused before archiving")]
 fn test_archive_course_blocked_by_active_enrollment() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -799,5 +800,172 @@ fn test_archive_paused_course_succeeds() {
 
     let course = client.get_course(&course_id);
     assert_eq!(course.status, CourseStatus::Archived);
+// ISSUE #4: RE-INITIALIZATION GUARD
+// ============================================================
+
+#[test]
+#[should_panic(expected = "contract already initialized")]
+fn test_init_cannot_be_called_twice() {
+    let (env, contract_id, _, admin, treasury, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    // Second init call must be rejected
+    client.init(&admin, &treasury, &20u32);
+}
+
+// ============================================================
+// ISSUE #2: TOKEN WHITELIST
+// ============================================================
+
+#[test]
+#[should_panic(expected = "course token is not approved")]
+fn test_enroll_with_non_whitelisted_token_fails() {
+    let (env, contract_id, _, admin, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Create a second token that has NOT been whitelisted
+    let evil_token_admin = Address::generate(&env);
+    let evil_token_id = env
+        .register_stellar_asset_contract_v2(evil_token_admin.clone())
+        .address();
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &evil_token_id).mint(&student, &100_000_000_000);
+
+    // Register a course that uses the non-whitelisted token
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-EVIL-TOKEN"),
+        &500_000_000,
+        &evil_token_id,
+        &0u32,
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
+
+    // Enrollment must fail because the token is not whitelisted
+    client.enroll(&student, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
+}
+
+#[test]
+fn test_enroll_succeeds_after_token_removed_from_whitelist_is_re_added() {
+    let (env, contract_id, token_id, admin, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-WLIST", 200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-WLIST");
+
+    // Remove then re-add the token
+    client.remove_approved_token(&admin, &token_id);
+    client.add_approved_token(&admin, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+    client.enroll(&student, &course_id);
+    assert!(client.is_enrolled(&student, &course_id));
+}
+
+// ============================================================
+// ISSUE #1: CROSS-COURSE CERTIFICATE ID COLLISION
+// ============================================================
+
+#[test]
+#[should_panic(expected = "certificate ID already exists")]
+fn test_certificate_id_collision_across_courses() {
+    let (env, contract_id, token_id, admin, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-COLL-A", 300_000_000,
+    );
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-COLL-B", 300_000_000,
+    );
+
+    let course_a = String::from_str(&env, "COURSE-COLL-A");
+    let course_b = String::from_str(&env, "COURSE-COLL-B");
+    let cert_id  = String::from_str(&env, "CERT-SHARED-ID");
+
+    // Student A completes course A and receives cert
+    let student_a = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &1_000_000_000);
+    client.enroll(&student_a, &course_a);
+    client.mark_completed(&admin, &student_a, &course_a, &Some(String::from_str(&env, "ev_a")));
+    client.issue_certificate(
+        &admin, &cert_id, &student_a, &course_a,
+        &String::from_str(&env, "Course A"),
+    );
+
+    // Student B completes course B — attempt to reuse the same cert ID must fail
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &1_000_000_000);
+    client.enroll(&student_b, &course_b);
+    client.mark_completed(&admin, &student_b, &course_b, &Some(String::from_str(&env, "ev_b")));
+    client.issue_certificate(
+        &admin, &cert_id, &student_b, &course_b,
+        &String::from_str(&env, "Course B"),
+    );
+}
+
+// ============================================================
+// ISSUE #3: TWO-STEP ADMIN TRANSFER
+// ============================================================
+
+#[test]
+fn test_two_step_admin_transfer_success() {
+    let (env, contract_id, _, admin, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+
+    // Step 1: propose
+    client.transfer_admin(&admin, &new_admin);
+
+    // Step 2: new admin accepts
+    client.accept_admin(&new_admin);
+
+    // New admin can now exercise admin privileges
+    client.update_default_fee(&new_admin, &15u32);
+    assert_eq!(client.get_platform_fee(), 15);
+}
+
+#[test]
+#[should_panic(expected = "no pending admin")]
+fn test_accept_admin_without_proposal_fails() {
+    let (env, contract_id, _, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let random = Address::generate(&env);
+    // No transfer_admin() called — must panic
+    client.accept_admin(&random);
+}
+
+#[test]
+#[should_panic(expected = "caller is not the pending admin")]
+fn test_accept_admin_wrong_address_fails() {
+    let (env, contract_id, _, admin, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin   = Address::generate(&env);
+    let wrong_addr  = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+
+    // A different address tries to accept — must panic
+    client.accept_admin(&wrong_addr);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: caller is not admin")]
+fn test_old_admin_loses_access_after_transfer_completes() {
+    let (env, contract_id, _, admin, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    client.accept_admin(&new_admin);
+
+    // Old admin must no longer have admin privileges
+    client.update_default_fee(&admin, &10u32);
 }
 

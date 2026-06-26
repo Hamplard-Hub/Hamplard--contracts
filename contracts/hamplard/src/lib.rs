@@ -120,6 +120,10 @@ pub enum DataKey {
     DefaultFee,
     /// Pending platform treasury address and effective ledger sequence
     PendingTreasury,
+    /// Whitelisted token contract address (used to validate course tokens)
+    ApprovedToken(Address),
+    /// Pending new admin address — must call accept_admin() to take effect
+    PendingAdmin,
 }
 
 // ============================================================
@@ -150,6 +154,10 @@ impl HamplardContract {
     /// - `default_fee_pct`  — default platform fee percentage (e.g. 20 = 20%)
     pub fn init(env: Env, admin: Address, treasury: Address, default_fee_pct: u32) {
         admin.require_auth();
+
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("contract already initialized");
+        }
 
         if default_fee_pct > 100 {
             panic!("fee percentage cannot exceed 100");
@@ -448,6 +456,15 @@ impl HamplardContract {
             panic!("already enrolled in this course");
         }
 
+        // Validate course token against the admin-approved whitelist
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::ApprovedToken(course.token.clone()))
+        {
+            panic!("course token is not approved");
+        }
+
         let token_client = token::Client::new(&env, &course.token);
 
         // Calculate revenue split
@@ -708,13 +725,37 @@ impl HamplardContract {
     // ADMIN MANAGEMENT
     // ----------------------------------------------------------
 
-    /// Transfer admin role to a new address.
-    /// Only the current admin can do this.
+    /// Propose a new admin address (step 1 of two-step transfer).
+    /// The new admin must call accept_admin() to complete the handover.
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         Self::require_admin(&env, &current_admin);
         env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+
+        env.events().publish(
+            (Symbol::new(&env, "admin_proposed"), new_admin.clone()),
+            new_admin,
+        );
+    }
+
+    /// Accept a pending admin transfer (step 2 of two-step transfer).
+    /// Only the address nominated by transfer_admin() can call this.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending admin"));
+
+        if pending != new_admin {
+            panic!("caller is not the pending admin");
+        }
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
 
         env.events().publish(
             (Symbol::new(&env, "admin_transferred"), new_admin.clone()),
@@ -745,6 +786,20 @@ impl HamplardContract {
         }
         env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::DefaultFee, &new_fee_pct);
+    }
+
+    /// Admin adds a token contract address to the enrollment whitelist.
+    pub fn add_approved_token(env: Env, admin: Address, token: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::ApprovedToken(token), &true);
+    }
+
+    /// Admin removes a token contract address from the enrollment whitelist.
+    pub fn remove_approved_token(env: Env, admin: Address, token: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage().instance().remove(&DataKey::ApprovedToken(token));
     }
 
     // ----------------------------------------------------------
