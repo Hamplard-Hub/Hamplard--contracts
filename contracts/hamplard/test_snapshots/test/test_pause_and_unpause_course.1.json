@@ -287,6 +287,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "active_enrollments"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "created_at_ledger"
                       },
                       "val": {

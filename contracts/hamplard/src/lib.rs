@@ -41,6 +41,8 @@ pub struct Course {
     pub token: Address,
     /// Total number of enrollments (incremented on each enroll)
     pub total_enrollments: u32,
+    /// Total active enrollments (enrolled but not completed)
+    pub active_enrollments: u32,
     /// Total USDC earned across all enrollments (in stroops)
     pub total_earned: i128,
     /// Course status
@@ -65,6 +67,8 @@ pub struct Enrollment {
     pub completed: bool,
     /// Whether a certificate has been issued on-chain
     pub certificate_issued: bool,
+    /// Optional proof of completion evidence (e.g. hash)
+    pub evidence_hash: Option<String>,
 }
 
 /// An on-chain certificate of completion
@@ -88,6 +92,14 @@ pub struct Certificate {
     pub revoked: bool,
 }
 
+/// Pending platform treasury update with effective ledger sequence
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreasuryUpdate {
+    pub address: Address,
+    pub effective_ledger: u32,
+}
+
 // ============================================================
 // STORAGE KEYS
 // ============================================================
@@ -106,6 +118,8 @@ pub enum DataKey {
     Treasury,
     /// Platform default fee percentage (overrideable per course)
     DefaultFee,
+    /// Pending platform treasury address and effective ledger sequence
+    PendingTreasury,
 }
 
 // ============================================================
@@ -199,6 +213,7 @@ impl HamplardContract {
             platform_fee_percent: fee,
             token,
             total_enrollments: 0,
+            active_enrollments: 0,
             total_earned: 0,
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
@@ -306,11 +321,66 @@ impl HamplardContract {
 
     /// Admin archives a course permanently.
     /// Only admin can archive — this is a moderation action.
-    pub fn archive_course(env: Env, admin: Address, course_id: String) {
+    pub fn archive_course(
+        env: Env,
+        admin: Address,
+        course_id: String,
+        students_to_refund: Option<Vec<Address>>,
+    ) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
         let mut course = Self::get_course_internal(&env, &course_id);
+
+        if let Some(ref students) = students_to_refund {
+            let token_client = token::Client::new(&env, &course.token);
+            let platform_fee_pct = course.platform_fee_percent as i128;
+
+            let treasury: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Treasury)
+                .unwrap_or_else(|| panic!("treasury not set"));
+
+            for student in students.iter() {
+                let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
+                if env.storage().persistent().has(&enrollment_key) {
+                    let enrollment: Enrollment = env
+                        .storage()
+                        .persistent()
+                        .get(&enrollment_key)
+                        .unwrap();
+                    
+                    if !enrollment.completed {
+                        let platform_amount = (enrollment.amount_paid * platform_fee_pct) / 100;
+                        let instructor_amount = enrollment.amount_paid - platform_amount;
+
+                        // Refund platform fee from treasury
+                        if platform_amount > 0 {
+                            token_client.transfer(&treasury, &student, &platform_amount);
+                        }
+
+                        // Refund instructor share from instructor
+                        if instructor_amount > 0 {
+                            token_client.transfer(&course.instructor, &student, &instructor_amount);
+                        }
+
+                        // Remove enrollment
+                        env.storage().persistent().remove(&enrollment_key);
+
+                        // Decrement active enrollments
+                        if course.active_enrollments > 0 {
+                            course.active_enrollments -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if course.active_enrollments > 0 {
+            panic!("cannot archive course with active enrollments");
+        }
+
         course.status = CourseStatus::Archived;
 
         env.storage()
@@ -363,20 +433,39 @@ impl HamplardContract {
         let platform_amount = (course.price * course.platform_fee_percent as i128) / 100;
         let instructor_amount = course.price - platform_amount;
 
-        // Transfer platform fee to treasury
-        let treasury: Address = env
+        // Fetch treasury, applying any pending treasury update if effective
+        let mut treasury: Address = env
             .storage()
             .instance()
             .get(&DataKey::Treasury)
             .unwrap_or_else(|| panic!("treasury not set"));
 
-        if platform_amount > 0 {
-            token_client.transfer(&student, &treasury, &platform_amount);
+        if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
+        {
+            if env.ledger().sequence() >= pending.effective_ledger {
+                treasury = pending.address.clone();
+                env.storage().instance().set(&DataKey::Treasury, &treasury);
+                env.storage().instance().remove(&DataKey::PendingTreasury);
+            }
         }
 
-        // Transfer instructor share directly to instructor
-        if instructor_amount > 0 {
-            token_client.transfer(&student, &course.instructor, &instructor_amount);
+        // Perform transfers atomically:
+        // First transfer the full price from the student to the contract's own address.
+        if course.price > 0 {
+            token_client.transfer(&student, &env.current_contract_address(), &course.price);
+
+            // Distribute platform fee to treasury
+            if platform_amount > 0 {
+                token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+            }
+
+            // Distribute instructor share directly to instructor
+            if instructor_amount > 0 {
+                token_client.transfer(&env.current_contract_address(), &course.instructor, &instructor_amount);
+            }
         }
 
         // Record enrollment
@@ -387,6 +476,7 @@ impl HamplardContract {
             enrolled_at_ledger: env.ledger().sequence(),
             completed: false,
             certificate_issued: false,
+            evidence_hash: None,
         };
 
         env.storage()
@@ -404,6 +494,7 @@ impl HamplardContract {
 
         // Update course stats
         course.total_enrollments += 1;
+        course.active_enrollments += 1;
         course.total_earned += course.price;
         env.storage()
             .persistent()
@@ -432,9 +523,14 @@ impl HamplardContract {
         admin: Address,
         student: Address,
         course_id: String,
+        evidence_hash: Option<String>,
     ) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+
+        if evidence_hash.is_none() {
+            student.require_auth();
+        }
 
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
 
@@ -443,12 +539,23 @@ impl HamplardContract {
         }
 
         enrollment.completed = true;
+        enrollment.evidence_hash = evidence_hash;
+
         env.storage()
             .persistent()
             .set(
                 &DataKey::Enrollment(student.clone(), course_id.clone()),
                 &enrollment,
             );
+
+        // Update active enrollments count on course
+        let mut course = Self::get_course_internal(&env, &course_id);
+        if course.active_enrollments > 0 {
+            course.active_enrollments -= 1;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
+        }
 
         env.events().publish(
             (Symbol::new(&env, "course_completed"), course_id.clone()),
@@ -587,7 +694,13 @@ impl HamplardContract {
     pub fn update_treasury(env: Env, admin: Address, new_treasury: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Treasury, &new_treasury);
+
+        let effective_ledger = env.ledger().sequence() + 100;
+        let update = TreasuryUpdate {
+            address: new_treasury,
+            effective_ledger,
+        };
+        env.storage().instance().set(&DataKey::PendingTreasury, &update);
     }
 
     /// Update the default platform fee percentage.

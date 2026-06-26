@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     token, Address, Env, String,
 };
 
@@ -290,7 +290,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
     assert!(!client.has_completed(&student, &course_id));
 
     // Mark completed
-    client.mark_completed(&admin, &student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "evidence_hash")));
     assert!(client.has_completed(&student, &course_id));
 
     // Issue certificate
@@ -352,7 +352,7 @@ fn test_revoke_certificate() {
     let cert_id   = String::from_str(&env, "CERT-REVOKE-TEST");
 
     client.enroll(&student, &course_id);
-    client.mark_completed(&admin, &student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "evidence_hash")));
     client.issue_certificate(
         &admin, &cert_id, &student, &course_id,
         &String::from_str(&env, "Makeup Artistry"),
@@ -423,3 +423,211 @@ fn test_multiple_students_same_course() {
     assert_eq!(course.total_enrollments, 5);
     assert_eq!(course.total_earned, 5 * 200_000_000);
 }
+
+// ============================================================
+// NEW TESTS FOR ADDED FEATURES
+// ============================================================
+
+#[test]
+fn test_mark_completed_no_evidence_requires_student_auth() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-AUTH-1", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-1");
+    client.enroll(&student, &course_id);
+
+    // Call mark_completed with None.
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    // Verify both admin and student were required to authorize
+    let auths = env.auths();
+    let mut admin_found = false;
+    let mut student_found = false;
+    for (address, _) in auths.iter() {
+        if address == &admin {
+            admin_found = true;
+        }
+        if address == &student {
+            student_found = true;
+        }
+    }
+    assert!(admin_found);
+    assert!(student_found);
+}
+
+#[test]
+fn test_mark_completed_with_evidence_does_not_require_student_auth() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-AUTH-2", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-2");
+    client.enroll(&student, &course_id);
+
+    // Call mark_completed with evidence hash.
+    let hash = String::from_str(&env, "some_evidence_hash");
+    client.mark_completed(&admin, &student, &course_id, &Some(hash.clone()));
+
+    // Verify admin was required to authorize but student was not
+    let auths = env.auths();
+    let mut admin_found = false;
+    let mut student_found = false;
+    for (address, _) in auths.iter() {
+        if address == &admin {
+            admin_found = true;
+        }
+        if address == &student {
+            student_found = true;
+        }
+    }
+    assert!(admin_found);
+    assert!(!student_found);
+
+    let enrollment = client.get_enrollment(&student, &course_id);
+    assert_eq!(enrollment.evidence_hash, Some(hash));
+}
+
+#[test]
+#[should_panic(expected = "cannot archive course with active enrollments")]
+fn test_archive_course_blocked_by_active_enrollment() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-ARCHIVE-1", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-1");
+    client.enroll(&student, &course_id);
+
+    // Try to archive without refunding active enrollments
+    client.archive_course(&admin, &course_id, &None);
+}
+
+#[test]
+fn test_archive_course_with_refunds() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+
+    let token_client = token::Client::new(&env, &token_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-REFUND", price,
+    );
+    let course_id = String::from_str(&env, "COURSE-REFUND");
+
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+
+    assert_eq!(token_client.balance(&student_a), 500_000_000);
+    assert_eq!(token_client.balance(&student_b), 500_000_000);
+
+    let platform_fee_total = price * 20 / 100 * 2; // 200_000_000
+    let instructor_fee_total = (price - (price * 20 / 100)) * 2; // 800_000_000
+
+    assert_eq!(token_client.balance(&treasury), platform_fee_total);
+    assert_eq!(token_client.balance(&instructor), instructor_fee_total);
+
+    // Archive and refund both students
+    let mut refund_students = soroban_sdk::Vec::new(&env);
+    refund_students.push_back(student_a.clone());
+    refund_students.push_back(student_b.clone());
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &course_id, &Some(refund_students));
+
+    // Verify refund occurred
+    assert_eq!(token_client.balance(&student_a), 1_000_000_000);
+    assert_eq!(token_client.balance(&student_b), 1_000_000_000);
+    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(token_client.balance(&instructor), 0);
+
+    let course = client.get_course(&course_id);
+    assert_eq!(course.status, CourseStatus::Archived);
+    assert_eq!(course.active_enrollments, 0);
+
+    assert!(!client.is_enrolled(&student_a, &course_id));
+    assert!(!client.is_enrolled(&student_b, &course_id));
+}
+
+#[test]
+#[should_panic]
+fn test_enroll_insufficient_funds_rollback() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let student = Address::generate(&env);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-ROLLBACK", price,
+    );
+    let course_id = String::from_str(&env, "COURSE-ROLLBACK");
+
+    // Student has enough for platform fee (100_000_000) but not the full course price
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &150_000_000);
+
+    // Enroll should panic because instructor transfer will fail
+    client.enroll(&student, &course_id);
+
+    // Verify treasury didn't receive any tokens (rollback proof)
+    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(token_client.balance(&student), 150_000_000);
+}
+
+#[test]
+fn test_treasury_update_delay() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let student_1 = Address::generate(&env);
+    let student_2 = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_1, &1_000_000_000);
+    asset_client.mint(&student_2, &1_000_000_000);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-TREASURY", price,
+    );
+    let course_id = String::from_str(&env, "COURSE-TREASURY");
+
+    let new_treasury = Address::generate(&env);
+
+    // Update treasury
+    client.update_treasury(&admin, &new_treasury);
+
+    // Enroll student_1 immediately - fee should still go to the old treasury
+    client.enroll(&student_1, &course_id);
+    let platform_fee = price * 20 / 100;
+    assert_eq!(token_client.balance(&treasury), platform_fee);
+    assert_eq!(token_client.balance(&new_treasury), 0);
+
+    // Advance ledger sequence by 100
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 100;
+    });
+
+    // Enroll student_2 - fee should now go to the new treasury
+    client.enroll(&student_2, &course_id);
+    assert_eq!(token_client.balance(&treasury), platform_fee); // unchanged
+    assert_eq!(token_client.balance(&new_treasury), platform_fee); // new treasury receives it
+}
+
