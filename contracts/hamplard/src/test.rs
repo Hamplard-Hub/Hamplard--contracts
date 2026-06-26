@@ -70,6 +70,44 @@ fn test_init_success() {
     assert_eq!(client.get_platform_fee(), 20);
 }
 
+#[test]
+fn test_admin_instance_ttl_extended_on_admin_ops() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 50_000;
+        l.min_persistent_entry_ttl = 100_000;
+        l.min_temp_entry_ttl = 100_000;
+    });
+
+    // update_default_fee is a pure admin write — should extend TTL
+    client.update_default_fee(&admin, &25u32);
+
+    // If Admin key expired, get_platform_fee would return default or panic.
+    // With TTL extension, this must return the updated value.
+    assert_eq!(client.get_platform_fee(), 25);
+}
+
+#[test]
+fn test_treasury_instance_ttl_extended_on_transfer_admin() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 50_000;
+        l.min_persistent_entry_ttl = 100_000;
+        l.min_temp_entry_ttl = 100_000;
+    });
+
+    // transfer_admin extends TTL — new admin must be able to use admin ops
+    client.transfer_admin(&admin, &new_admin);
+    client.update_default_fee(&new_admin, &30u32);
+    assert_eq!(client.get_platform_fee(), 30);
+}
+
 // ============================================================
 // COURSE REGISTRATION TESTS
 // ============================================================
@@ -497,7 +535,7 @@ fn test_mark_completed_with_evidence_does_not_require_student_auth() {
 }
 
 #[test]
-#[should_panic(expected = "cannot archive course with active enrollments")]
+#[should_panic(expected = "course must be paused before archiving")]
 fn test_archive_course_blocked_by_active_enrollment() {
     let (env, contract_id, token_id, admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -510,7 +548,7 @@ fn test_archive_course_blocked_by_active_enrollment() {
     let course_id = String::from_str(&env, "COURSE-ARCHIVE-1");
     client.enroll(&student, &course_id);
 
-    // Try to archive without refunding active enrollments
+    // Try to archive an Active course — must be Paused first
     client.archive_course(&admin, &course_id, &None);
 }
 
@@ -543,6 +581,9 @@ fn test_archive_course_with_refunds() {
 
     assert_eq!(token_client.balance(&treasury), platform_fee_total);
     assert_eq!(token_client.balance(&instructor), instructor_fee_total);
+
+    // Pause first — required before archiving
+    client.pause_course(&admin, &course_id);
 
     // Archive and refund both students
     let mut refund_students = soroban_sdk::Vec::new(&env);
@@ -629,5 +670,134 @@ fn test_treasury_update_delay() {
     client.enroll(&student_2, &course_id);
     assert_eq!(token_client.balance(&treasury), platform_fee); // unchanged
     assert_eq!(token_client.balance(&new_treasury), platform_fee); // new treasury receives it
+}
+
+// ============================================================
+// INPUT LENGTH VALIDATION TESTS (#20)
+// ============================================================
+
+#[test]
+#[should_panic(expected = "course_id exceeds maximum length")]
+fn test_register_course_id_too_long() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let long_id = String::from_str(&env, &"A".repeat(257));
+    client.register_course(&instructor, &long_id, &50_000_000, &token_id, &0u32);
+}
+
+#[test]
+fn test_register_course_id_at_max_length_succeeds() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let max_id = String::from_str(&env, &"A".repeat(256));
+    client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32);
+    let course = client.get_course(&max_id);
+    assert_eq!(course.status, CourseStatus::Pending);
+}
+
+#[test]
+#[should_panic(expected = "course_title exceeds maximum length")]
+fn test_issue_certificate_title_too_long() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-TITLE-LEN", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TITLE-LEN");
+    client.enroll(&student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "hash")));
+
+    let long_title = String::from_str(&env, &"T".repeat(513));
+    client.issue_certificate(
+        &admin,
+        &String::from_str(&env, "CERT-TITLE-LEN"),
+        &student,
+        &course_id,
+        &long_title,
+    );
+}
+
+#[test]
+#[should_panic(expected = "certificate_id exceeds maximum length")]
+fn test_issue_certificate_id_too_long() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-CERT-ID-LEN", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-ID-LEN");
+    client.enroll(&student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "hash")));
+
+    let long_cert_id = String::from_str(&env, &"C".repeat(257));
+    client.issue_certificate(
+        &admin,
+        &long_cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Valid Title"),
+    );
+}
+
+// ============================================================
+// ARCHIVE LIFECYCLE TESTS (#19)
+// ============================================================
+
+#[test]
+#[should_panic(expected = "course must be paused before archiving")]
+fn test_archive_active_course_rejected() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-ARCHIVE-ACTIVE", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-ACTIVE");
+
+    // Course is Active — must panic
+    client.archive_course(&admin, &course_id, &None);
+}
+
+#[test]
+#[should_panic(expected = "course must be paused before archiving")]
+fn test_archive_pending_course_rejected() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ARCHIVE-PENDING"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+    );
+
+    // Course is Pending — must panic
+    client.archive_course(&admin, &String::from_str(&env, "COURSE-ARCHIVE-PENDING"), &None);
+}
+
+#[test]
+fn test_archive_paused_course_succeeds() {
+    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-ARCHIVE-PAUSED", 100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-PAUSED");
+
+    client.pause_course(&admin, &course_id);
+    client.archive_course(&admin, &course_id, &None);
+
+    let course = client.get_course(&course_id);
+    assert_eq!(course.status, CourseStatus::Archived);
 }
 

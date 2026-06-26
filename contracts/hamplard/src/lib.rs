@@ -132,6 +132,11 @@ pub struct HamplardContract;
 #[contractimpl]
 impl HamplardContract {
 
+    const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+    const INSTANCE_TTL_EXTEND_TO:  u32 = 6_300_000;
+    const MAX_COURSE_ID_LEN:       u32 = 256;
+    const MAX_COURSE_TITLE_LEN:    u32 = 512;
+
     // ----------------------------------------------------------
     // INIT
     // ----------------------------------------------------------
@@ -149,6 +154,8 @@ impl HamplardContract {
         if default_fee_pct > 100 {
             panic!("fee percentage cannot exceed 100");
         }
+
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
@@ -178,6 +185,10 @@ impl HamplardContract {
         platform_fee_pct: u32,
     ) -> String {
         instructor.require_auth();
+
+        if course_id.len() > Self::MAX_COURSE_ID_LEN {
+            panic!("course_id exceeds maximum length");
+        }
 
         if price < 0 {
             panic!("price cannot be negative");
@@ -243,6 +254,7 @@ impl HamplardContract {
     pub fn approve_course(env: Env, admin: Address, course_id: String) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let mut course = Self::get_course_internal(&env, &course_id);
 
@@ -276,6 +288,8 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
         if course.status != CourseStatus::Active {
             panic!("course is not active");
         }
@@ -304,6 +318,8 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
         if course.status != CourseStatus::Paused {
             panic!("course is not paused");
         }
@@ -329,8 +345,13 @@ impl HamplardContract {
     ) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let mut course = Self::get_course_internal(&env, &course_id);
+
+        if course.status != CourseStatus::Paused {
+            panic!("course must be paused before archiving");
+        }
 
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
@@ -527,6 +548,7 @@ impl HamplardContract {
     ) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         if evidence_hash.is_none() {
             student.require_auth();
@@ -585,6 +607,14 @@ impl HamplardContract {
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if certificate_id.len() > Self::MAX_COURSE_ID_LEN {
+            panic!("certificate_id exceeds maximum length");
+        }
+        if course_title.len() > Self::MAX_COURSE_TITLE_LEN {
+            panic!("course_title exceeds maximum length");
+        }
 
         // Student must have completed the course
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
@@ -651,6 +681,7 @@ impl HamplardContract {
     pub fn revoke_certificate(env: Env, admin: Address, certificate_id: String) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let mut cert = env
             .storage()
@@ -682,6 +713,7 @@ impl HamplardContract {
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         Self::require_admin(&env, &current_admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         env.events().publish(
@@ -694,6 +726,7 @@ impl HamplardContract {
     pub fn update_treasury(env: Env, admin: Address, new_treasury: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let effective_ledger = env.ledger().sequence() + 100;
         let update = TreasuryUpdate {
@@ -710,6 +743,7 @@ impl HamplardContract {
         if new_fee_pct > 100 {
             panic!("fee percentage cannot exceed 100");
         }
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::DefaultFee, &new_fee_pct);
     }
 

@@ -112,7 +112,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 },
                 {
                   "i128": {
@@ -146,7 +146,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 }
               ]
             }
@@ -168,7 +168,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 }
               ]
             }
@@ -217,10 +217,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 },
                 {
-                  "string": "some_evidence_hash"
+                  "string": "hash"
                 }
               ]
             }
@@ -312,7 +312,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 }
               ]
             },
@@ -332,7 +332,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-AUTH-2"
+                      "string": "COURSE-CERT-ID-LEN"
                     }
                   ]
                 },
@@ -360,7 +360,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-AUTH-2"
+                        "string": "COURSE-CERT-ID-LEN"
                       }
                     },
                     {
@@ -451,7 +451,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "string": "COURSE-AUTH-2"
+                  "string": "COURSE-CERT-ID-LEN"
                 }
               ]
             },
@@ -474,7 +474,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                     },
                     {
-                      "string": "COURSE-AUTH-2"
+                      "string": "COURSE-CERT-ID-LEN"
                     }
                   ]
                 },
@@ -513,7 +513,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-AUTH-2"
+                        "string": "COURSE-CERT-ID-LEN"
                       }
                     },
                     {
@@ -529,7 +529,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "some_evidence_hash"
+                        "string": "hash"
                       }
                     },
                     {
