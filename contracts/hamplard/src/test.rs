@@ -386,7 +386,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
 
     // Issue certificate
     client.issue_certificate(
-        &admin, &cert_id, &student, &course_id, &course_title,
+        &admin, &cert_id, &student, &course_id,
     );
 
     // Verify certificate
@@ -423,7 +423,6 @@ fn test_certificate_requires_completion() {
         &String::from_str(&env, "CERT-EARLY"),
         &student,
         &String::from_str(&env, "COURSE-NAILS-001"),
-        &String::from_str(&env, "Nail Technology"),
     );
 }
 
@@ -446,7 +445,6 @@ fn test_revoke_certificate() {
     client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "evidence_hash")));
     client.issue_certificate(
         &admin, &cert_id, &student, &course_id,
-        &String::from_str(&env, "Makeup Artistry"),
     );
 
     assert!(client.verify_certificate(&cert_id));
@@ -482,7 +480,6 @@ fn test_revoke_certificate_metadata_persisted() {
     client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "proof")));
     client.issue_certificate(
         &admin, &cert_id, &student, &course_id,
-        &String::from_str(&env, "Audit Course"),
     );
 
     // Certificate should have no revocation metadata before revocation
@@ -796,31 +793,6 @@ fn test_register_course_id_at_max_length_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "course_title exceeds maximum length")]
-fn test_issue_certificate_title_too_long() {
-    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
-
-    register_and_approve_course(
-        &env, &client, &token_id, &admin, &instructor, "COURSE-TITLE-LEN", 100_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-TITLE-LEN");
-    client.enroll(&student, &course_id);
-    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "hash")));
-
-    let long_title = String::from_str(&env, &"T".repeat(513));
-    client.issue_certificate(
-        &admin,
-        &String::from_str(&env, "CERT-TITLE-LEN"),
-        &student,
-        &course_id,
-        &long_title,
-    );
-}
-
-#[test]
 #[should_panic(expected = "certificate_id exceeds maximum length")]
 fn test_issue_certificate_id_too_long() {
     let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
@@ -841,7 +813,6 @@ fn test_issue_certificate_id_too_long() {
         &long_cert_id,
         &student,
         &course_id,
-        &String::from_str(&env, "Valid Title"),
     );
 }
 
@@ -990,7 +961,6 @@ fn test_certificate_id_collision_across_courses() {
     client.mark_completed(&admin, &student_a, &course_a, &Some(String::from_str(&env, "ev_a")));
     client.issue_certificate(
         &admin, &cert_id, &student_a, &course_a,
-        &String::from_str(&env, "Course A"),
     );
 
     // Student B completes course B — attempt to reuse the same cert ID must fail
@@ -1000,7 +970,6 @@ fn test_certificate_id_collision_across_courses() {
     client.mark_completed(&admin, &student_b, &course_b, &Some(String::from_str(&env, "ev_b")));
     client.issue_certificate(
         &admin, &cert_id, &student_b, &course_b,
-        &String::from_str(&env, "Course B"),
     );
 }
 
@@ -1070,5 +1039,129 @@ fn test_old_admin_loses_access_after_transfer_completes() {
 
     // Old admin must no longer have admin privileges
     client.update_default_fee(&admin, &10u32);
+}
+
+// ============================================================
+// NEW TESTS FOR ENROLLMENT TOKEN STORAGE
+// ============================================================
+
+#[test]
+fn test_enrollment_stores_token_address() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-TOKEN-STORE", 500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-TOKEN-STORE");
+    client.enroll(&student, &course_id);
+
+    let enrollment = client.get_enrollment(&student, &course_id);
+    assert_eq!(enrollment.token, token_id);
+}
+
+#[test]
+fn test_enrollment_token_matches_course_token_at_enrollment_time() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-TOKEN-MATCH");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &250_000_000,
+        &token_id,
+        &0u32,
+    );
+    client.approve_course(&admin, &course_id);
+    client.enroll(&student, &course_id);
+
+    let course = client.get_course(&course_id);
+    let enrollment = client.get_enrollment(&student, &course_id);
+
+    assert_eq!(enrollment.token, course.token);
+    assert_eq!(enrollment.token, token_id);
+}
+
+#[test]
+#[should_panic(expected = "already marked as completed")]
+fn test_mark_completed_cannot_be_called_twice() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-IDEMPOTENT-PANIC", 300_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-IDEMPOTENT-PANIC");
+    client.enroll(&student, &course_id);
+
+    // Mark completed once
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "evidence1")));
+
+    // Second call should panic
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "evidence2")));
+}
+
+#[test]
+fn test_certificate_without_title_prevents_staleness() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-NO-TITLE-STALE");
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-NO-TITLE-STALE", 400_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "proof")));
+
+    let cert_id = String::from_str(&env, "CERT-NO-STALE");
+    client.issue_certificate(&admin, &cert_id, &student, &course_id);
+
+    let cert = client.get_certificate(&cert_id);
+
+    // Certificate should have course_id but not a stored title
+    assert_eq!(cert.course_id, course_id);
+    assert_eq!(cert.student, student);
+    assert!(!cert.revoked);
+
+    // Verifier must look up the actual course title from the Course record
+    // not from the certificate, ensuring freshness
+    let course = client.get_course(&course_id);
+    assert_eq!(cert.course_id, course.id);
+}
+
+#[test]
+fn test_multiple_enrollments_preserve_individual_token_records() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "COURSE-MULTI-ENROLL", 100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-MULTI-ENROLL");
+    let course = client.get_course(&course_id);
+
+    // Enroll multiple students
+    for i in 0..3 {
+        let student = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id).mint(&student, &500_000_000);
+        client.enroll(&student, &course_id);
+
+        let enrollment = client.get_enrollment(&student, &course_id);
+        assert_eq!(enrollment.token, course.token, "Student {}: token mismatch", i);
+        assert_eq!(enrollment.token, token_id, "Student {}: token not USDC", i);
+    }
 }
 
