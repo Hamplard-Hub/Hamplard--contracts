@@ -1,8 +1,309 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, token, Address, Env, String, Vec,
 };
+
+// ============================================================
+// EVENT SYSTEM
+// ============================================================
+
+/// Centralized event emission helper module.
+/// Ensures consistent event structure with ledger sequence, actor, and operation details.
+mod events {
+    use soroban_sdk::{Address, Env, String, Symbol};
+
+    /// Emit a course registration event with full audit trail
+    pub fn course_registered(
+        env: &Env,
+        actor: &Address,
+        course_id: &String,
+        instructor: &Address,
+        price: i128,
+        token: &Address,
+        fee_percent: u32,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "course_registered"), course_id.clone()),
+            (
+                actor.clone(),
+                course_id.clone(),
+                instructor.clone(),
+                price,
+                token.clone(),
+                fee_percent,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a course approval event
+    pub fn course_approved(env: &Env, admin: &Address, course_id: &String) {
+        env.events().publish(
+            (Symbol::new(env, "course_approved"), course_id.clone()),
+            (admin.clone(), course_id.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a course pause event
+    pub fn course_paused(env: &Env, caller: &Address, course_id: &String) {
+        env.events().publish(
+            (Symbol::new(env, "course_paused"), course_id.clone()),
+            (caller.clone(), course_id.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a course unpause event
+    pub fn course_unpaused(env: &Env, caller: &Address, course_id: &String) {
+        env.events().publish(
+            (Symbol::new(env, "course_unpaused"), course_id.clone()),
+            (caller.clone(), course_id.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a course archive event with refund details
+    pub fn course_archived(
+        env: &Env,
+        admins: (&Address, &Address),
+        course_id: &String,
+        refund_count: u32,
+        total_refunded: i128,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "course_archived"), course_id.clone()),
+            (
+                admins.0.clone(),
+                admins.1.clone(),
+                course_id.clone(),
+                refund_count,
+                total_refunded,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a student enrollment event with payment split details
+    pub fn student_enrolled(
+        env: &Env,
+        student: &Address,
+        course_id: &String,
+        amount_paid: i128,
+        platform_fee: i128,
+        instructor_fee: i128,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "student_enrolled"), course_id.clone()),
+            (
+                student.clone(),
+                course_id.clone(),
+                amount_paid,
+                platform_fee,
+                instructor_fee,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a course completion event
+    pub fn course_completed(
+        env: &Env,
+        admin: &Address,
+        student: &Address,
+        course_id: &String,
+        has_evidence: bool,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "course_completed"), course_id.clone()),
+            (
+                admin.clone(),
+                student.clone(),
+                course_id.clone(),
+                has_evidence,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a certificate issuance event
+    pub fn certificate_issued(
+        env: &Env,
+        admin: &Address,
+        certificate_id: &String,
+        student: &Address,
+        course_id: &String,
+        course_title: &String,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "certificate_issued"), certificate_id.clone()),
+            (
+                admin.clone(),
+                certificate_id.clone(),
+                student.clone(),
+                course_id.clone(),
+                course_title.clone(),
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a certificate revocation event with reason
+    pub fn certificate_revoked(
+        env: &Env,
+        admin: &Address,
+        certificate_id: &String,
+        student: &Address,
+        course_id: &String,
+        reason: &String,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "certificate_revoked"), certificate_id.clone()),
+            (
+                admin.clone(),
+                certificate_id.clone(),
+                student.clone(),
+                course_id.clone(),
+                reason.clone(),
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a platform pause event
+    pub fn platform_paused(env: &Env, admin: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "platform_paused"), Symbol::new(env, "system")),
+            (admin.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a platform unpause event
+    pub fn platform_unpaused(env: &Env, admin: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "platform_unpaused"), Symbol::new(env, "system")),
+            (admin.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a token withdrawal event
+    pub fn tokens_withdrawn(
+        env: &Env,
+        admin: &Address,
+        token: &Address,
+        amount: i128,
+        destination: &Address,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "tokens_withdrawn"), token.clone()),
+            (
+                admin.clone(),
+                token.clone(),
+                amount,
+                destination.clone(),
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit an admin transfer proposal event
+    pub fn admin_transfer_proposed(
+        env: &Env,
+        proposer1: &Address,
+        proposer2: &Address,
+        new_admin: &Address,
+        new_secondary_admin: &Address,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "admin_transfer_proposed"), new_admin.clone()),
+            (
+                proposer1.clone(),
+                proposer2.clone(),
+                new_admin.clone(),
+                new_secondary_admin.clone(),
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit an admin transfer acceptance event
+    pub fn admin_transfer_accepted(
+        env: &Env,
+        new_admin: &Address,
+        new_secondary_admin: &Address,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "admin_transfer_accepted"), new_admin.clone()),
+            (
+                new_admin.clone(),
+                new_secondary_admin.clone(),
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a treasury update event
+    pub fn treasury_updated(
+        env: &Env,
+        admin1: &Address,
+        admin2: &Address,
+        new_treasury: &Address,
+        effective_ledger: u32,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "treasury_updated"), new_treasury.clone()),
+            (
+                admin1.clone(),
+                admin2.clone(),
+                new_treasury.clone(),
+                effective_ledger,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Emit a default fee update event
+    pub fn default_fee_updated(env: &Env, admin: &Address, new_fee_pct: u32) {
+        env.events().publish(
+            (Symbol::new(env, "default_fee_updated"), Symbol::new(env, "system")),
+            (admin.clone(), new_fee_pct, env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a token whitelist addition event
+    pub fn token_whitelisted(env: &Env, admin: &Address, token: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "token_whitelisted"), token.clone()),
+            (admin.clone(), token.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a token whitelist removal event
+    pub fn token_removed_from_whitelist(env: &Env, admin: &Address, token: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "token_removed_from_whitelist"), token.clone()),
+            (admin.clone(), token.clone(), env.ledger().sequence()),
+        );
+    }
+
+    /// Emit a platform initialization event
+    pub fn platform_initialized(
+        env: &Env,
+        admin: &Address,
+        secondary_admin: &Address,
+        treasury: &Address,
+        default_fee_pct: u32,
+    ) {
+        env.events().publish(
+            (Symbol::new(env, "platform_initialized"), admin.clone()),
+            (
+                admin.clone(),
+                secondary_admin.clone(),
+                treasury.clone(),
+                default_fee_pct,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+}
 
 // ============================================================
 // DATA TYPES
@@ -186,6 +487,9 @@ impl HamplardContract {
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::PlatformPaused, &false);
         env.storage().instance().set(&DataKey::DefaultFee, &default_fee_pct);
+
+        // Emit comprehensive initialization event with full audit trail
+        events::platform_initialized(&env, &admin, &secondary_admin, &treasury, default_fee_pct);
     }
 
     // ----------------------------------------------------------
@@ -245,10 +549,10 @@ impl HamplardContract {
 
         let course = Course {
             id: course_id.clone(),
-            instructor,
+            instructor: instructor.clone(),
             price,
             platform_fee_percent: fee,
-            token,
+            token: token.clone(),
             total_enrollments: 0,
             active_enrollments: 0,
             total_earned: 0,
@@ -264,10 +568,8 @@ impl HamplardContract {
             .persistent()
             .extend_ttl(&DataKey::Course(course_id.clone()), 100_000, 6_300_000);
 
-        env.events().publish(
-            (Symbol::new(&env, "course_registered"), course_id.clone()),
-            course_id.clone(),
-        );
+        // Emit enhanced event with full audit trail and payment details
+        events::course_registered(&env, &instructor, &course_id, &instructor, price, &token, fee);
 
         course_id
     }
@@ -293,10 +595,8 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
-        env.events().publish(
-            (Symbol::new(&env, "course_approved"), course_id.clone()),
-            course_id,
-        );
+        // Emit enhanced approval event with ledger sequence and admin info
+        events::course_approved(&env, &admin, &course_id);
     }
 
     /// Instructor or admin pauses a course.
@@ -325,10 +625,8 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
-        env.events().publish(
-            (Symbol::new(&env, "course_paused"), course_id.clone()),
-            course_id,
-        );
+        // Emit enhanced pause event with actor and ledger sequence
+        events::course_paused(&env, &caller, &course_id);
     }
 
     /// Instructor or admin unpauses a Paused course, restoring it to Active.
@@ -355,10 +653,8 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
-        env.events().publish(
-            (Symbol::new(&env, "course_unpaused"), course_id.clone()),
-            course_id,
-        );
+        // Emit enhanced unpause event with actor and ledger sequence
+        events::course_unpaused(&env, &caller, &course_id);
     }
 
     /// Admin archives a course permanently.
@@ -380,6 +676,9 @@ impl HamplardContract {
         if course.status != CourseStatus::Paused {
             panic!("course must be paused before archiving");
         }
+
+        let mut total_refunded: i128 = 0;
+        let mut refund_count: u32 = 0;
 
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
@@ -412,11 +711,13 @@ impl HamplardContract {
                         // Refund platform fee from treasury
                         if platform_amount > 0 {
                             token_client.transfer(&treasury, &student, &platform_amount);
+                            total_refunded += platform_amount;
                         }
 
                         // Refund instructor share from instructor
                         if instructor_amount > 0 {
                             token_client.transfer(&course.instructor, &student, &instructor_amount);
+                            total_refunded += instructor_amount;
                         }
 
                         // Remove enrollment
@@ -426,6 +727,8 @@ impl HamplardContract {
                         if course.active_enrollments > 0 {
                             course.active_enrollments -= 1;
                         }
+
+                        refund_count += 1;
                     }
                 }
             }
@@ -441,10 +744,8 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
-        env.events().publish(
-            (Symbol::new(&env, "course_archived"), course_id.clone()),
-            course_id,
-        );
+        // Emit enhanced archive event with refund details for audit trail
+        events::course_archived(&env, (&admin1, &admin2), &course_id, refund_count, total_refunded);
     }
 
     // ----------------------------------------------------------
@@ -572,10 +873,12 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
-        env.events().publish(
-            (Symbol::new(&env, "student_enrolled"), course_id.clone()),
-            (student, course.price),
-        );
+        // Calculate payment split for event
+        let platform_amount = (course.price * course.platform_fee_percent as i128) / 100;
+        let instructor_amount = course.price - platform_amount;
+
+        // Emit enhanced enrollment event with payment split details
+        events::student_enrolled(&env, &student, &course_id, course.price, platform_amount, instructor_amount);
     }
 
     // ----------------------------------------------------------
@@ -611,6 +914,7 @@ impl HamplardContract {
             panic!("already marked as completed");
         }
 
+        let has_evidence = evidence_hash.is_some();
         enrollment.completed = true;
         enrollment.evidence_hash = evidence_hash;
 
@@ -630,10 +934,8 @@ impl HamplardContract {
                 .set(&DataKey::Course(course_id.clone()), &course);
         }
 
-        env.events().publish(
-            (Symbol::new(&env, "course_completed"), course_id.clone()),
-            student,
-        );
+        // Emit enhanced completion event with evidence status
+        events::course_completed(&env, &admin, &student, &course_id, has_evidence);
     }
 
     /// Issue an on-chain certificate to a student who has completed a course.
@@ -718,10 +1020,8 @@ impl HamplardContract {
                 &enrollment,
             );
 
-        env.events().publish(
-            (Symbol::new(&env, "certificate_issued"), certificate_id.clone()),
-            (student, course_id),
-        );
+        // Emit enhanced certificate issuance event with all details
+        events::certificate_issued(&env, &admin, &certificate_id, &student, &course_id, &certificate.course_title);
 
         certificate_id
     }
@@ -759,10 +1059,8 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Certificate(certificate_id.clone()), &cert);
 
-        env.events().publish(
-            (Symbol::new(&env, "certificate_revoked"), certificate_id.clone()),
-            (certificate_id, admin, reason),
-        );
+        // Emit enhanced revocation event with reason and all audit trail details
+        events::certificate_revoked(&env, &admin, &certificate_id, &cert.student, &cert.course_id, &reason);
     }
 
     // ----------------------------------------------------------
@@ -773,12 +1071,18 @@ impl HamplardContract {
         admin.require_auth();
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::PlatformPaused, &true);
+
+        // Emit platform pause event with admin and ledger sequence
+        events::platform_paused(&env, &admin);
     }
 
     pub fn unpause_platform(env: Env, admin: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::PlatformPaused, &false);
+
+        // Emit platform unpause event with admin and ledger sequence
+        events::platform_unpaused(&env, &admin);
     }
 
     pub fn withdraw_tokens(env: Env, admin: Address, token: Address, amount: i128, destination: Address) {
@@ -786,6 +1090,9 @@ impl HamplardContract {
         Self::require_admin(&env, &admin);
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
+
+        // Emit token withdrawal event with admin, amount, and destination
+        events::tokens_withdrawn(&env, &admin, &token, amount, &destination);
     }
 
     /// Propose a new admin address (step 1 of two-step transfer).
@@ -798,10 +1105,8 @@ impl HamplardContract {
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
         env.storage().instance().set(&DataKey::PendingSecondaryAdmin, &new_secondary_admin);
 
-        env.events().publish(
-            (Symbol::new(&env, "admin_proposed"), new_admin.clone()),
-            new_admin,
-        );
+        // Emit admin transfer proposal event with both proposers and new admins
+        events::admin_transfer_proposed(&env, &admin1, &admin2, &new_admin, &new_secondary_admin);
     }
 
     /// Accept a pending admin transfer (step 2 of two-step transfer).
@@ -831,10 +1136,8 @@ impl HamplardContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().instance().remove(&DataKey::PendingSecondaryAdmin);
 
-        env.events().publish(
-            (Symbol::new(&env, "admin_transferred"), new_admin.clone()),
-            new_admin,
-        );
+        // Emit admin transfer acceptance event with new admin details
+        events::admin_transfer_accepted(&env, &new_admin, &new_secondary_admin);
     }
 
     /// Update the platform treasury address.
@@ -851,10 +1154,13 @@ impl HamplardContract {
 
         let effective_ledger = env.ledger().sequence() + 100;
         let update = TreasuryUpdate {
-            address: new_treasury,
+            address: new_treasury.clone(),
             effective_ledger,
         };
         env.storage().instance().set(&DataKey::PendingTreasury, &update);
+
+        // Emit treasury update event with effective ledger sequence
+        events::treasury_updated(&env, &admin1, &admin2, &new_treasury, effective_ledger);
     }
 
     /// Update the default platform fee percentage.
@@ -866,20 +1172,29 @@ impl HamplardContract {
         }
         env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
         env.storage().instance().set(&DataKey::DefaultFee, &new_fee_pct);
+
+        // Emit default fee update event
+        events::default_fee_updated(&env, &admin, new_fee_pct);
     }
 
     /// Admin adds a token contract address to the enrollment whitelist.
     pub fn add_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::ApprovedToken(token), &true);
+        env.storage().instance().set(&DataKey::ApprovedToken(token.clone()), &true);
+
+        // Emit token whitelist addition event
+        events::token_whitelisted(&env, &admin, &token);
     }
 
     /// Admin removes a token contract address from the enrollment whitelist.
     pub fn remove_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
-        env.storage().instance().remove(&DataKey::ApprovedToken(token));
+        env.storage().instance().remove(&DataKey::ApprovedToken(token.clone()));
+
+        // Emit token removal from whitelist event
+        events::token_removed_from_whitelist(&env, &admin, &token);
     }
 
     // ----------------------------------------------------------

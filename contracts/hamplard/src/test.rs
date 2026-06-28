@@ -465,7 +465,7 @@ fn test_revoke_certificate() {
 
 #[test]
 fn test_revoke_certificate_metadata_persisted() {
-    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
