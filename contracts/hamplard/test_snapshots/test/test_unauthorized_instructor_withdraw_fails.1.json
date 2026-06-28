@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 9,
+    "address": 10,
     "nonce": 0
   },
   "auth": [
@@ -137,12 +137,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-TITLE-LEN"
+                  "string": "COURSE-EARN-AUTH"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 100000000
+                    "lo": 500000000
                   }
                 },
                 {
@@ -171,7 +171,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-TITLE-LEN"
+                  "string": "COURSE-EARN-AUTH"
                 }
               ]
             }
@@ -193,7 +193,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-TITLE-LEN"
+                  "string": "COURSE-EARN-AUTH"
                 }
               ]
             }
@@ -214,7 +214,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 100000000
+                        "lo": 500000000
                       }
                     }
                   ]
@@ -223,34 +223,6 @@
               "sub_invocations": []
             }
           ]
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "mark_completed",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                },
-                {
-                  "string": "COURSE-TITLE-LEN"
-                },
-                {
-                  "string": "hash"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
         }
       ]
     ],
@@ -337,7 +309,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-TITLE-LEN"
+                  "string": "COURSE-EARN-AUTH"
                 }
               ]
             },
@@ -357,7 +329,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-TITLE-LEN"
+                      "string": "COURSE-EARN-AUTH"
                     }
                   ]
                 },
@@ -369,7 +341,7 @@
                         "symbol": "active_enrollments"
                       },
                       "val": {
-                        "u32": 0
+                        "u32": 1
                       }
                     },
                     {
@@ -385,7 +357,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-TITLE-LEN"
+                        "string": "COURSE-EARN-AUTH"
                       }
                     },
                     {
@@ -411,7 +383,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -442,7 +414,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -476,7 +448,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-TITLE-LEN"
+                  "string": "COURSE-EARN-AUTH"
                 }
               ]
             },
@@ -499,7 +471,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-TITLE-LEN"
+                      "string": "COURSE-EARN-AUTH"
                     }
                   ]
                 },
@@ -513,7 +485,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -530,7 +502,7 @@
                         "symbol": "completed"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -538,7 +510,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-TITLE-LEN"
+                        "string": "COURSE-EARN-AUTH"
                       }
                     },
                     {
@@ -553,9 +525,7 @@
                       "key": {
                         "symbol": "evidence_hash"
                       },
-                      "val": {
-                        "string": "hash"
-                      }
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -618,7 +588,7 @@
                 "val": {
                   "i128": {
                     "hi": 0,
-                    "lo": 80000000
+                    "lo": 400000000
                   }
                 }
               }
@@ -874,39 +844,6 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5806905060045992000
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 5806905060045992000
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-            "key": {
-              "ledger_key_nonce": {
                 "nonce": 8370022561469687789
               }
             },
@@ -1044,7 +981,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 80000000
+                          "lo": 400000000
                         }
                       }
                     },
@@ -1117,7 +1054,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 20000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -1263,7 +1200,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 900000000
+                          "lo": 500000000
                         }
                       }
                     },
