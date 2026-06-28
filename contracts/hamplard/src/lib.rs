@@ -49,6 +49,8 @@ pub struct Course {
     pub status: CourseStatus,
     /// Ledger sequence when the course was registered
     pub created_at_ledger: u32,
+    /// Optional maximum capacity for the course
+    pub max_capacity: Option<u32>,
 }
 
 /// An enrollment record — one per student per course
@@ -88,6 +90,8 @@ pub struct Certificate {
     pub instructor: Address,
     /// Ledger sequence when the certificate was issued
     pub issued_at_ledger: u32,
+    /// Reference to the linked enrollment (student address, course ID)
+    pub enrollment_reference: (Address, String),
     /// Whether this certificate has been revoked (e.g. cheating)
     pub revoked: bool,
     /// Admin address that performed the revocation, if revoked
@@ -136,6 +140,10 @@ pub enum DataKey {
     PendingSecondaryAdmin,
     /// Platform paused state flag
     PlatformPaused,
+    /// Global limit for courses per instructor
+    MaxCoursesPerInstructor,
+    /// Per-instructor course count (used for rate limiting)
+    InstructorCourseCount(Address),
 }
 
 // ============================================================
@@ -202,6 +210,7 @@ impl HamplardContract {
     /// - `price`            — enrollment price in USDC stroops
     /// - `token`            — USDC Stellar Asset Contract address
     /// - `platform_fee_pct` — optional fee override; pass 0 to use platform default
+    /// - `max_capacity`     — optional maximum enrollment capacity
     pub fn register_course(
         env: Env,
         instructor: Address,
@@ -209,6 +218,7 @@ impl HamplardContract {
         price: i128,
         token: Address,
         platform_fee_pct: u32,
+        max_capacity: Option<u32>,
     ) -> String {
         instructor.require_auth();
 
@@ -226,6 +236,17 @@ impl HamplardContract {
             .has(&DataKey::Course(course_id.clone()))
         {
             panic!("course already registered");
+        }
+
+        if let Some(limit) = env.storage().instance().get::<DataKey, u32>(&DataKey::MaxCoursesPerInstructor) {
+            let count: u32 = env.storage().persistent().get(&DataKey::InstructorCourseCount(instructor.clone())).unwrap_or(0);
+            if count >= limit {
+                panic!("instructor has reached maximum course registration limit");
+            }
+            env.storage().persistent().set(&DataKey::InstructorCourseCount(instructor.clone()), &(count + 1));
+        } else {
+            let count: u32 = env.storage().persistent().get(&DataKey::InstructorCourseCount(instructor.clone())).unwrap_or(0);
+            env.storage().persistent().set(&DataKey::InstructorCourseCount(instructor.clone()), &(count + 1));
         }
 
         let default_fee = env
@@ -254,6 +275,7 @@ impl HamplardContract {
             total_earned: 0,
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
+            max_capacity,
         };
 
         env.storage()
@@ -447,6 +469,39 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor updates the price of an existing course.
+    /// Only affects future enrollments.
+    pub fn update_course_price(env: Env, instructor: Address, course_id: String, new_price: i128) {
+        instructor.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id);
+        
+        if course.instructor != instructor {
+            panic!("unauthorized");
+        }
+
+        if new_price < 0 {
+            panic!("price cannot be negative");
+        }
+
+        if course.total_enrollments > 0 {
+            panic!("cannot update price after enrollments");
+        }
+
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        course.price = new_price;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_price_updated"), course_id.clone()),
+            new_price,
+        );
+    }
+
     // ----------------------------------------------------------
     // ENROLLMENT & PAYMENT
     // ----------------------------------------------------------
@@ -474,6 +529,12 @@ impl HamplardContract {
 
         if course.status != CourseStatus::Active {
             panic!("course is not available for enrollment");
+        }
+
+        if let Some(capacity) = course.max_capacity {
+            if course.total_enrollments >= capacity {
+                panic!("course is at maximum capacity");
+            }
         }
 
         // Prevent duplicate enrollment
@@ -695,6 +756,7 @@ impl HamplardContract {
             course_title,
             instructor: course.instructor,
             issued_at_ledger: env.ledger().sequence(),
+            enrollment_reference: (student.clone(), course_id.clone()),
             revoked: false,
             revoked_by: None,
             revoked_at_ledger: None,
@@ -779,6 +841,13 @@ impl HamplardContract {
         admin.require_auth();
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::PlatformPaused, &false);
+    }
+
+    pub fn set_max_courses_per_instructor(env: Env, admin: Address, limit: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage().instance().extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage().instance().set(&DataKey::MaxCoursesPerInstructor, &limit);
     }
 
     pub fn withdraw_tokens(env: Env, admin: Address, token: Address, amount: i128, destination: Address) {

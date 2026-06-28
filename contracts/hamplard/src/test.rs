@@ -54,7 +54,7 @@ fn register_and_approve_course(
         &String::from_str(env, course_id),
         &price,
         token_id,
-        &0u32, // use platform default fee
+        &0u32, &None::<u32> // use platform default fee
     );
     client.approve_course(admin, &String::from_str(env, course_id));
 }
@@ -127,7 +127,7 @@ fn test_register_course_success() {
         &course_id,
         &50_000_000, // 5 USDC
         &token_id,
-        &0u32,
+        &0u32, &None::<u32>
     );
 
     let course = client.get_course(&course_id);
@@ -147,7 +147,7 @@ fn test_register_course_custom_fee() {
         &String::from_str(&env, "COURSE-MAKEUP-001"),
         &100_000_000,
         &token_id,
-        &30u32, // custom 30% platform fee
+        &30u32, &None::<u32> // custom 30% platform fee
     );
 
     let course = client.get_course(&String::from_str(&env, "COURSE-MAKEUP-001"));
@@ -161,8 +161,8 @@ fn test_register_duplicate_course() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-DUP");
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32, &None::<u32>);
+    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32, &None::<u32>);
 }
 
 // ============================================================
@@ -175,7 +175,7 @@ fn test_approve_course_success() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-BAKING-001");
-    client.register_course(&instructor, &course_id, &75_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &course_id, &75_000_000, &token_id, &0u32, &None::<u32>);
     client.approve_course(&admin, &course_id);
 
     let course = client.get_course(&course_id);
@@ -189,7 +189,7 @@ fn test_approve_course_unauthorized() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-HAIR-001");
-    client.register_course(&instructor, &course_id, &60_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &course_id, &60_000_000, &token_id, &0u32, &None::<u32>);
     // Instructor tries to approve their own course — should panic
     client.approve_course(&instructor, &course_id);
 }
@@ -201,7 +201,7 @@ fn test_approve_already_active_course() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-NAILS-001");
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32, &None::<u32>);
     client.approve_course(&admin, &course_id);
     client.approve_course(&admin, &course_id); // second approve — should panic
 }
@@ -251,7 +251,7 @@ fn test_enroll_success_with_payment_split() {
 
 #[test]
 fn test_enroll_zero_price_free_course() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -275,7 +275,7 @@ fn test_enroll_zero_price_free_course() {
 #[test]
 #[should_panic(expected = "overflow computing platform fee")]
 fn test_enroll_fee_overflow() {
-    let (env, contract_id, token_id, admin, treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Choose a price large enough that price * 100 would overflow i128
@@ -287,7 +287,7 @@ fn test_enroll_fee_overflow() {
         &String::from_str(&env, "COURSE-OVERFLOW-001"),
         &overflow_price,
         &token_id,
-        &100u32,
+        &100u32, &None::<u32>
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-OVERFLOW-001"));
 
@@ -331,7 +331,7 @@ fn test_enroll_pending_course() {
         &String::from_str(&env, "COURSE-PENDING"),
         &500_000_000,
         &token_id,
-        &0u32,
+        &0u32, &None::<u32>
     );
 
     client.enroll(&student, &String::from_str(&env, "COURSE-PENDING"));
@@ -465,7 +465,7 @@ fn test_revoke_certificate() {
 
 #[test]
 fn test_revoke_certificate_metadata_persisted() {
-    let (env, contract_id, token_id, admin, _treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -781,7 +781,7 @@ fn test_register_course_id_too_long() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let long_id = String::from_str(&env, &"A".repeat(257));
-    client.register_course(&instructor, &long_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &long_id, &50_000_000, &token_id, &0u32, &None::<u32>);
 }
 
 #[test]
@@ -790,7 +790,7 @@ fn test_register_course_id_at_max_length_succeeds() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let max_id = String::from_str(&env, &"A".repeat(256));
-    client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32, &None::<u32>);
     let course = client.get_course(&max_id);
     assert_eq!(course.status, CourseStatus::Pending);
 }
@@ -875,7 +875,7 @@ fn test_archive_pending_course_rejected() {
         &String::from_str(&env, "COURSE-ARCHIVE-PENDING"),
         &100_000_000,
         &token_id,
-        &0u32,
+        &0u32, &None::<u32>
     );
 
     // Course is Pending — must panic
@@ -934,7 +934,7 @@ fn test_enroll_with_non_whitelisted_token_fails() {
         &String::from_str(&env, "COURSE-EVIL-TOKEN"),
         &500_000_000,
         &evil_token_id,
-        &0u32,
+        &0u32, &None::<u32>
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
 
@@ -1072,3 +1072,75 @@ fn test_old_admin_loses_access_after_transfer_completes() {
     client.update_default_fee(&admin, &10u32);
 }
 
+#[test]
+#[should_panic(expected = "course is at maximum capacity")]
+fn test_enroll_capacity_exceeded() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-CAP2");
+    client.register_course(&instructor, &course_id, &0, &token_id, &0u32, &Some(1));
+    client.approve_course(&admin, &course_id);
+
+    let student1 = Address::generate(&env);
+    let student2 = Address::generate(&env);
+    client.enroll(&student1, &course_id);
+    client.enroll(&student2, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "instructor has reached maximum course registration limit")]
+fn test_register_course_rate_limiting() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.set_max_courses_per_instructor(&admin, &2u32);
+
+    client.register_course(&instructor, &String::from_str(&env, "COURSE-R1"), &0, &token_id, &0u32, &None);
+    client.register_course(&instructor, &String::from_str(&env, "COURSE-R2"), &0, &token_id, &0u32, &None);
+    client.register_course(&instructor, &String::from_str(&env, "COURSE-R3"), &0, &token_id, &0u32, &None);
+}
+
+#[test]
+fn test_update_course_price() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-PRICE");
+    client.register_course(&instructor, &course_id, &100, &token_id, &0u32, &None);
+    
+    client.update_course_price(&instructor, &course_id, &200);
+    assert_eq!(client.get_course(&course_id).price, 200);
+}
+
+#[test]
+#[should_panic(expected = "cannot update price after enrollments")]
+fn test_update_course_price_after_enrollment() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-PRICE2");
+    client.register_course(&instructor, &course_id, &0, &token_id, &0u32, &None);
+    client.approve_course(&admin, &course_id);
+    
+    let student1 = Address::generate(&env);
+    client.enroll(&student1, &course_id);
+    
+    client.update_course_price(&instructor, &course_id, &200);
+}
+
+#[test]
+fn test_certificate_stores_enrollment_reference() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-CERT");
+    client.register_course(&instructor, &course_id, &0, &token_id, &0u32, &None);
+    client.approve_course(&admin, &course_id);
+    
+    let student1 = Address::generate(&env);
+    client.enroll(&student1, &course_id);
+    client.mark_completed(&admin, &student1, &course_id, &None);
+    
+    let cert_id = String::from_str(&env, "CERT-1");
+    let title = String::from_str(&env, "My Title");
+    client.issue_certificate(&admin, &cert_id, &student1, &course_id, &title);
+    
+    let cert = client.get_certificate(&cert_id);
+    assert_eq!(cert.enrollment_reference, (student1.clone(), course_id.clone()));
+}
