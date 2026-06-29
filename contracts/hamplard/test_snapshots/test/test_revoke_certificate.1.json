@@ -277,6 +277,9 @@
                 },
                 {
                   "string": "Makeup Artistry"
+                },
+                {
+                  "string": "ref-123"
                 }
               ]
             }
@@ -436,6 +439,14 @@
                       },
                       "val": {
                         "string": "Makeup Artistry"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_reference"
+                      },
+                      "val": {
+                        "string": "ref-123"
                       }
                     },
                     {
@@ -699,6 +710,14 @@
                           "hi": 0,
                           "lo": 600000000
                         }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": {
+                        "string": "CERT-REVOKE-TEST"
                       }
                     },
                     {
