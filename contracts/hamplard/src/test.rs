@@ -435,7 +435,14 @@ fn test_full_lifecycle_enroll_complete_certify() {
     assert!(client.has_completed(&student, &course_id));
 
     // Issue certificate
-    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title);
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &course_title,
+        &String::from_str(&env, "ref-123"),
+    );
 
     // Verify certificate
     assert!(client.verify_certificate(&cert_id));
@@ -478,6 +485,7 @@ fn test_certificate_requires_completion() {
         &student,
         &String::from_str(&env, "COURSE-NAILS-001"),
         &String::from_str(&env, "Nail Technology"),
+        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -515,6 +523,7 @@ fn test_revoke_certificate() {
         &student,
         &course_id,
         &String::from_str(&env, "Makeup Artistry"),
+        &String::from_str(&env, "ref-123"),
     );
 
     assert!(client.verify_certificate(&cert_id));
@@ -565,6 +574,7 @@ fn test_revoke_certificate_metadata_persisted() {
         &student,
         &course_id,
         &String::from_str(&env, "Audit Course"),
+        &String::from_str(&env, "ref-123"),
     );
 
     // Certificate should have no revocation metadata before revocation
@@ -966,6 +976,7 @@ fn test_issue_certificate_title_too_long() {
         &student,
         &course_id,
         &long_title,
+        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1002,6 +1013,7 @@ fn test_issue_certificate_id_too_long() {
         &student,
         &course_id,
         &String::from_str(&env, "Valid Title"),
+        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1194,6 +1206,7 @@ fn test_certificate_id_collision_across_courses() {
         &student_a,
         &course_a,
         &String::from_str(&env, "Course A"),
+        &String::from_str(&env, "ref-123"),
     );
 
     // Student B completes course B — attempt to reuse the same cert ID must fail
@@ -1212,6 +1225,7 @@ fn test_certificate_id_collision_across_courses() {
         &student_b,
         &course_b,
         &String::from_str(&env, "Course B"),
+        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1639,4 +1653,75 @@ fn test_zero_balance_withdrawal_is_safe() {
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
     client.withdraw_earnings(&instructor, &token_id, &0);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "enrollment count overflow")]
+fn test_enrollment_count_overflow() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-OVERFLOW",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-OVERFLOW");
+
+    env.as_contract(&contract_id, || {
+        let mut course: Course = env.storage().persistent().get(&DataKey::Course(course_id.clone())).unwrap();
+        course.total_enrollments = u32::MAX;
+        env.storage().persistent().set(&DataKey::Course(course_id.clone()), &course);
+    });
+
+    client.enroll(&student, &course_id);
+}
+
+#[test]
+fn test_certificate_enrollment_linkage() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-LINK",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-LINK");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "hash")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-LINK");
+    let ref_str = String::from_str(&env, "enroll-123");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Title"),
+        &ref_str,
+    );
+
+    let cert = client.get_certificate(&cert_id);
+    assert_eq!(cert.enrollment_reference, ref_str);
+
+    let enrollment = client.get_enrollment(&student, &course_id);
+    assert_eq!(enrollment.certificate_id, Some(cert_id));
 }

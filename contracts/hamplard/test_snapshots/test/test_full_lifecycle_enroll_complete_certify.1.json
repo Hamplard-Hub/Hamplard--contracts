@@ -279,6 +279,9 @@
                 },
                 {
                   "string": "Professional Tailoring"
+                },
+                {
+                  "string": "ref-123"
                 }
               ]
             }
@@ -413,6 +416,14 @@
                       },
                       "val": {
                         "string": "Professional Tailoring"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_reference"
+                      },
+                      "val": {
+                        "string": "ref-123"
                       }
                     },
                     {
@@ -670,6 +681,14 @@
                           "hi": 0,
                           "lo": 500000000
                         }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": {
+                        "string": "CERT-12345-TAILORING"
                       }
                     },
                     {

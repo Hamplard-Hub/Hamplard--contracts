@@ -633,6 +633,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "certificate_issued"
                       },
                       "val": {
@@ -742,6 +748,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "certificate_issued"
                       },
                       "val": {
@@ -848,6 +860,12 @@
                           "lo": 500000000
                         }
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

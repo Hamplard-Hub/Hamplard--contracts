@@ -333,6 +333,9 @@
                 },
                 {
                   "string": "Course A"
+                },
+                {
+                  "string": "ref-123"
                 }
               ]
             }
@@ -564,6 +567,14 @@
                       },
                       "val": {
                         "string": "Course A"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_reference"
+                      },
+                      "val": {
+                        "string": "ref-123"
                       }
                     },
                     {
@@ -961,6 +972,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": {
+                        "string": "CERT-SHARED-ID"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "certificate_issued"
                       },
                       "val": {
@@ -1069,6 +1088,12 @@
                           "lo": 300000000
                         }
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

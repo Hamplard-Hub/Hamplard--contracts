@@ -65,6 +65,8 @@ pub struct Enrollment {
     pub completed: bool,
     /// Whether a certificate has been issued on-chain
     pub certificate_issued: bool,
+    /// The ID of the certificate issued, if any
+    pub certificate_id: Option<String>,
     /// Optional proof of completion evidence (e.g. hash)
     pub evidence_hash: Option<String>,
 }
@@ -82,6 +84,8 @@ pub struct Certificate {
     pub course_id: String,
     /// Short course title stored on-chain for easy verification
     pub course_title: String,
+    /// Reference back to the enrollment record (e.g. backend ID)
+    pub enrollment_reference: String,
     /// Instructor's address (for attribution)
     pub instructor: Address,
     /// Ledger sequence when the certificate was issued
@@ -630,6 +634,7 @@ impl HamplardContract {
             enrolled_at_ledger: env.ledger().sequence(),
             completed: false,
             certificate_issued: false,
+            certificate_id: None,
             evidence_hash: None,
         };
 
@@ -645,9 +650,18 @@ impl HamplardContract {
         );
 
         // Update course stats
-        course.total_enrollments += 1;
-        course.active_enrollments += 1;
-        course.total_earned += course.price;
+        course.total_enrollments = course
+            .total_enrollments
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("enrollment count overflow"));
+        course.active_enrollments = course
+            .active_enrollments
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("active enrollment count overflow"));
+        course.total_earned = course
+            .total_earned
+            .checked_add(course.price)
+            .unwrap_or_else(|| panic!("total earned overflow"));
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -788,6 +802,7 @@ impl HamplardContract {
         student: Address,
         course_id: String,
         course_title: String,
+        enrollment_reference: String,
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -828,6 +843,7 @@ impl HamplardContract {
             student: student.clone(),
             course_id: course_id.clone(),
             course_title,
+            enrollment_reference,
             instructor: course.instructor,
             issued_at_ledger: env.ledger().sequence(),
             revoked: false,
@@ -848,6 +864,7 @@ impl HamplardContract {
 
         // Mark enrollment as certificate issued
         enrollment.certificate_issued = true;
+        enrollment.certificate_id = Some(certificate_id.clone());
         env.storage().persistent().set(
             &DataKey::Enrollment(student.clone(), course_id.clone()),
             &enrollment,

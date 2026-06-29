@@ -519,6 +519,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificate_id"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "certificate_issued"
                       },
                       "val": {
