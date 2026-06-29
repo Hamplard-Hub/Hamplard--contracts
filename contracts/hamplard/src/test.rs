@@ -491,6 +491,29 @@ fn test_enroll_pending_course() {
 }
 
 #[test]
+#[should_panic(expected = "instructor cannot enroll in own course")]
+fn test_instructor_self_enrollment_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Fund instructor so they could pay if the guard were missing
+    token::StellarAssetClient::new(&env, &token_id).mint(&instructor, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-SELF-ENROLL",
+        500_000_000,
+    );
+
+    // Instructor tries to enroll in their own course — must be rejected
+    client.enroll(&instructor, &String::from_str(&env, "COURSE-SELF-ENROLL"));
+}
+
+#[test]
 fn test_is_enrolled_check() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);

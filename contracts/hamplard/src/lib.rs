@@ -593,6 +593,10 @@ impl HamplardContract {
 
         let course = Self::get_course_internal(env, course_id);
 
+        if *student == course.instructor {
+            panic!("instructor cannot enroll in own course");
+        }
+
         if course.status != CourseStatus::Active {
             panic!("course is not available for enrollment");
         }
