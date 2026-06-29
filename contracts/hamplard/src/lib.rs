@@ -302,7 +302,7 @@ impl HamplardContract {
     /// - `course_id` — the course to approve
     pub fn approve_course(env: Env, admin: Address, course_id: String) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "approve_course");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -666,9 +666,17 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        // Emit enrollment receipt event with complete payment breakdown
         env.events().publish(
             (Symbol::new(env, "student_enrolled"), course_id.clone()),
-            (student.clone(), course.price),
+            (
+                student.clone(),
+                course_id.clone(),
+                course.price,
+                platform_amount,
+                instructor_amount,
+                env.ledger().sequence(),
+            ),
         );
     }
 
@@ -745,7 +753,7 @@ impl HamplardContract {
         evidence_hash: Option<String>,
     ) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "mark_completed");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -805,7 +813,7 @@ impl HamplardContract {
         enrollment_reference: String,
     ) -> String {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "issue_certificate");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -892,7 +900,7 @@ impl HamplardContract {
     /// - `reason`         — short reason code (e.g. "ACADEMIC_DISHONESTY", "ISSUED_IN_ERROR")
     pub fn revoke_certificate(env: Env, admin: Address, certificate_id: String, reason: String) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "revoke_certificate");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -931,7 +939,7 @@ impl HamplardContract {
 
     pub fn pause_platform(env: Env, admin: Address) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "pause_platform");
         env.storage()
             .instance()
             .set(&DataKey::PlatformPaused, &true);
@@ -939,7 +947,7 @@ impl HamplardContract {
 
     pub fn unpause_platform(env: Env, admin: Address) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "unpause_platform");
         env.storage()
             .instance()
             .set(&DataKey::PlatformPaused, &false);
@@ -953,7 +961,7 @@ impl HamplardContract {
         destination: Address,
     ) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "withdraw_tokens");
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
     }
@@ -1058,7 +1066,7 @@ impl HamplardContract {
     /// Update the default platform fee percentage.
     pub fn update_default_fee(env: Env, admin: Address, new_fee_pct: u32) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "update_default_fee");
         if new_fee_pct > 100 {
             panic!("fee percentage cannot exceed 100");
         }
@@ -1073,7 +1081,7 @@ impl HamplardContract {
     /// Admin adds a token contract address to the enrollment whitelist.
     pub fn add_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "add_approved_token");
         env.storage()
             .instance()
             .set(&DataKey::ApprovedToken(token), &true);
@@ -1082,7 +1090,7 @@ impl HamplardContract {
     /// Admin removes a token contract address from the enrollment whitelist.
     pub fn remove_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
-        Self::require_admin(&env, &admin);
+        Self::require_admin(&env, &admin, "remove_approved_token");
         env.storage()
             .instance()
             .remove(&DataKey::ApprovedToken(token));
@@ -1098,8 +1106,17 @@ impl HamplardContract {
     }
 
     /// Get an enrollment record for a student + course pair
-    pub fn get_enrollment(env: Env, student: Address, course_id: String) -> Enrollment {
-        Self::get_enrollment_internal(&env, &student, &course_id)
+    ///
+    /// Returns `Some(Enrollment)` if the record exists and has not expired.
+    /// Returns `None` if:
+    /// - The student has never enrolled in this course
+    /// - The enrollment record has exceeded its TTL and been garbage collected
+    ///
+    /// To check only existence without retrieving data, use `is_enrolled()`.
+    pub fn get_enrollment(env: Env, student: Address, course_id: String) -> Option<Enrollment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Enrollment(student, course_id))
     }
 
     /// Get a certificate by ID
@@ -1174,9 +1191,9 @@ impl HamplardContract {
         admin.map(|a| a == *caller).unwrap_or(false)
     }
 
-    fn require_admin(env: &Env, caller: &Address) {
+    fn require_admin(env: &Env, caller: &Address, operation: &str) {
         if !Self::is_admin(env, caller) {
-            panic!("unauthorized: caller is not admin");
+            panic!("unauthorized: {} - caller is not admin", operation);
         }
     }
 
