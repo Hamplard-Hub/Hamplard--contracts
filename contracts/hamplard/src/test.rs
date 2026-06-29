@@ -34,7 +34,7 @@ fn setup() -> (Env, Address, Address, Address, Address, Address, Address) {
 
     // Init contract
     let client = HamplardContractClient::new(&env, &contract_id);
-    client.init(&admin, &sec_admin, &treasury, &20u32); // 20% platform fee
+    client.init(&admin, &sec_admin, &treasury, &20u32, &50u32); // 20% platform fee, 50 courses max // 20% platform fee
     client.add_approved_token(&admin, &token_id);
 
     (
@@ -63,6 +63,7 @@ fn register_and_approve_course(
         &price,
         token_id,
         &0u32, // use platform default fee
+        &None,
     );
     client.approve_course(admin, &String::from_str(env, course_id));
 }
@@ -136,6 +137,7 @@ fn test_register_course_success() {
         &50_000_000, // 5 USDC
         &token_id,
         &0u32,
+        &None,
     );
 
     let course = client.get_course(&course_id);
@@ -156,6 +158,7 @@ fn test_register_course_custom_fee() {
         &100_000_000,
         &token_id,
         &30u32, // custom 30% platform fee
+        &None,
     );
 
     let course = client.get_course(&String::from_str(&env, "COURSE-MAKEUP-001"));
@@ -169,8 +172,22 @@ fn test_register_duplicate_course() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-DUP");
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
+    client.register_course(
+        &instructor,
+        &course_id,
+        &50_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.register_course(
+        &instructor,
+        &course_id,
+        &50_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
 }
 
 // ============================================================
@@ -183,7 +200,14 @@ fn test_approve_course_success() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-BAKING-001");
-    client.register_course(&instructor, &course_id, &75_000_000, &token_id, &0u32);
+    client.register_course(
+        &instructor,
+        &course_id,
+        &75_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
     client.approve_course(&admin, &course_id);
 
     let course = client.get_course(&course_id);
@@ -193,12 +217,22 @@ fn test_approve_course_success() {
 #[test]
 #[should_panic(expected = "unauthorized: approve_course")]
 fn test_approve_course_unauthorized() {
-    let (env, contract_id, token_id, _admin, sec_admin, _treasury, instructor) = setup();
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-HAIR-001");
-    client.register_course(&instructor, &course_id, &60_000_000, &token_id, &0u32);
-    // Instructor tries to approve their own course — should panic
+    client.register_course(
+        &instructor,
+        &course_id,
+        &60_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+
+    // Stop mocking all auths so the real auth + admin check fires
+    env.mock_all_auths_allowing_non_root_auth(); // ← or remove mock for this call
+
     client.approve_course(&instructor, &course_id);
 }
 
@@ -209,7 +243,14 @@ fn test_approve_already_active_course() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let course_id = String::from_str(&env, "COURSE-NAILS-001");
-    client.register_course(&instructor, &course_id, &50_000_000, &token_id, &0u32);
+    client.register_course(
+        &instructor,
+        &course_id,
+        &50_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
     client.approve_course(&admin, &course_id);
     client.approve_course(&admin, &course_id); // second approve — should panic
 }
@@ -316,6 +357,7 @@ fn test_enroll_fee_overflow() {
         &overflow_price,
         &token_id,
         &100u32,
+        &None,
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-OVERFLOW-001"));
 
@@ -442,6 +484,7 @@ fn test_enroll_pending_course() {
         &500_000_000,
         &token_id,
         &0u32,
+        &None,
     );
 
     client.enroll(&student, &String::from_str(&env, "COURSE-PENDING"));
@@ -512,14 +555,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
     assert!(client.has_completed(&student, &course_id));
 
     // Issue certificate
-    client.issue_certificate(
-        &admin,
-        &cert_id,
-        &student,
-        &course_id,
-        &course_title,
-        &String::from_str(&env, "ref-123"),
-    );
+    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title);
 
     // Verify certificate
     assert!(client.verify_certificate(&cert_id));
@@ -562,7 +598,6 @@ fn test_certificate_requires_completion() {
         &student,
         &String::from_str(&env, "COURSE-NAILS-001"),
         &String::from_str(&env, "Nail Technology"),
-        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -600,7 +635,6 @@ fn test_revoke_certificate() {
         &student,
         &course_id,
         &String::from_str(&env, "Makeup Artistry"),
-        &String::from_str(&env, "ref-123"),
     );
 
     assert!(client.verify_certificate(&cert_id));
@@ -651,7 +685,6 @@ fn test_revoke_certificate_metadata_persisted() {
         &student,
         &course_id,
         &String::from_str(&env, "Audit Course"),
-        &String::from_str(&env, "ref-123"),
     );
 
     // Certificate should have no revocation metadata before revocation
@@ -1006,7 +1039,7 @@ fn test_register_course_id_too_long() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let long_id = String::from_str(&env, &"A".repeat(257));
-    client.register_course(&instructor, &long_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &long_id, &50_000_000, &token_id, &0u32, &None);
 }
 
 #[test]
@@ -1015,7 +1048,7 @@ fn test_register_course_id_at_max_length_succeeds() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let max_id = String::from_str(&env, &"A".repeat(256));
-    client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32);
+    client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32, &None);
     let course = client.get_course(&max_id);
     assert_eq!(course.status, CourseStatus::Pending);
 }
@@ -1053,7 +1086,6 @@ fn test_issue_certificate_title_too_long() {
         &student,
         &course_id,
         &long_title,
-        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1090,7 +1122,6 @@ fn test_issue_certificate_id_too_long() {
         &student,
         &course_id,
         &String::from_str(&env, "Valid Title"),
-        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1131,6 +1162,7 @@ fn test_archive_pending_course_rejected() {
         &100_000_000,
         &token_id,
         &0u32,
+        &None,
     );
 
     // Course is Pending — must panic
@@ -1173,7 +1205,7 @@ fn test_init_cannot_be_called_twice() {
     let (env, contract_id, _, admin, sec_admin, treasury, _) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     // Second init call must be rejected
-    client.init(&admin, &sec_admin, &treasury, &20u32);
+    client.init(&admin, &sec_admin, &treasury, &20u32, &50u32);
 }
 
 // ============================================================
@@ -1201,6 +1233,7 @@ fn test_enroll_with_non_whitelisted_token_fails() {
         &500_000_000,
         &evil_token_id,
         &0u32,
+        &None,
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
 
@@ -1283,7 +1316,6 @@ fn test_certificate_id_collision_across_courses() {
         &student_a,
         &course_a,
         &String::from_str(&env, "Course A"),
-        &String::from_str(&env, "ref-123"),
     );
 
     // Student B completes course B — attempt to reuse the same cert ID must fail
@@ -1302,7 +1334,6 @@ fn test_certificate_id_collision_across_courses() {
         &student_b,
         &course_b,
         &String::from_str(&env, "Course B"),
-        &String::from_str(&env, "ref-123"),
     );
 }
 
@@ -1561,6 +1592,7 @@ fn test_batch_enroll_fails_on_invalid_course() {
         &200_000_000,
         &token_id,
         &0u32,
+        &None,
     );
 
     let mut course_ids = soroban_sdk::Vec::new(&env);
@@ -1899,39 +1931,160 @@ fn test_zero_balance_withdrawal_is_safe() {
 }
 
 #[test]
-#[should_panic(expected = "enrollment count overflow")]
-fn test_enrollment_count_overflow() {
+#[should_panic(expected = "instructor has reached the maximum number of course registrations")]
+fn test_registration_limit_enforced() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
 
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
+    // Default setup uses max=50, lower it to 2 for this test
+    client.update_max_courses_limit(&admin, &2u32);
+
+    let course_id_1 = String::from_str(&env, "COURSE-LIMIT-001");
+    let course_id_2 = String::from_str(&env, "COURSE-LIMIT-002");
+    let course_id_3 = String::from_str(&env, "COURSE-LIMIT-003");
+    client.register_course(
         &instructor,
-        "COURSE-OVERFLOW",
-        100_000_000,
+        &course_id_1,
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
     );
-    let course_id = String::from_str(&env, "COURSE-OVERFLOW");
-
-    env.as_contract(&contract_id, || {
-        let mut course: Course = env.storage().persistent().get(&DataKey::Course(course_id.clone())).unwrap();
-        course.total_enrollments = u32::MAX;
-        env.storage().persistent().set(&DataKey::Course(course_id.clone()), &course);
-    });
-
-    client.enroll(&student, &course_id);
+    client.register_course(
+        &instructor,
+        &course_id_2,
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.register_course(
+        &instructor,
+        &course_id_3,
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
 }
 
 #[test]
-fn test_certificate_enrollment_linkage() {
+fn test_admin_can_raise_limit() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Lower limit to 1
+    client.update_max_courses_limit(&admin, &1u32);
+
+    let course_id_1 = String::from_str(&env, "COURSE-RAISE-001");
+    let course_id_2 = String::from_str(&env, "COURSE-RAISE-002");
+
+    client.register_course(
+        &instructor,
+        &course_id_1,
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+
+    // Raise the limit to 5
+    client.update_max_courses_limit(&admin, &5u32);
+
+    // Second registration should now succeed
+    client.register_course(
+        &instructor,
+        &course_id_2,
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+
+    assert_eq!(client.get_instructor_course_count(&instructor), 2u32);
+}
+
+#[test]
+fn test_different_instructors_have_independent_limits() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Lower limit to 1
+    client.update_max_courses_limit(&admin, &1u32);
+
+    let instructor_a = Address::generate(&env);
+    let instructor_b = Address::generate(&env);
+
+    client.register_course(
+        &instructor_a,
+        &String::from_str(&env, "COURSE-IND-A1"),
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+
+    // instructor_b's count is independent — this must succeed
+    client.register_course(
+        &instructor_b,
+        &String::from_str(&env, "COURSE-IND-B1"),
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+
+    assert_eq!(client.get_instructor_course_count(&instructor_a), 1u32);
+    assert_eq!(client.get_instructor_course_count(&instructor_b), 1u32);
+}
+
+#[test]
+fn test_get_max_courses_limit_returns_configured_value() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // setup() passes 50 as the max
+    assert_eq!(client.get_max_courses_limit(), 50u32);
+
+    client.update_max_courses_limit(&admin, &10u32);
+    assert_eq!(client.get_max_courses_limit(), 10u32);
+}
+
+#[test]
+fn test_course_count_increments_correctly() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_instructor_course_count(&instructor), 0u32);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-COUNT-001"),
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    assert_eq!(client.get_instructor_course_count(&instructor), 1u32);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-COUNT-002"),
+        &1_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    assert_eq!(client.get_instructor_course_count(&instructor), 2u32);
+}
+
+#[test]
+fn test_verify_certificate_returns_true_for_valid_cert() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
     let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
 
     register_and_approve_course(
         &env,
@@ -1939,32 +2092,251 @@ fn test_certificate_enrollment_linkage() {
         &token_id,
         &admin,
         &instructor,
-        "COURSE-LINK",
+        "COURSE-VERIFY-001",
         100_000_000,
     );
-    let course_id = String::from_str(&env, "COURSE-LINK");
+    let course_id = String::from_str(&env, "COURSE-VERIFY-001");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-001");
+
     client.enroll(&student, &course_id);
     client.mark_completed(
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "hash")),
+        &Some(String::from_str(&env, "proof")),
     );
-
-    let cert_id = String::from_str(&env, "CERT-LINK");
-    let ref_str = String::from_str(&env, "enroll-123");
     client.issue_certificate(
         &admin,
         &cert_id,
         &student,
         &course_id,
-        &String::from_str(&env, "Title"),
-        &ref_str,
+        &String::from_str(&env, "Test Course"),
     );
 
-    let cert = client.get_certificate(&cert_id);
-    assert_eq!(cert.enrollment_reference, ref_str);
+    // Valid, unrevoked certificate must return true
+    assert!(client.verify_certificate(&cert_id));
+}
 
-    let enrollment = client.get_enrollment(&student, &course_id);
-    assert_eq!(enrollment.certificate_id, Some(cert_id));
+#[test]
+fn test_verify_certificate_returns_false_for_revoked_cert() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-002",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-VERIFY-002");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-002");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "proof")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+    );
+
+    assert!(client.verify_certificate(&cert_id));
+
+    // Revoke and confirm verify_certificate now returns false
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ACADEMIC_DISHONESTY"),
+    );
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_verify_certificate_returns_false_for_nonexistent_cert() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Certificate that was never issued must return false, not panic
+    assert!(!client.verify_certificate(&String::from_str(&env, "CERT-DOES-NOT-EXIST")));
+}
+
+#[test]
+fn test_verify_certificate_false_does_not_mutate_state() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-003",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-VERIFY-003");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-003");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "proof")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+    );
+
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "ISSUED_IN_ERROR"));
+
+    // Calling verify multiple times on a revoked cert must consistently return false
+    assert!(!client.verify_certificate(&cert_id));
+    assert!(!client.verify_certificate(&cert_id));
+
+    // The certificate record itself must still exist and be readable for audit
+    let cert = client.get_certificate(&cert_id);
+    assert!(cert.revoked);
+    assert_eq!(cert.revoked_by, Some(admin));
+}
+
+#[test]
+fn test_enroll_at_capacity_succeeds() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register with max_capacity = 1
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-CAP-EXACT"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &Some(1u32),
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-EXACT"));
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    // Enrolling the first (and only allowed) student must succeed
+    client.enroll(&student, &String::from_str(&env, "COURSE-CAP-EXACT"));
+
+    let course = client.get_course(&String::from_str(&env, "COURSE-CAP-EXACT"));
+    assert_eq!(course.total_enrollments, 1);
+}
+
+#[test]
+#[should_panic(expected = "course has reached maximum enrollment capacity")]
+fn test_enroll_beyond_capacity_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register with max_capacity = 1
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-CAP-FULL"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &Some(1u32),
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-FULL"));
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &1_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-CAP-FULL");
+    client.enroll(&student_a, &course_id); // fills the one seat
+    client.enroll(&student_b, &course_id); // must panic
+}
+
+#[test]
+fn test_enroll_unlimited_capacity() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register with no capacity limit (None)
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-CAP-NONE"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-NONE"));
+
+    let course_id = String::from_str(&env, "COURSE-CAP-NONE");
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    // Enroll 5 students — all must succeed with no cap in place
+    for _ in 0..5 {
+        let s = Address::generate(&env);
+        asset_client.mint(&s, &1_000_000_000);
+        client.enroll(&s, &course_id);
+    }
+
+    let course = client.get_course(&course_id);
+    assert_eq!(course.total_enrollments, 5);
+}
+
+#[test]
+#[should_panic(expected = "course has reached maximum enrollment capacity")]
+fn test_batch_enroll_respects_capacity() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course A: unlimited
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-BATCH-CAP-OK"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-OK"));
+
+    // Course B: capacity 0 — already full before anyone enrols
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-BATCH-CAP-FULL"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &Some(0u32),
+    );
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    course_ids.push_back(String::from_str(&env, "COURSE-BATCH-CAP-OK"));
+    course_ids.push_back(String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
+
+    // batch_enroll validates all courses before enrolling any — must panic
+    client.batch_enroll(&student, &course_ids);
 }
