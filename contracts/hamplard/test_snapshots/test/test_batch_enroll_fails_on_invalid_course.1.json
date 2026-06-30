@@ -69,6 +69,9 @@
                 },
                 {
                   "u32": 20
+                },
+                {
+                  "u32": 50
                 }
               ]
             }
@@ -150,7 +153,8 @@
                 },
                 {
                   "u32": 0
-                }
+                },
+                "void"
               ]
             }
           },
@@ -206,7 +210,8 @@
                 },
                 {
                   "u32": 0
-                }
+                },
+                "void"
               ]
             }
           },
@@ -358,6 +363,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "max_capacity"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "platform_fee_percent"
                       },
                       "val": {
@@ -494,6 +505,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "max_capacity"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "platform_fee_percent"
                       },
                       "val": {
@@ -619,6 +636,33 @@
                         },
                         "val": {
                           "u32": 20
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "InstructorCourseCount"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 2
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxCoursesPerInstructor"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 50
                         }
                       },
                       {

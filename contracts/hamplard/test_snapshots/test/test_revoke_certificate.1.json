@@ -69,6 +69,9 @@
                 },
                 {
                   "u32": 20
+                },
+                {
+                  "u32": 50
                 }
               ]
             }
@@ -150,7 +153,8 @@
                 },
                 {
                   "u32": 0
-                }
+                },
+                "void"
               ]
             }
           },
@@ -279,7 +283,7 @@
                   "string": "Makeup Artistry"
                 },
                 {
-                  "string": "ref-123"
+                  "string": ""
                 }
               ]
             }
@@ -446,7 +450,7 @@
                         "symbol": "enrollment_reference"
                       },
                       "val": {
-                        "string": "ref-123"
+                        "string": ""
                       }
                     },
                     {
@@ -590,6 +594,12 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_capacity"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -891,6 +901,33 @@
                         },
                         "val": {
                           "u32": 20
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "InstructorCourseCount"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxCoursesPerInstructor"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 50
                         }
                       },
                       {

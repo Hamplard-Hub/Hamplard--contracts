@@ -1206,7 +1206,15 @@ impl HamplardContract {
     /// - The enrollment record has exceeded its TTL and been garbage collected
     ///
     /// To check only existence without retrieving data, use `is_enrolled()`.
-    pub fn get_enrollment(env: Env, student: Address, course_id: String) -> Option<Enrollment> {
+    pub fn get_enrollment(env: Env, caller: Address, student: Address, course_id: String) -> Option<Enrollment> {
+        caller.require_auth();
+        let is_admin = Self::is_admin(&env, &caller);
+        let course = Self::get_course_internal(&env, &course_id);
+        let is_instructor = caller == course.instructor;
+        
+        if caller != student && !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
         env.storage()
             .persistent()
             .get(&DataKey::Enrollment(student, course_id))
