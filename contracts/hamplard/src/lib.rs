@@ -1,3 +1,59 @@
+//! # Hamplard Contract — Security Model
+//!
+//! ## Trust Hierarchy
+//!
+//! | Role              | Who                    | Capabilities                                                          |
+//! |-------------------|------------------------|-----------------------------------------------------------------------|
+//! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform  |
+//! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
+//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings     |
+//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll                   |
+//! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
+//!
+//! ## Privileged Operations (single admin)
+//! - `approve_course` — moves a course from Pending to Active
+//! - `mark_completed` — marks a student enrollment as completed
+//! - `issue_certificate` — mints an on-chain certificate of completion
+//! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
+//! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
+//! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
+//! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `withdraw_tokens` — emergency sweep of contract-held tokens (admin only)
+//!
+//! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
+//! - `archive_course` — permanent course removal; may trigger student refunds
+//! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
+//! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
+//!
+//! ## Payment Guarantees
+//! - On enrollment the full course price is transferred from the student atomically:
+//!   `platform_fee_percent` of the price is forwarded to the treasury address immediately;
+//!   the remaining instructor share is held inside the contract and credited to
+//!   `DataKey::InstructorEarnings` for pull-based withdrawal.
+//! - Revenue split uses integer arithmetic: `platform_amount = price * pct / 100`.
+//!   Any remainder (from integer truncation) stays with the instructor share.
+//! - The contract does **not** escrow student funds beyond the enrollment transaction;
+//!   post-enrollment refunds require admin-initiated archiving with an explicit refund list.
+//!
+//! ## What This Contract Does NOT Protect Against
+//! - **Off-chain content access** — the contract cannot enforce that a student actually
+//!   receives course materials after enrolling; content delivery is the backend's responsibility.
+//! - **Course quality or accuracy** — admin approval is a policy gate only; the contract
+//!   does not validate course content or instructor qualifications.
+//! - **Instructor insolvency** — if the instructor's earnings balance is insufficient for a
+//!   refund (e.g. concurrent withdrawals), the archive refund will panic. Callers must
+//!   ensure balances are adequate before invoking `archive_course` with refunds.
+//! - **Token price risk** — payment amounts are fixed in token stroops at enrollment time;
+//!   the contract makes no exchange-rate or price guarantees.
+//! - **Front-running** — enrollment order is determined by ledger sequence; the contract
+//!   does not prevent two students from enrolling in the last seat simultaneously on
+//!   different nodes (Soroban consensus resolves ordering).
+//! - **Admin key compromise** — a compromised admin key can approve courses, issue
+//!   certificates, and withdraw contract tokens. Key rotation requires the two-step
+//!   `transfer_admin` / `accept_admin` flow with both current admins signing.
+//! - **Treasury update delay** — `update_treasury` takes effect 100 ledgers after proposal;
+//!   enrollments submitted within that window still route fees to the old treasury.
+
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
@@ -99,6 +155,8 @@ pub struct Certificate {
     pub revoked_at_ledger: Option<u32>,
     /// Reason code supplied by the revoking admin, if revoked
     pub revocation_reason: Option<String>,
+    /// Optional ledger sequence when the certificate expires
+    pub expires_at_ledger: Option<u32>,
 }
 
 /// Pending platform treasury update with effective ledger sequence
@@ -170,6 +228,10 @@ pub enum DataKey {
     RefundWindow,
     /// Refund request record by (student_address, course_id)
     RefundRequest(Address, String),
+    /// Blocklist of instructor addresses who are frozen
+    InstructorBlocked(Address),
+    /// Ordered list of all registered course IDs (on-chain catalog)
+    CourseList,
 }
 
 // ============================================================
@@ -285,6 +347,10 @@ impl HamplardContract {
         let token_client = token::Client::new(&env, &token);
         let _ = token_client.decimals();
 
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
+        }
+
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
         }
@@ -326,6 +392,9 @@ impl HamplardContract {
             if platform_fee_pct > 100 {
                 panic!("fee percentage cannot exceed 100");
             }
+            if platform_fee_pct < default_fee {
+                panic!("fee percentage cannot be below platform minimum");
+            }
             platform_fee_pct
         };
 
@@ -352,6 +421,23 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+
+        // Append to on-chain course catalog
+        let mut catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+        catalog.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::CourseList, &catalog);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseList,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.storage().instance().set(
             &DataKey::InstructorCourseCount(instructor.clone()),
             &(current_count + 1),
@@ -406,7 +492,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_approved"), course_id.clone()),
-            course_id,
+            (course_id, course.instructor, env.ledger().sequence()),
         );
     }
 
@@ -637,6 +723,10 @@ impl HamplardContract {
         }
 
         let course = Self::get_course_internal(env, course_id);
+
+        if Self::is_instructor_frozen_internal(env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
 
         if *student == course.instructor {
             panic!("instructor cannot enroll in own course");
@@ -906,6 +996,7 @@ impl HamplardContract {
         course_id: String,
         course_title: String,
         enrollment_reference: String,
+        expires_at_ledger: Option<u32>,
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin, "issue_certificate");
@@ -953,6 +1044,7 @@ impl HamplardContract {
             revoked_by: None,
             revoked_at_ledger: None,
             revocation_reason: None,
+            expires_at_ledger,
         };
 
         env.storage()
@@ -1073,6 +1165,22 @@ impl HamplardContract {
         admin1.require_auth();
         admin2.require_auth();
         Self::require_multi_admin(&env, &admin1, &admin2);
+
+        let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let current_sec_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::SecondaryAdmin)
+            .unwrap();
+
+        if new_admin == current_admin && new_secondary_admin == current_sec_admin {
+            panic!("proposed admin addresses are identical to current admin addresses");
+        }
+
+        if new_admin == new_secondary_admin {
+            panic!("admin and secondary_admin must be distinct addresses");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -1216,6 +1324,37 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::MaxCoursesPerInstructor, &new_max);
+    }
+
+    /// Admin freezes/blocks a specific instructor address.
+    pub fn freeze_instructor(env: Env, admin: Address, instructor: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "freeze_instructor");
+        env.storage()
+            .instance()
+            .set(&DataKey::InstructorBlocked(instructor.clone()), &true);
+        env.events().publish(
+            (Symbol::new(&env, "instructor_frozen"), instructor.clone()),
+            instructor,
+        );
+    }
+
+    /// Admin unfreezes/unblocks a specific instructor address.
+    pub fn unfreeze_instructor(env: Env, admin: Address, instructor: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "unfreeze_instructor");
+        env.storage()
+            .instance()
+            .remove(&DataKey::InstructorBlocked(instructor.clone()));
+        env.events().publish(
+            (Symbol::new(&env, "instructor_unfrozen"), instructor.clone()),
+            instructor,
+        );
+    }
+
+    /// Check if an instructor is frozen/blocked
+    pub fn is_instructor_frozen(env: Env, instructor: Address) -> bool {
+        Self::is_instructor_frozen_internal(&env, &instructor)
     }
 
     /// Get the current per-instructor course registration limit.
@@ -1445,7 +1584,15 @@ impl HamplardContract {
     /// - The enrollment record has exceeded its TTL and been garbage collected
     ///
     /// To check only existence without retrieving data, use `is_enrolled()`.
-    pub fn get_enrollment(env: Env, student: Address, course_id: String) -> Option<Enrollment> {
+    pub fn get_enrollment(env: Env, caller: Address, student: Address, course_id: String) -> Option<Enrollment> {
+        caller.require_auth();
+        let is_admin = Self::is_admin(&env, &caller);
+        let course = Self::get_course_internal(&env, &course_id);
+        let is_instructor = caller == course.instructor;
+        
+        if caller != student && !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
         env.storage()
             .persistent()
             .get(&DataKey::Enrollment(student, course_id))
@@ -1486,10 +1633,43 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
         {
-            !cert.revoked
+            if cert.revoked {
+                return false;
+            }
+            if let Some(expiry) = cert.expires_at_ledger {
+                if env.ledger().sequence() >= expiry {
+                    return false;
+                }
+            }
+            true
         } else {
             false
         }
+    }
+
+    /// Return a page of registered course IDs from the on-chain catalog.
+    ///
+    /// # Arguments
+    /// - `offset` — zero-based index of the first course to return
+    /// - `limit`  — maximum number of course IDs to return in one call
+    ///
+    /// Returns an empty list when `offset` is beyond the end of the catalog.
+    pub fn list_courses(env: Env, offset: u32, limit: u32) -> Vec<String> {
+        let catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = catalog.len();
+        let start = offset.min(total);
+        let end = (start + limit).min(total);
+
+        let mut page = Vec::new(&env);
+        for i in start..end {
+            page.push_back(catalog.get(i).unwrap());
+        }
+        page
     }
 
     /// Get the current platform fee percentage
@@ -1516,6 +1696,13 @@ impl HamplardContract {
             .persistent()
             .get(&DataKey::Enrollment(student.clone(), course_id.clone()))
             .unwrap_or_else(|| panic!("enrollment not found"))
+    }
+
+    fn is_instructor_frozen_internal(env: &Env, instructor: &Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::InstructorBlocked(instructor.clone()))
+            .unwrap_or(false)
     }
 
     fn is_admin(env: &Env, caller: &Address) -> bool {
