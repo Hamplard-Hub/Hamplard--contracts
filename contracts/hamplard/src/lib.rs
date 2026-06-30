@@ -109,6 +109,25 @@ pub struct TreasuryUpdate {
     pub effective_ledger: u32,
 }
 
+/// The status of a refund request
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub enum RefundStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+/// A refund request record
+#[contracttype]
+#[derive(Clone)]
+pub struct RefundRequest {
+    pub student: Address,
+    pub course_id: String,
+    pub requested_at_ledger: u32,
+    pub status: RefundStatus,
+}
+
 // ============================================================
 // STORAGE KEYS
 // ============================================================
@@ -145,6 +164,12 @@ pub enum DataKey {
     InstructorCourseCount(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
+    /// Minimum ledger sequences required between course registration and approval
+    MinReviewDelay,
+    /// Refund window delay in ledger sequences
+    RefundWindow,
+    /// Refund request record by (student_address, course_id)
+    RefundRequest(Address, String),
 }
 
 // ============================================================
@@ -256,6 +281,10 @@ impl HamplardContract {
     ) -> String {
         instructor.require_auth();
 
+        // Validate that the token address is a contract (not an EOA)
+        let token_client = token::Client::new(&env, &token);
+        let _ = token_client.decimals();
+
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
         }
@@ -349,6 +378,22 @@ impl HamplardContract {
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let mut course = Self::get_course_internal(&env, &course_id);
+
+        let delay = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MinReviewDelay)
+            .unwrap_or(0);
+
+        let elapsed = env
+            .ledger()
+            .sequence()
+            .checked_sub(course.created_at_ledger)
+            .unwrap_or(0);
+
+        if elapsed < delay {
+            panic!("course review period has not elapsed");
+        }
 
         if course.status != CourseStatus::Pending {
             panic!("course is not pending approval");
@@ -1179,6 +1224,200 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50)
+    }
+
+    /// Update the minimum review delay (in ledger sequences)
+    pub fn update_min_review_delay(env: Env, admin: Address, delay: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "update_min_review_delay");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinReviewDelay, &delay);
+    }
+
+    /// Get the minimum review delay (in ledger sequences)
+    pub fn get_min_review_delay(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinReviewDelay)
+            .unwrap_or(0)
+    }
+
+    /// Update the refund window (in ledger sequences)
+    pub fn update_refund_window(env: Env, admin: Address, window: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "update_refund_window");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &window);
+    }
+
+    /// Get the refund window (in ledger sequences)
+    pub fn get_refund_window(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RefundWindow)
+            .unwrap_or(1000)
+    }
+
+    /// Request a refund for an enrollment within the refund window
+    pub fn request_refund(env: Env, student: Address, course_id: String) {
+        student.require_auth();
+
+        let enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
+
+        if enrollment.completed {
+            panic!("already marked as completed");
+        }
+
+        let refund_window = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::RefundWindow)
+            .unwrap_or(1000);
+
+        let elapsed = env
+            .ledger()
+            .sequence()
+            .checked_sub(enrollment.enrolled_at_ledger)
+            .unwrap_or(0);
+
+        if elapsed > refund_window {
+            panic!("refund window has expired");
+        }
+
+        let key = DataKey::RefundRequest(student.clone(), course_id.clone());
+        if env.storage().persistent().has(&key) {
+            panic!("refund request already exists");
+        }
+
+        let request = RefundRequest {
+            student: student.clone(),
+            course_id: course_id.clone(),
+            requested_at_ledger: env.ledger().sequence(),
+            status: RefundStatus::Pending,
+        };
+
+        env.storage().persistent().set(&key, &request);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "refund_requested"), course_id.clone()),
+            (student, course_id, enrollment.amount_paid),
+        );
+    }
+
+    /// Admin processes a pending refund request (approve or reject)
+    pub fn process_refund(
+        env: Env,
+        admin: Address,
+        student: Address,
+        course_id: String,
+        approved: bool,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "process_refund");
+
+        let key = DataKey::RefundRequest(student.clone(), course_id.clone());
+        let mut request = env
+            .storage()
+            .persistent()
+            .get::<DataKey, RefundRequest>(&key)
+            .unwrap_or_else(|| panic!("refund request not found"));
+
+        if request.status != RefundStatus::Pending {
+            panic!("refund request is not pending");
+        }
+
+        if approved {
+            let mut course = Self::get_course_internal(&env, &course_id);
+            let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
+            let enrollment = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Enrollment>(&enrollment_key)
+                .unwrap_or_else(|| panic!("enrollment not found"));
+
+            let platform_fee_pct = course.platform_fee_percent as i128;
+            let platform_amount = enrollment
+                .amount_paid
+                .checked_mul(platform_fee_pct)
+                .map(|v| v / 100)
+                .unwrap_or_else(|| panic!("overflow computing platform fee"));
+
+            let instructor_amount = enrollment.amount_paid - platform_amount;
+
+            let token_client = token::Client::new(&env, &course.token);
+            let treasury: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Treasury)
+                .unwrap_or_else(|| panic!("treasury not set"));
+
+            // Refund platform fee from treasury
+            if platform_amount > 0 {
+                token_client.transfer(&treasury, &student, &platform_amount);
+            }
+
+            // Refund instructor share from contract-held earnings
+            if instructor_amount > 0 {
+                Self::debit_instructor_earnings(
+                    &env,
+                    &course.instructor,
+                    &course.token,
+                    instructor_amount,
+                );
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &student,
+                    &instructor_amount,
+                );
+            }
+
+            // Remove enrollment
+            env.storage().persistent().remove(&enrollment_key);
+
+            // Decrement active enrollments
+            if course.active_enrollments > 0 {
+                course.active_enrollments -= 1;
+            }
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
+
+            request.status = RefundStatus::Approved;
+        } else {
+            request.status = RefundStatus::Rejected;
+        }
+
+        env.storage().persistent().set(&key, &request);
+
+        env.events().publish(
+            (Symbol::new(&env, "refund_processed"), course_id.clone()),
+            (student, course_id, approved),
+        );
+    }
+
+    /// Get a refund request record by student and course ID
+    pub fn get_refund_request(
+        env: Env,
+        student: Address,
+        course_id: String,
+    ) -> Option<RefundRequest> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundRequest(student, course_id))
     }
 
     /// Get the number of courses an instructor has registered.

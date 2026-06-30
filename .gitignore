@@ -2,3 +2,6 @@
 .env
 *.optimized.wasm
 .stellar/
+.agents/
+issue.md
+skills-lock.json
