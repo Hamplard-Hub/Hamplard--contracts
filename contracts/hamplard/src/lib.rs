@@ -1,3 +1,59 @@
+//! # Hamplard Contract — Security Model
+//!
+//! ## Trust Hierarchy
+//!
+//! | Role              | Who                    | Capabilities                                                          |
+//! |-------------------|------------------------|-----------------------------------------------------------------------|
+//! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform  |
+//! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
+//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings     |
+//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll                   |
+//! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
+//!
+//! ## Privileged Operations (single admin)
+//! - `approve_course` — moves a course from Pending to Active
+//! - `mark_completed` — marks a student enrollment as completed
+//! - `issue_certificate` — mints an on-chain certificate of completion
+//! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
+//! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
+//! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
+//! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `withdraw_tokens` — emergency sweep of contract-held tokens (admin only)
+//!
+//! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
+//! - `archive_course` — permanent course removal; may trigger student refunds
+//! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
+//! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
+//!
+//! ## Payment Guarantees
+//! - On enrollment the full course price is transferred from the student atomically:
+//!   `platform_fee_percent` of the price is forwarded to the treasury address immediately;
+//!   the remaining instructor share is held inside the contract and credited to
+//!   `DataKey::InstructorEarnings` for pull-based withdrawal.
+//! - Revenue split uses integer arithmetic: `platform_amount = price * pct / 100`.
+//!   Any remainder (from integer truncation) stays with the instructor share.
+//! - The contract does **not** escrow student funds beyond the enrollment transaction;
+//!   post-enrollment refunds require admin-initiated archiving with an explicit refund list.
+//!
+//! ## What This Contract Does NOT Protect Against
+//! - **Off-chain content access** — the contract cannot enforce that a student actually
+//!   receives course materials after enrolling; content delivery is the backend's responsibility.
+//! - **Course quality or accuracy** — admin approval is a policy gate only; the contract
+//!   does not validate course content or instructor qualifications.
+//! - **Instructor insolvency** — if the instructor's earnings balance is insufficient for a
+//!   refund (e.g. concurrent withdrawals), the archive refund will panic. Callers must
+//!   ensure balances are adequate before invoking `archive_course` with refunds.
+//! - **Token price risk** — payment amounts are fixed in token stroops at enrollment time;
+//!   the contract makes no exchange-rate or price guarantees.
+//! - **Front-running** — enrollment order is determined by ledger sequence; the contract
+//!   does not prevent two students from enrolling in the last seat simultaneously on
+//!   different nodes (Soroban consensus resolves ordering).
+//! - **Admin key compromise** — a compromised admin key can approve courses, issue
+//!   certificates, and withdraw contract tokens. Key rotation requires the two-step
+//!   `transfer_admin` / `accept_admin` flow with both current admins signing.
+//! - **Treasury update delay** — `update_treasury` takes effect 100 ledgers after proposal;
+//!   enrollments submitted within that window still route fees to the old treasury.
+
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
@@ -145,6 +201,8 @@ pub enum DataKey {
     InstructorCourseCount(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
+    /// Ordered list of all registered course IDs (on-chain catalog)
+    CourseList,
 }
 
 // ============================================================
@@ -297,6 +355,9 @@ impl HamplardContract {
             if platform_fee_pct > 100 {
                 panic!("fee percentage cannot exceed 100");
             }
+            if platform_fee_pct < default_fee {
+                panic!("fee percentage cannot be below platform minimum");
+            }
             platform_fee_pct
         };
 
@@ -323,6 +384,23 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+
+        // Append to on-chain course catalog
+        let mut catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+        catalog.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::CourseList, &catalog);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseList,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.storage().instance().set(
             &DataKey::InstructorCourseCount(instructor.clone()),
             &(current_count + 1),
@@ -361,7 +439,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_approved"), course_id.clone()),
-            course_id,
+            (course_id, course.instructor, env.ledger().sequence()),
         );
     }
 
@@ -1259,6 +1337,31 @@ impl HamplardContract {
         } else {
             false
         }
+    }
+
+    /// Return a page of registered course IDs from the on-chain catalog.
+    ///
+    /// # Arguments
+    /// - `offset` — zero-based index of the first course to return
+    /// - `limit`  — maximum number of course IDs to return in one call
+    ///
+    /// Returns an empty list when `offset` is beyond the end of the catalog.
+    pub fn list_courses(env: Env, offset: u32, limit: u32) -> Vec<String> {
+        let catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = catalog.len();
+        let start = offset.min(total);
+        let end = (start + limit).min(total);
+
+        let mut page = Vec::new(&env);
+        for i in start..end {
+            page.push_back(catalog.get(i).unwrap());
+        }
+        page
     }
 
     /// Get the current platform fee percentage
