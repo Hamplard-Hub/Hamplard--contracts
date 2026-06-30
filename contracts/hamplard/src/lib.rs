@@ -904,6 +904,10 @@ impl HamplardContract {
 
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
 
+        if enrollment.course_id != course_id {
+            panic!("enrollment course_id mismatch");
+        }
+
         if enrollment.completed {
             panic!("already marked as completed");
         }

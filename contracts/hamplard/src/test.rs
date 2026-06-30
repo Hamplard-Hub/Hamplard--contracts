@@ -887,6 +887,48 @@ fn test_mark_completed_with_evidence_does_not_require_student_auth() {
 }
 
 #[test]
+#[should_panic(expected = "enrollment course_id mismatch")]
+fn test_mark_completed_rejects_mismatched_enrollment_course_id() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-COMPLETE-MISMATCH");
+    let stored_course_id = String::from_str(&env, "COURSE-COMPLETE-OTHER");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-COMPLETE-MISMATCH",
+        100_000_000,
+    );
+    client.enroll(&student, &course_id);
+
+    let mut enrollment = client
+        .get_enrollment(&admin, &student, &course_id)
+        .expect("enrollment should exist");
+    enrollment.course_id = stored_course_id;
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::Enrollment(student.clone(), course_id.clone()),
+            &enrollment,
+        );
+    });
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "proof")),
+    );
+}
+
+#[test]
 #[should_panic(expected = "course must be paused before archiving")]
 fn test_archive_course_blocked_by_active_enrollment() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
