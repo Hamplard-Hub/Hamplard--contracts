@@ -140,7 +140,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 },
                 {
                   "i128": {
@@ -175,7 +175,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 }
               ]
             }
@@ -197,7 +197,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 }
               ]
             }
@@ -246,11 +246,33 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
+                },
+                "void"
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ],
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "mark_completed",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "proof"
-                }
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "COURSE-EXPIRY"
+                },
+                "void"
               ]
             }
           },
@@ -271,21 +293,23 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "CERT-VERIFY-001"
+                  "string": "CERT-EXPIRY-123"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 },
                 {
-                  "string": "Test Course"
+                  "string": "Expiry Course"
                 },
                 {
-                  "string": ""
+                  "string": "ref"
                 },
-                "void"
+                {
+                  "u32": 1000
+                }
               ]
             }
           },
@@ -293,11 +317,13 @@
         }
       ]
     ],
+    [],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 0,
+    "sequence_number": 1000,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -376,7 +402,7 @@
                   "symbol": "Certificate"
                 },
                 {
-                  "string": "CERT-VERIFY-001"
+                  "string": "CERT-EXPIRY-123"
                 }
               ]
             },
@@ -396,7 +422,7 @@
                       "symbol": "Certificate"
                     },
                     {
-                      "string": "CERT-VERIFY-001"
+                      "string": "CERT-EXPIRY-123"
                     }
                   ]
                 },
@@ -408,7 +434,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "COURSE-EXPIRY"
                       }
                     },
                     {
@@ -416,7 +442,7 @@
                         "symbol": "course_title"
                       },
                       "val": {
-                        "string": "Test Course"
+                        "string": "Expiry Course"
                       }
                     },
                     {
@@ -424,21 +450,23 @@
                         "symbol": "enrollment_reference"
                       },
                       "val": {
-                        "string": ""
+                        "string": "ref"
                       }
                     },
                     {
                       "key": {
                         "symbol": "expires_at_ledger"
                       },
-                      "val": "void"
+                      "val": {
+                        "u32": 1000
+                      }
                     },
                     {
                       "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "CERT-VERIFY-001"
+                        "string": "CERT-EXPIRY-123"
                       }
                     },
                     {
@@ -510,7 +538,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 }
               ]
             },
@@ -530,7 +558,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-VERIFY-001"
+                      "string": "COURSE-EXPIRY"
                     }
                   ]
                 },
@@ -558,7 +586,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "COURSE-EXPIRY"
                       }
                     },
                     {
@@ -655,7 +683,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "COURSE-EXPIRY"
                 }
               ]
             },
@@ -678,7 +706,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-VERIFY-001"
+                      "string": "COURSE-EXPIRY"
                     }
                   ]
                 },
@@ -701,7 +729,7 @@
                         "symbol": "certificate_id"
                       },
                       "val": {
-                        "string": "CERT-VERIFY-001"
+                        "string": "CERT-EXPIRY-123"
                       }
                     },
                     {
@@ -725,7 +753,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "COURSE-EXPIRY"
                       }
                     },
                     {
@@ -740,9 +768,7 @@
                       "key": {
                         "symbol": "evidence_hash"
                       },
-                      "val": {
-                        "string": "proof"
-                      }
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -1022,7 +1048,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1033654523790656264
+                "nonce": 115220454072064130
               }
             },
             "durability": "temporary"
@@ -1037,7 +1063,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1033654523790656264
+                    "nonce": 115220454072064130
                   }
                 },
                 "durability": "temporary",
@@ -1055,7 +1081,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1194852393571756375
+                "nonce": 1033654523790656264
               }
             },
             "durability": "temporary"
@@ -1070,7 +1096,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1194852393571756375
+                    "nonce": 1033654523790656264
                   }
                 },
                 "durability": "temporary",
@@ -1203,6 +1229,39 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 4270020994084947596
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 1194852393571756375
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 1194852393571756375
                   }
                 },
                 "durability": "temporary",

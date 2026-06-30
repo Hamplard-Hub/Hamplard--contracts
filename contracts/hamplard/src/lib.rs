@@ -99,6 +99,8 @@ pub struct Certificate {
     pub revoked_at_ledger: Option<u32>,
     /// Reason code supplied by the revoking admin, if revoked
     pub revocation_reason: Option<String>,
+    /// Optional ledger sequence when the certificate expires
+    pub expires_at_ledger: Option<u32>,
 }
 
 /// Pending platform treasury update with effective ledger sequence
@@ -145,6 +147,8 @@ pub enum DataKey {
     InstructorCourseCount(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
+    /// Blocklist of instructor addresses who are frozen
+    InstructorBlocked(Address),
 }
 
 // ============================================================
@@ -255,6 +259,10 @@ impl HamplardContract {
         max_capacity: Option<u32>,
     ) -> String {
         instructor.require_auth();
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
+        }
 
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
@@ -593,6 +601,10 @@ impl HamplardContract {
 
         let course = Self::get_course_internal(env, course_id);
 
+        if Self::is_instructor_frozen_internal(env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
         if *student == course.instructor {
             panic!("instructor cannot enroll in own course");
         }
@@ -861,6 +873,7 @@ impl HamplardContract {
         course_id: String,
         course_title: String,
         enrollment_reference: String,
+        expires_at_ledger: Option<u32>,
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin, "issue_certificate");
@@ -908,6 +921,7 @@ impl HamplardContract {
             revoked_by: None,
             revoked_at_ledger: None,
             revocation_reason: None,
+            expires_at_ledger,
         };
 
         env.storage()
@@ -1028,6 +1042,22 @@ impl HamplardContract {
         admin1.require_auth();
         admin2.require_auth();
         Self::require_multi_admin(&env, &admin1, &admin2);
+
+        let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let current_sec_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::SecondaryAdmin)
+            .unwrap();
+
+        if new_admin == current_admin && new_secondary_admin == current_sec_admin {
+            panic!("proposed admin addresses are identical to current admin addresses");
+        }
+
+        if new_admin == new_secondary_admin {
+            panic!("admin and secondary_admin must be distinct addresses");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -1173,6 +1203,37 @@ impl HamplardContract {
             .set(&DataKey::MaxCoursesPerInstructor, &new_max);
     }
 
+    /// Admin freezes/blocks a specific instructor address.
+    pub fn freeze_instructor(env: Env, admin: Address, instructor: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "freeze_instructor");
+        env.storage()
+            .instance()
+            .set(&DataKey::InstructorBlocked(instructor.clone()), &true);
+        env.events().publish(
+            (Symbol::new(&env, "instructor_frozen"), instructor.clone()),
+            instructor,
+        );
+    }
+
+    /// Admin unfreezes/unblocks a specific instructor address.
+    pub fn unfreeze_instructor(env: Env, admin: Address, instructor: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "unfreeze_instructor");
+        env.storage()
+            .instance()
+            .remove(&DataKey::InstructorBlocked(instructor.clone()));
+        env.events().publish(
+            (Symbol::new(&env, "instructor_unfrozen"), instructor.clone()),
+            instructor,
+        );
+    }
+
+    /// Check if an instructor is frozen/blocked
+    pub fn is_instructor_frozen(env: Env, instructor: Address) -> bool {
+        Self::is_instructor_frozen_internal(&env, &instructor)
+    }
+
     /// Get the current per-instructor course registration limit.
     pub fn get_max_courses_limit(env: Env) -> u32 {
         env.storage()
@@ -1255,7 +1316,15 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
         {
-            !cert.revoked
+            if cert.revoked {
+                return false;
+            }
+            if let Some(expiry) = cert.expires_at_ledger {
+                if env.ledger().sequence() >= expiry {
+                    return false;
+                }
+            }
+            true
         } else {
             false
         }
@@ -1285,6 +1354,13 @@ impl HamplardContract {
             .persistent()
             .get(&DataKey::Enrollment(student.clone(), course_id.clone()))
             .unwrap_or_else(|| panic!("enrollment not found"))
+    }
+
+    fn is_instructor_frozen_internal(env: &Env, instructor: &Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::InstructorBlocked(instructor.clone()))
+            .unwrap_or(false)
     }
 
     fn is_admin(env: &Env, caller: &Address) -> bool {

@@ -284,7 +284,8 @@
                 },
                 {
                   "string": ""
-                }
+                },
+                "void"
               ]
             }
           },
@@ -452,6 +453,12 @@
                       "val": {
                         "string": ""
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "expires_at_ledger"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

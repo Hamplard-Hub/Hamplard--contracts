@@ -577,7 +577,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
     assert!(client.has_completed(&student, &course_id));
 
     // Issue certificate
-    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title, &String::from_str(&env, ""));
+    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title, &String::from_str(&env, ""), &None);
 
     // Verify certificate
     assert!(client.verify_certificate(&cert_id));
@@ -620,6 +620,7 @@ fn test_certificate_requires_completion() {
         &student,
         &String::from_str(&env, "COURSE-NAILS-001"),
         &String::from_str(&env, "Nail Technology"),        &String::from_str(&env, ""),
+        &None,
     );
 }
 
@@ -657,6 +658,7 @@ fn test_revoke_certificate() {
         &student,
         &course_id,
         &String::from_str(&env, "Makeup Artistry"),        &String::from_str(&env, ""),
+        &None,
     );
 
     assert!(client.verify_certificate(&cert_id));
@@ -707,6 +709,7 @@ fn test_revoke_certificate_metadata_persisted() {
         &student,
         &course_id,
         &String::from_str(&env, "Audit Course"),        &String::from_str(&env, ""),
+        &None,
     );
 
     // Certificate should have no revocation metadata before revocation
@@ -1108,6 +1111,7 @@ fn test_issue_certificate_title_too_long() {
         &student,
         &course_id,
         &long_title,        &String::from_str(&env, ""),
+        &None,
     );
 }
 
@@ -1144,6 +1148,7 @@ fn test_issue_certificate_id_too_long() {
         &student,
         &course_id,
         &String::from_str(&env, "Valid Title"),        &String::from_str(&env, ""),
+        &None,
     );
 }
 
@@ -1338,6 +1343,7 @@ fn test_certificate_id_collision_across_courses() {
         &student_a,
         &course_a,
         &String::from_str(&env, "Course A"),        &String::from_str(&env, ""),
+        &None,
     );
 
     // Student B completes course B — attempt to reuse the same cert ID must fail
@@ -1356,6 +1362,7 @@ fn test_certificate_id_collision_across_courses() {
         &student_b,
         &course_b,
         &String::from_str(&env, "Course B"),        &String::from_str(&env, ""),
+        &None,
     );
 }
 
@@ -1810,7 +1817,7 @@ fn test_revoke_certificate_unauthorized_includes_operation() {
     client.mark_completed(&admin, &student, &course_id, &None);
     let cert_id = String::from_str(&env, "CERT-REVOKE-UNAUTH-001");
     let course_title = String::from_str(&env, "Revoke Test Course");
-    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title, &String::from_str(&env, ""));
+    client.issue_certificate(&admin, &cert_id, &student, &course_id, &course_title, &String::from_str(&env, ""), &None);
 
     // Instructor tries to revoke certificate — should panic with operation name
     client.revoke_certificate(
@@ -2133,6 +2140,7 @@ fn test_verify_certificate_returns_true_for_valid_cert() {
         &student,
         &course_id,
         &String::from_str(&env, "Test Course"),        &String::from_str(&env, ""),
+        &None,
     );
 
     // Valid, unrevoked certificate must return true
@@ -2172,6 +2180,7 @@ fn test_verify_certificate_returns_false_for_revoked_cert() {
         &student,
         &course_id,
         &String::from_str(&env, "Test Course"),        &String::from_str(&env, ""),
+        &None,
     );
 
     assert!(client.verify_certificate(&cert_id));
@@ -2227,6 +2236,7 @@ fn test_verify_certificate_false_does_not_mutate_state() {
         &student,
         &course_id,
         &String::from_str(&env, "Test Course"),        &String::from_str(&env, ""),
+        &None,
     );
 
     client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "ISSUED_IN_ERROR"));
@@ -2479,3 +2489,162 @@ fn test_course_created_at_ledger_is_accurate() {
     let course = client.get_course(&course_id);
     assert_eq!(course.created_at_ledger, 12345);
 }
+
+// ============================================================
+// NEW AUDIT TESTS
+// ============================================================
+
+#[test]
+fn test_course_certificate_id_collision_verification() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let matching_id = String::from_str(&env, "MATCHING-ID-123");
+    
+    // Register and approve course with matching_id
+    client.register_course(
+        &instructor,
+        &matching_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.approve_course(&admin, &matching_id);
+
+    // Enroll and complete
+    client.enroll(&student, &matching_id);
+    client.mark_completed(&admin, &student, &matching_id, &Some(String::from_str(&env, "proof")));
+
+    // Issue certificate with matching_id (same as course_id)
+    client.issue_certificate(
+        &admin,
+        &matching_id, // matching_id used as cert_id
+        &student,
+        &matching_id, // matching_id used as course_id
+        &String::from_str(&env, "Test Course"),
+        &String::from_str(&env, "enroll-ref"),
+        &None,
+    );
+
+    // Assert both can be queried independently and they do not collide
+    let course = client.get_course(&matching_id);
+    assert_eq!(course.id, matching_id);
+    assert_eq!(course.instructor, instructor);
+
+    let cert = client.get_certificate(&matching_id);
+    assert_eq!(cert.id, matching_id);
+    assert_eq!(cert.student, student);
+    assert!(client.verify_certificate(&matching_id));
+}
+
+#[test]
+#[should_panic(expected = "proposed admin addresses are identical to current admin addresses")]
+fn test_transfer_admin_rejects_identical_addresses() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Proposing the exact current admin & secondary admin should panic
+    client.transfer_admin(&admin, &sec_admin, &admin, &sec_admin);
+}
+
+#[test]
+#[should_panic(expected = "admin and secondary_admin must be distinct addresses")]
+fn test_transfer_admin_rejects_same_new_admin_and_secondary() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    // Setting both admin and secondary admin to the same address should panic
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_admin);
+}
+
+#[test]
+fn test_certificate_expiry_behavior() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY");
+    let cert_id = String::from_str(&env, "CERT-EXPIRY-123");
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "COURSE-EXPIRY", 100_000_000);
+    client.enroll(&student, &course_id);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    // Issue certificate with expiry at ledger 1000
+    client.issue_certificate(&admin, &cert_id, &student, &course_id, &String::from_str(&env, "Expiry Course"), &String::from_str(&env, "ref"), &Some(1000u32));
+
+    // Under current ledger (default is 0), verify should return true
+    assert!(client.verify_certificate(&cert_id));
+
+    // Advance ledger to 999 - should still be valid
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 999;
+    });
+    assert!(client.verify_certificate(&cert_id));
+
+    // Advance ledger to 1000 - should be expired/invalid
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 1000;
+    });
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_freeze_instructor_lifecycle() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Assert initially not frozen
+    assert!(!client.is_instructor_frozen(&instructor));
+
+    // Admin freezes instructor
+    client.freeze_instructor(&admin, &instructor);
+    assert!(client.is_instructor_frozen(&instructor));
+
+    // Unfreeze instructor
+    client.unfreeze_instructor(&admin, &instructor);
+    assert!(!client.is_instructor_frozen(&instructor));
+}
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_cannot_register_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.freeze_instructor(&admin, &instructor);
+
+    // Register course should panic
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "FROZEN-COURSE"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_enrollment_blocked() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    // Register and approve course BEFORE freeze
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "PRE-FREEZE-COURSE", 100_000_000);
+
+    // Admin freezes instructor
+    client.freeze_instructor(&admin, &instructor);
+
+    // Attempting to enroll in the frozen instructor's course must fail
+    client.enroll(&student, &String::from_str(&env, "PRE-FREEZE-COURSE"));
+}
+

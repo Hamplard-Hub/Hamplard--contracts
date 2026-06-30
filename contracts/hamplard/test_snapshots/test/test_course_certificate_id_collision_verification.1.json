@@ -140,7 +140,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 },
                 {
                   "i128": {
@@ -175,7 +175,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 }
               ]
             }
@@ -197,7 +197,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 }
               ]
             }
@@ -246,7 +246,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 },
                 {
                   "string": "proof"
@@ -271,19 +271,19 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "CERT-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 },
                 {
                   "string": "Test Course"
                 },
                 {
-                  "string": ""
+                  "string": "enroll-ref"
                 },
                 "void"
               ]
@@ -293,6 +293,8 @@
         }
       ]
     ],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -376,7 +378,7 @@
                   "symbol": "Certificate"
                 },
                 {
-                  "string": "CERT-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 }
               ]
             },
@@ -396,7 +398,7 @@
                       "symbol": "Certificate"
                     },
                     {
-                      "string": "CERT-VERIFY-001"
+                      "string": "MATCHING-ID-123"
                     }
                   ]
                 },
@@ -408,7 +410,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "MATCHING-ID-123"
                       }
                     },
                     {
@@ -424,7 +426,7 @@
                         "symbol": "enrollment_reference"
                       },
                       "val": {
-                        "string": ""
+                        "string": "enroll-ref"
                       }
                     },
                     {
@@ -438,7 +440,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "CERT-VERIFY-001"
+                        "string": "MATCHING-ID-123"
                       }
                     },
                     {
@@ -510,7 +512,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 }
               ]
             },
@@ -530,7 +532,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-VERIFY-001"
+                      "string": "MATCHING-ID-123"
                     }
                   ]
                 },
@@ -558,7 +560,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "MATCHING-ID-123"
                       }
                     },
                     {
@@ -655,7 +657,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-VERIFY-001"
+                  "string": "MATCHING-ID-123"
                 }
               ]
             },
@@ -678,7 +680,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-VERIFY-001"
+                      "string": "MATCHING-ID-123"
                     }
                   ]
                 },
@@ -701,7 +703,7 @@
                         "symbol": "certificate_id"
                       },
                       "val": {
-                        "string": "CERT-VERIFY-001"
+                        "string": "MATCHING-ID-123"
                       }
                     },
                     {
@@ -725,7 +727,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-VERIFY-001"
+                        "string": "MATCHING-ID-123"
                       }
                     },
                     {
