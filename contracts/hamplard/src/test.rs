@@ -312,6 +312,45 @@ fn test_enroll_success_with_payment_split() {
 }
 
 #[test]
+fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-FEE-UPDATE-001"),
+        &price,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    assert_eq!(client.get_platform_fee(), 20);
+
+    // The course fee is fixed at registration time and should continue to govern
+    // enrollment splits even if the global default fee changes later.
+    client.update_default_fee(&admin, &35u32);
+    assert_eq!(client.get_platform_fee(), 35);
+
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
+    client.enroll(&student, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
+
+    let platform_share = price * 20 / 100;
+    let instructor_share = price - platform_share;
+
+    assert_eq!(token_client.balance(&treasury), platform_share);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share,
+    );
+}
+
+#[test]
 fn test_enroll_zero_price_free_course() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);

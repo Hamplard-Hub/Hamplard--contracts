@@ -764,7 +764,9 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(env, course_id);
         let token_client = token::Client::new(env, &course.token);
 
-        // Calculate revenue split (overflow-safe)
+        // Calculate revenue split (overflow-safe).
+        // The course's stored fee is fixed at registration time and takes
+        // precedence over any later changes to the global default fee.
         let pct = course.platform_fee_percent as i128;
         let platform_amount = course
             .price
