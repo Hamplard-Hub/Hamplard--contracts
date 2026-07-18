@@ -463,7 +463,8 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let mut course = Self::get_course_internal(&env, &course_id);
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         let delay = env
             .storage()
@@ -502,7 +503,8 @@ impl HamplardContract {
     pub fn pause_course(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
-        let mut course = Self::get_course_internal(&env, &course_id);
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -534,7 +536,8 @@ impl HamplardContract {
     pub fn unpause_course(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
-        let mut course = Self::get_course_internal(&env, &course_id);
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -578,7 +581,8 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let mut course = Self::get_course_internal(&env, &course_id);
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         if course.status != CourseStatus::Paused {
             panic!("course must be paused before archiving");
@@ -722,7 +726,8 @@ impl HamplardContract {
             panic!("platform is paused");
         }
 
-        let course = Self::get_course_internal(env, course_id);
+        let course = Self::get_course_internal(env, course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         if Self::is_instructor_frozen_internal(env, &course.instructor) {
             panic!("instructor is frozen");
@@ -761,7 +766,8 @@ impl HamplardContract {
     fn enroll_internal(env: &Env, student: &Address, course_id: &String) {
         Self::validate_enrollment(env, student, course_id);
 
-        let mut course = Self::get_course_internal(env, course_id);
+        let mut course = Self::get_course_internal(env, course_id)
+            .unwrap_or_else(|| panic!("course not found"));
         let token_client = token::Client::new(env, &course.token);
 
         // Calculate revenue split (overflow-safe)
@@ -966,7 +972,8 @@ impl HamplardContract {
         );
 
         // Update active enrollments count on course
-        let mut course = Self::get_course_internal(&env, &course_id);
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
         if course.active_enrollments > 0 {
             course.active_enrollments -= 1;
             env.storage()
@@ -1034,7 +1041,8 @@ impl HamplardContract {
             panic!("certificate ID already exists");
         }
 
-        let course = Self::get_course_internal(&env, &course_id);
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
 
         let certificate = Certificate {
             id: certificate_id.clone(),
@@ -1483,7 +1491,8 @@ impl HamplardContract {
         }
 
         if approved {
-            let mut course = Self::get_course_internal(&env, &course_id);
+            let mut course = Self::get_course_internal(&env, &course_id)
+                .unwrap_or_else(|| panic!("course not found"));
             let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
             let enrollment = env
                 .storage()
@@ -1576,7 +1585,7 @@ impl HamplardContract {
     // ----------------------------------------------------------
 
     /// Get a course record by ID
-    pub fn get_course(env: Env, course_id: String) -> Course {
+    pub fn get_course(env: Env, course_id: String) -> Option<Course> {
         Self::get_course_internal(&env, &course_id)
     }
 
@@ -1591,7 +1600,8 @@ impl HamplardContract {
     pub fn get_enrollment(env: Env, caller: Address, student: Address, course_id: String) -> Option<Enrollment> {
         caller.require_auth();
         let is_admin = Self::is_admin(&env, &caller);
-        let course = Self::get_course_internal(&env, &course_id);
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
         let is_instructor = caller == course.instructor;
         
         if caller != student && !is_admin && !is_instructor {
@@ -1688,11 +1698,8 @@ impl HamplardContract {
     // INTERNAL HELPERS
     // ----------------------------------------------------------
 
-    fn get_course_internal(env: &Env, course_id: &String) -> Course {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Course(course_id.clone()))
-            .unwrap_or_else(|| panic!("course not found"))
+    fn get_course_internal(env: &Env, course_id: &String) -> Option<Course> {
+        env.storage().persistent().get(&DataKey::Course(course_id.clone()))
     }
 
     fn get_enrollment_internal(env: &Env, student: &Address, course_id: &String) -> Enrollment {

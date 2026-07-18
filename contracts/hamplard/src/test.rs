@@ -140,7 +140,7 @@ fn test_register_course_success() {
         &None,
     );
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Pending);
     assert_eq!(course.price, 50_000_000);
     assert_eq!(course.platform_fee_percent, 20);
@@ -161,8 +161,17 @@ fn test_register_course_custom_fee() {
         &None,
     );
 
-    let course = client.get_course(&String::from_str(&env, "COURSE-MAKEUP-001"));
+    let course = client.get_course(&String::from_str(&env, "COURSE-MAKEUP-001")).unwrap();
     assert_eq!(course.platform_fee_percent, 30);
+}
+
+#[test]
+fn test_get_course_returns_none_for_nonexistent_id() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let missing_id = String::from_str(&env, "COURSE-NOT-FOUND");
+    assert!(client.get_course(&missing_id).is_none());
 }
 
 #[test]
@@ -210,7 +219,7 @@ fn test_approve_course_success() {
     );
     client.approve_course(&admin, &course_id);
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Active);
 }
 
@@ -306,7 +315,7 @@ fn test_enroll_success_with_payment_split() {
     assert!(!enrollment.certificate_issued);
 
     // Course stats updated
-    let course = client.get_course(&String::from_str(&env, "COURSE-FASHION-001"));
+    let course = client.get_course(&String::from_str(&env, "COURSE-FASHION-001")).unwrap();
     assert_eq!(course.total_enrollments, 1);
     assert_eq!(course.total_earned, price);
 }
@@ -335,7 +344,7 @@ fn test_enroll_zero_price_free_course() {
     let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-FREE-001")).unwrap();
     assert_eq!(enrollment.amount_paid, 0);
 
-    let course = client.get_course(&String::from_str(&env, "COURSE-FREE-001"));
+    let course = client.get_course(&String::from_str(&env, "COURSE-FREE-001")).unwrap();
     assert_eq!(course.total_enrollments, 1);
     assert_eq!(course.total_earned, 0);
 }
@@ -766,11 +775,11 @@ fn test_pause_and_unpause_course() {
     );
 
     client.pause_course(&instructor, &course_id);
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Paused);
 
     client.unpause_course(&admin, &course_id);
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Active);
 }
 
@@ -808,7 +817,7 @@ fn test_multiple_students_same_course() {
         client.enroll(&s, &course_id);
     }
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.total_enrollments, 5);
     assert_eq!(course.total_earned, 5 * 200_000_000);
 }
@@ -1021,7 +1030,7 @@ fn test_archive_course_with_refunds() {
     assert_eq!(token_client.balance(&instructor), 0);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Archived);
     assert_eq!(course.active_enrollments, 0);
 
@@ -1127,7 +1136,7 @@ fn test_register_course_id_at_max_length_succeeds() {
 
     let max_id = String::from_str(&env, &"A".repeat(256));
     client.register_course(&instructor, &max_id, &50_000_000, &token_id, &0u32, &None);
-    let course = client.get_course(&max_id);
+    let course = client.get_course(&max_id).unwrap();
     assert_eq!(course.status, CourseStatus::Pending);
 }
 
@@ -1275,7 +1284,7 @@ fn test_archive_paused_course_succeeds() {
     client.pause_course(&admin, &course_id);
     client.archive_course(&admin, &sec_admin, &course_id, &None);
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Archived);
 }
 // ISSUE #4: RE-INITIALIZATION GUARD
@@ -2341,7 +2350,7 @@ fn test_enroll_at_capacity_succeeds() {
     // Enrolling the first (and only allowed) student must succeed
     client.enroll(&student, &String::from_str(&env, "COURSE-CAP-EXACT"));
 
-    let course = client.get_course(&String::from_str(&env, "COURSE-CAP-EXACT"));
+    let course = client.get_course(&String::from_str(&env, "COURSE-CAP-EXACT")).unwrap();
     assert_eq!(course.total_enrollments, 1);
 }
 
@@ -2398,7 +2407,7 @@ fn test_enroll_unlimited_capacity() {
         client.enroll(&s, &course_id);
     }
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.total_enrollments, 5);
 }
 
@@ -2520,7 +2529,7 @@ fn test_course_approval_time_lock_success() {
 
     // Approve now — should succeed
     client.approve_course(&admin, &course_id);
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Active);
 }
 
@@ -2607,7 +2616,7 @@ fn test_archive_then_reregister_fails() {
     client.pause_course(&admin, &course_id);
     client.archive_course(&admin, &sec_admin, &course_id, &None);
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.status, CourseStatus::Archived);
 
     // Try to register the same course again
@@ -2654,7 +2663,7 @@ fn test_course_created_at_ledger_is_accurate() {
     let course_id = String::from_str(&env, "COURSE-LEDGER");
     client.register_course(&instructor, &course_id, &100_000_000, &token_id, &0u32, &None);
 
-    let course = client.get_course(&course_id);
+    let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.created_at_ledger, 12345);
 }
 
@@ -2698,7 +2707,7 @@ fn test_course_certificate_id_collision_verification() {
     );
 
     // Assert both can be queried independently and they do not collide
-    let course = client.get_course(&matching_id);
+    let course = client.get_course(&matching_id).unwrap();
     assert_eq!(course.id, matching_id);
     assert_eq!(course.instructor, instructor);
 
