@@ -1532,6 +1532,53 @@ fn test_admin_transferred_event_emitted_once_with_full_schema() {
 // ============================================================
 
 #[test]
+fn test_get_enrollment_returns_none_after_ttl_expiry() {
+    // Verify that get_enrollment() returns None gracefully when the enrollment
+    // record has been garbage-collected after TTL expiry, rather than panicking.
+    // In the Soroban test environment, TTL expiry is simulated by directly
+    // removing the persistent storage key (the runtime does not expire entries
+    // in tests), which produces the same observable effect as a natural expiry.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-EXPIRY",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-EXPIRY");
+
+    // Enroll the student — record is written with PERSISTENT_TTL_EXTEND_TO ledgers of TTL.
+    client.enroll(&student, &course_id);
+
+    // Confirm the record exists before simulating expiry.
+    let before = client.get_enrollment(&student, &student, &course_id);
+    assert!(before.is_some(), "enrollment should exist immediately after enroll()");
+
+    // Simulate TTL expiry: remove the persistent entry exactly as the network
+    // would after the TTL window elapses and the entry is garbage-collected.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Enrollment(student.clone(), course_id.clone()));
+    });
+
+    // get_enrollment() must return None — not panic — when the record is absent.
+    let after = client.get_enrollment(&student, &student, &course_id);
+    assert!(
+        after.is_none(),
+        "get_enrollment() must return None after the enrollment record has expired/been removed"
+    );
+}
+
+#[test]
 fn test_enrollment_persists_after_long_ledger_advance() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
