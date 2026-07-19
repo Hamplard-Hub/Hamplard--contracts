@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
-    token, Address, Env, String, Symbol, TryIntoVal,
+    token, Address, Env, String, Symbol, TryIntoVal, Val,
 };
 
 // ============================================================
@@ -2922,4 +2922,256 @@ fn test_frozen_instructor_enrollment_blocked() {
 
     // Attempting to enroll in the frozen instructor's course must fail
     client.enroll(&student, &String::from_str(&env, "PRE-FREEZE-COURSE"));
+}
+
+// ============================================================
+// ISSUE 99: ADMIN ATTRIBUTION ON EVENTS
+// ============================================================
+
+/// Returns true if an event with the given topic-0 symbol was emitted
+/// by `contract_id`.
+fn has_event(env: &Env, contract_id: &Address, name: &str) -> bool {
+    env.events().all().iter().any(|(contract, topics, _)| {
+        if contract != *contract_id {
+            return false;
+        }
+        let sym: Symbol = topics.get(0).unwrap().try_into_val(env).unwrap();
+        sym == Symbol::new(env, name)
+    })
+}
+
+/// Returns the data payload of the most recent event named `name` emitted
+/// by `contract_id`, as a raw `Val` for the caller to decode via
+/// `.try_into_val(&env)`. Panics if no such event was found.
+fn last_event_val(env: &Env, contract_id: &Address, name: &str) -> Val {
+    let events = env.events().all();
+    for (contract, topics, data) in events.iter().rev() {
+        if contract != *contract_id {
+            continue;
+        }
+        let sym: Symbol = topics.get(0).unwrap().try_into_val(env).unwrap();
+        if sym == Symbol::new(env, name) {
+            return data;
+        }
+    }
+    panic!("event {} not found", name);
+}
+
+#[test]
+fn test_events_emitted_for_admin_operations() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    // approve_course
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ATTR-001"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    let course_id = String::from_str(&env, "COURSE-ATTR-001");
+    client.approve_course(&admin, &course_id);
+    let (event_course_id, event_instructor, event_admin, _ledger): (String, Address, Address, u32) =
+        last_event_val(&env, &contract_id, "course_approved").try_into_val(&env).unwrap();
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+
+    // mark_completed
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    let (event_student, event_admin): (Address, Address) =
+        last_event_val(&env, &contract_id, "course_completed").try_into_val(&env).unwrap();
+    assert_eq!(event_student, student);
+    assert_eq!(event_admin, admin);
+
+    // issue_certificate
+    let cert_id = String::from_str(&env, "CERT-ATTR-001");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Attribution Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+    );
+    let (event_student, event_course_id, event_admin): (Address, String, Address) =
+        last_event_val(&env, &contract_id, "certificate_issued").try_into_val(&env).unwrap();
+    assert_eq!(event_student, student);
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_admin, admin);
+
+    // pause_platform / unpause_platform
+    client.pause_platform(&admin);
+    assert!(has_event(&env, &contract_id, "platform_paused"));
+    let event_admin: Address = last_event_val(&env, &contract_id, "platform_paused").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+
+    client.unpause_platform(&admin);
+    let event_admin: Address = last_event_val(&env, &contract_id, "platform_unpaused").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+
+    // update_default_fee
+    client.update_default_fee(&admin, &25u32);
+    let (event_admin, event_fee): (Address, u32) =
+        last_event_val(&env, &contract_id, "default_fee_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_fee, 25u32);
+
+    // add_approved_token / remove_approved_token
+    let other_token = Address::generate(&env);
+    client.add_approved_token(&admin, &other_token);
+    let (event_admin, event_token): (Address, Address) =
+        last_event_val(&env, &contract_id, "token_whitelisted").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, other_token);
+
+    client.remove_approved_token(&admin, &other_token);
+    let (event_admin, event_token): (Address, Address) =
+        last_event_val(&env, &contract_id, "token_removed_from_whitelist").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, other_token);
+
+    // update_max_courses_limit
+    client.update_max_courses_limit(&admin, &99u32);
+    let (event_admin, event_max): (Address, u32) =
+        last_event_val(&env, &contract_id, "max_courses_limit_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_max, 99u32);
+
+    // freeze_instructor / unfreeze_instructor
+    client.freeze_instructor(&admin, &instructor);
+    let (event_instructor, event_admin): (Address, Address) =
+        last_event_val(&env, &contract_id, "instructor_frozen").try_into_val(&env).unwrap();
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+
+    client.unfreeze_instructor(&admin, &instructor);
+    let (event_instructor, event_admin): (Address, Address) =
+        last_event_val(&env, &contract_id, "instructor_unfrozen").try_into_val(&env).unwrap();
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+
+    // update_min_review_delay
+    client.update_min_review_delay(&admin, &5u32);
+    let (event_admin, event_delay): (Address, u32) =
+        last_event_val(&env, &contract_id, "min_review_delay_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_delay, 5u32);
+
+    // update_refund_window
+    client.update_refund_window(&admin, &2000u32);
+    let (event_admin, event_window): (Address, u32) =
+        last_event_val(&env, &contract_id, "refund_window_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_window, 2000u32);
+
+    // withdraw_tokens (contract holds nothing, so withdraw 0)
+    client.withdraw_tokens(&admin, &token_id, &0i128, &admin);
+    let (event_admin, event_token, event_amount, event_dest): (Address, Address, i128, Address) =
+        last_event_val(&env, &contract_id, "tokens_withdrawn").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, token_id);
+    assert_eq!(event_amount, 0i128);
+    assert_eq!(event_dest, admin);
+}
+
+#[test]
+fn test_multi_sig_admin_events_record_both_actors() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // transfer_admin (admin_proposed) — multi-sig proposal
+    let new_admin = Address::generate(&env);
+    let new_sec_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec_admin);
+    let (event_new_admin, event_admin1, event_admin2): (Address, Address, Address) =
+        last_event_val(&env, &contract_id, "admin_proposed").try_into_val(&env).unwrap();
+    assert_eq!(event_new_admin, new_admin);
+    assert!(
+        (event_admin1 == admin && event_admin2 == sec_admin)
+            || (event_admin1 == sec_admin && event_admin2 == admin)
+    );
+
+    // update_treasury (multi-sig)
+    let new_treasury = Address::generate(&env);
+    client.update_treasury(&admin, &sec_admin, &new_treasury);
+    let (event_admin1, event_admin2, event_treasury, _effective_ledger): (
+        Address,
+        Address,
+        Address,
+        u32,
+    ) = last_event_val(&env, &contract_id, "treasury_updated").try_into_val(&env).unwrap();
+    assert!(
+        (event_admin1 == admin && event_admin2 == sec_admin)
+            || (event_admin1 == sec_admin && event_admin2 == admin)
+    );
+    assert_eq!(event_treasury, new_treasury);
+
+    // archive_course (multi-sig)
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ARCHIVE-ATTR"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-ATTR");
+    client.approve_course(&admin, &course_id);
+    client.pause_course(&admin, &course_id);
+    client.archive_course(&admin, &sec_admin, &course_id, &None);
+    let (event_course_id, event_admin1, event_admin2): (String, Address, Address) =
+        last_event_val(&env, &contract_id, "course_archived").try_into_val(&env).unwrap();
+    assert_eq!(event_course_id, course_id);
+    assert!(
+        (event_admin1 == admin && event_admin2 == sec_admin)
+            || (event_admin1 == sec_admin && event_admin2 == admin)
+    );
+}
+
+#[test]
+fn test_process_refund_event_includes_admin() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REFUND-ATTR",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REFUND-ATTR");
+
+    client.enroll(&student, &course_id);
+    client.request_refund(&student, &course_id);
+    client.process_refund(&admin, &student, &course_id, &true);
+
+    let (event_student, event_course_id, event_approved, event_admin): (
+        Address,
+        String,
+        bool,
+        Address,
+    ) = last_event_val(&env, &contract_id, "refund_processed").try_into_val(&env).unwrap();
+    assert_eq!(event_student, student);
+    assert_eq!(event_course_id, course_id);
+    assert!(event_approved);
+    assert_eq!(event_admin, admin);
 }
