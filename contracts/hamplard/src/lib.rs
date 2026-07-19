@@ -56,7 +56,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
+};
 
 // ============================================================
 // DATA TYPES
@@ -157,6 +159,10 @@ pub struct Certificate {
     pub revocation_reason: Option<String>,
     /// Optional ledger sequence when the certificate expires
     pub expires_at_ledger: Option<u32>,
+    /// Optional Ed25519 signature from the instructor over the certificate
+    /// data, allowing external verifiers to cryptographically confirm the
+    /// instructor endorsed this certificate without off-chain evidence.
+    pub instructor_signature: Option<BytesN<64>>,
 }
 
 /// Pending platform treasury update with effective ledger sequence
@@ -1010,6 +1016,7 @@ impl HamplardContract {
         course_title: String,
         enrollment_reference: String,
         expires_at_ledger: Option<u32>,
+        instructor_signature: Option<BytesN<64>>,
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin, "issue_certificate");
@@ -1059,6 +1066,7 @@ impl HamplardContract {
             revoked_at_ledger: None,
             revocation_reason: None,
             expires_at_ledger,
+            instructor_signature,
         };
 
         env.storage()
