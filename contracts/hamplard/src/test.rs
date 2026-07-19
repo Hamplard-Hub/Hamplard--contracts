@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
-    token, Address, Env, String, Symbol, TryIntoVal,
+    token, Address, BytesN, Env, String, Symbol, TryIntoVal,
 };
 
 // ============================================================
@@ -633,6 +633,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
         &course_title,
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 
     // Verify certificate
@@ -678,6 +679,7 @@ fn test_certificate_requires_completion() {
         &String::from_str(&env, "Nail Technology"),
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 }
 
@@ -716,6 +718,7 @@ fn test_revoke_certificate() {
         &course_id,
         &String::from_str(&env, "Makeup Artistry"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
 
@@ -769,6 +772,7 @@ fn test_revoke_certificate_metadata_persisted() {
         &String::from_str(&env, "Audit Course"),
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 
     // Certificate should have no revocation metadata before revocation
@@ -791,6 +795,95 @@ fn test_revoke_certificate_metadata_persisted() {
         cert_after.revocation_reason,
         Some(String::from_str(&env, "ISSUED_IN_ERROR"))
     );
+}
+
+#[test]
+fn test_issue_certificate_with_instructor_signature() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-SIGNED-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-SIGNED-001");
+    let cert_id = String::from_str(&env, "CERT-SIGNED-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+
+    let signature = BytesN::from_array(&env, &[7u8; 64]);
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Signed Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &Some(signature.clone()),
+    );
+
+    let cert = client.get_certificate(&cert_id);
+    assert_eq!(cert.instructor_signature, Some(signature));
+}
+
+#[test]
+fn test_issue_certificate_without_instructor_signature() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UNSIGNED-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-UNSIGNED-001");
+    let cert_id = String::from_str(&env, "CERT-UNSIGNED-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Unsigned Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &None,
+    );
+
+    let cert = client.get_certificate(&cert_id);
+    assert!(cert.instructor_signature.is_none());
 }
 
 // ============================================================
@@ -1214,6 +1307,7 @@ fn test_issue_certificate_title_too_long() {
         &long_title,
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 }
 
@@ -1251,6 +1345,7 @@ fn test_issue_certificate_id_too_long() {
         &course_id,
         &String::from_str(&env, "Valid Title"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
 }
@@ -1448,6 +1543,7 @@ fn test_certificate_id_collision_across_courses() {
         &String::from_str(&env, "Course A"),
         &String::from_str(&env, "ref_a"),
         &None,
+        &None,
     );
 
     // Student B completes course B — attempt to reuse the same cert ID must fail
@@ -1467,6 +1563,7 @@ fn test_certificate_id_collision_across_courses() {
         &course_b,
         &String::from_str(&env, "Course B"),
         &String::from_str(&env, "ref_b"),
+        &None,
         &None,
     );
 }
@@ -1977,6 +2074,7 @@ fn test_revoke_certificate_unauthorized_includes_operation() {
         &course_title,
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 
     // Instructor tries to revoke certificate — should panic with operation name
@@ -2302,6 +2400,7 @@ fn test_verify_certificate_returns_true_for_valid_cert() {
         &String::from_str(&env, "Test Course"),
         &String::from_str(&env, "ref"),
         &None,
+        &None,
     );
 
     // Valid, unrevoked certificate must return true
@@ -2342,6 +2441,7 @@ fn test_verify_certificate_returns_false_for_revoked_cert() {
         &course_id,
         &String::from_str(&env, "Test Course"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
 
@@ -2399,6 +2499,7 @@ fn test_verify_certificate_false_does_not_mutate_state() {
         &course_id,
         &String::from_str(&env, "Test Course"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
 
@@ -2790,6 +2891,7 @@ fn test_course_certificate_id_collision_verification() {
         &String::from_str(&env, "Test Course"),
         &String::from_str(&env, "enroll-ref"),
         &None,
+        &None,
     );
 
     // Assert both can be queried independently and they do not collide
@@ -2839,7 +2941,7 @@ fn test_certificate_expiry_behavior() {
     client.mark_completed(&admin, &student, &course_id, &None);
 
     // Issue certificate with expiry at ledger 1000
-    client.issue_certificate(&admin, &cert_id, &student, &course_id, &String::from_str(&env, "Expiry Course"), &String::from_str(&env, "ref"), &Some(1000u32));
+    client.issue_certificate(&admin, &cert_id, &student, &course_id, &String::from_str(&env, "Expiry Course"), &String::from_str(&env, "ref"), &Some(1000u32), &None);
 
     // Under current ledger (default is 0), verify should return true
     assert!(client.verify_certificate(&cert_id));
