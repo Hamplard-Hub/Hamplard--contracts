@@ -238,6 +238,9 @@ pub enum DataKey {
     InstructorBlocked(Address),
     /// Ordered list of all registered course IDs (on-chain catalog)
     CourseList,
+    /// Archived past `Enrollment` records for a (student, course_id) pair,
+    /// preserved when a completed student re-enrolls via `re_enroll()`.
+    EnrollmentHistory(Address, String),
 }
 
 // ============================================================
@@ -871,6 +874,180 @@ impl HamplardContract {
             (
                 student.clone(),
                 course_id.clone(),
+                course.price,
+                platform_amount,
+                instructor_amount,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Student re-enrolls in a course they have already completed.
+    ///
+    /// Unlike `enroll()`, this is allowed even though a completed
+    /// `Enrollment` record already exists for this (student, course_id)
+    /// pair. The prior completed record — including its evidence hash and
+    /// certificate linkage — is archived to `EnrollmentHistory` before a
+    /// fresh `Enrollment` is created, so nothing about the original
+    /// completion or any certificate already issued for it is overwritten.
+    /// The student is charged again, exactly as for a first-time
+    /// enrollment.
+    ///
+    /// # Arguments
+    /// - `student`   — student's Stellar address (must sign)
+    /// - `course_id` — the course to re-enroll in
+    pub fn re_enroll(env: Env, student: Address, course_id: String) {
+        student.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::PlatformPaused)
+            .unwrap_or(false)
+        {
+            panic!("platform is paused");
+        }
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if student == course.instructor {
+            panic!("instructor cannot enroll in own course");
+        }
+
+        if course.status != CourseStatus::Active {
+            panic!("course is not available for enrollment");
+        }
+
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::ApprovedToken(course.token.clone()))
+        {
+            panic!("course token is not approved");
+        }
+
+        let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
+        let previous_enrollment: Enrollment = env
+            .storage()
+            .persistent()
+            .get(&enrollment_key)
+            .unwrap_or_else(|| panic!("no prior enrollment found for this course"));
+
+        if !previous_enrollment.completed {
+            panic!("current enrollment has not been completed yet");
+        }
+
+        if let Some(cap) = course.max_capacity {
+            if course.total_enrollments >= cap {
+                panic!("course has reached maximum enrollment capacity");
+            }
+        }
+
+        // Archive the completed enrollment — including its evidence hash
+        // and certificate_id linkage — before it is overwritten.
+        let history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
+        let mut history: Vec<Enrollment> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(previous_enrollment);
+        env.storage().persistent().set(&history_key, &history);
+        env.storage().persistent().extend_ttl(
+            &history_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        let token_client = token::Client::new(&env, &course.token);
+
+        let pct = course.platform_fee_percent as i128;
+        let platform_amount = course
+            .price
+            .checked_mul(pct)
+            .map(|v| v / 100)
+            .unwrap_or_else(|| panic!("overflow computing platform fee"));
+        let instructor_amount = course.price - platform_amount;
+
+        let mut treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .unwrap_or_else(|| panic!("treasury not set"));
+
+        if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
+        {
+            if env.ledger().sequence() >= pending.effective_ledger {
+                treasury = pending.address.clone();
+                env.storage().instance().set(&DataKey::Treasury, &treasury);
+                env.storage().instance().remove(&DataKey::PendingTreasury);
+            }
+        }
+
+        if course.price > 0 {
+            token_client.transfer(&student, &env.current_contract_address(), &course.price);
+
+            if platform_amount > 0 {
+                token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+            }
+
+            if instructor_amount > 0 {
+                Self::credit_instructor_earnings(
+                    &env,
+                    &course.instructor,
+                    &course.token,
+                    instructor_amount,
+                );
+            }
+        }
+
+        let new_enrollment = Enrollment {
+            student: student.clone(),
+            course_id: course_id.clone(),
+            amount_paid: course.price,
+            enrolled_at_ledger: env.ledger().sequence(),
+            completed: false,
+            certificate_issued: false,
+            certificate_id: None,
+            evidence_hash: None,
+        };
+
+        env.storage().persistent().set(&enrollment_key, &new_enrollment);
+        env.storage().persistent().extend_ttl(
+            &enrollment_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        course.total_enrollments = course
+            .total_enrollments
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("enrollment count overflow"));
+        course.active_enrollments = course
+            .active_enrollments
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("active enrollment count overflow"));
+        course.total_earned = course
+            .total_earned
+            .checked_add(course.price)
+            .unwrap_or_else(|| panic!("total earned overflow"));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "student_re_enrolled"), course_id.clone()),
+            (
+                student,
+                course_id,
                 course.price,
                 platform_amount,
                 instructor_amount,
@@ -1620,6 +1797,31 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .get(&DataKey::Enrollment(student, course_id))
+    }
+
+    /// Get the archived enrollment history (past completed attempts) for a
+    /// student/course pair, populated by `re_enroll()`. Access follows the
+    /// same rules as `get_enrollment`.
+    pub fn get_enrollment_history(
+        env: Env,
+        caller: Address,
+        student: Address,
+        course_id: String,
+    ) -> Vec<Enrollment> {
+        caller.require_auth();
+        let is_admin = Self::is_admin(&env, &caller);
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+        let is_instructor = caller == course.instructor;
+
+        if caller != student && !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        env.storage()
+            .persistent()
+            .get(&DataKey::EnrollmentHistory(student, course_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Get a certificate by ID

@@ -3120,3 +3120,250 @@ fn test_frozen_instructor_enrollment_blocked() {
     // Attempting to enroll in the frozen instructor's course must fail
     client.enroll(&student, &String::from_str(&env, "PRE-FREEZE-COURSE"));
 }
+
+// ============================================================
+// ISSUE 182: RE-ENROLLMENT AFTER COMPLETION
+// ============================================================
+
+#[test]
+fn test_re_enroll_after_completion_succeeds() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    let price: i128 = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-001",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_1")),
+    );
+    assert!(client.has_completed(&student, &course_id));
+
+    let treasury_before = token::Client::new(&env, &token_id).balance(&treasury);
+
+    client.re_enroll(&student, &course_id);
+
+    // A fresh, uncompleted enrollment now exists for the same key
+    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    assert!(!enrollment.completed);
+    assert!(!enrollment.certificate_issued);
+    assert!(enrollment.certificate_id.is_none());
+    assert!(enrollment.evidence_hash.is_none());
+    assert_eq!(enrollment.amount_paid, price);
+
+    // Student was charged again
+    let platform_share = price * 20 / 100;
+    let treasury_after = token::Client::new(&env, &token_id).balance(&treasury);
+    assert_eq!(treasury_after - treasury_before, platform_share);
+
+    // Course stats reflect a second enrollment
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 2);
+}
+
+#[test]
+fn test_re_enroll_archives_original_completion_and_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-002",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-002");
+    let cert_id = String::from_str(&env, "CERT-REENROLL-002");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_original")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Re-enroll Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &None,
+    );
+
+    client.re_enroll(&student, &course_id);
+
+    // The certificate issued for the original completion is untouched
+    assert!(client.verify_certificate(&cert_id));
+    let cert = client.get_certificate(&cert_id);
+    assert_eq!(cert.student, student);
+    assert!(!cert.revoked);
+
+    // The original completed enrollment was archived, not lost
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(history.len(), 1);
+    let archived = history.get(0).unwrap();
+    assert!(archived.completed);
+    assert_eq!(archived.certificate_id, Some(cert_id));
+    assert_eq!(
+        archived.evidence_hash,
+        Some(String::from_str(&env, "evidence_original"))
+    );
+}
+
+#[test]
+#[should_panic(expected = "no prior enrollment found for this course")]
+fn test_re_enroll_without_prior_enrollment_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-003",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-003");
+
+    // Student never enrolled at all
+    client.re_enroll(&student, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "current enrollment has not been completed yet")]
+fn test_re_enroll_before_completion_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-004",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-004");
+
+    client.enroll(&student, &course_id);
+    // Not completed — must panic
+    client.re_enroll(&student, &course_id);
+}
+
+#[test]
+fn test_re_enroll_multiple_times_accumulates_history() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-005",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-005");
+
+    // First attempt: normal enroll, complete, then re-enroll (archives attempt 1)
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence-1")),
+    );
+    assert_eq!(
+        client.get_enrollment_history(&student, &student, &course_id).len(),
+        0
+    );
+    client.re_enroll(&student, &course_id);
+
+    // Second attempt: re_enroll already created a fresh enrollment — just
+    // complete it and re-enroll again (archives attempt 2)
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence-2")),
+    );
+    assert_eq!(
+        client.get_enrollment_history(&student, &student, &course_id).len(),
+        1
+    );
+    client.re_enroll(&student, &course_id);
+
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(history.len(), 2);
+    assert!(history.get(0).unwrap().completed);
+    assert!(history.get(1).unwrap().completed);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_get_enrollment_history_unauthorized_access() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    let random_user = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-006",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-006");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.re_enroll(&student, &course_id);
+
+    // A random address must not be able to read the history
+    client.get_enrollment_history(&random_user, &student, &course_id);
+}
