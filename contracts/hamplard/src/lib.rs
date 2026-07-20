@@ -88,7 +88,11 @@ pub struct Course {
     pub id: String,
     /// Instructor's Stellar address — receives their revenue share
     pub instructor: Address,
-    /// USDC price per enrollment (in stroops, 7 decimal places)
+    /// USDC price per enrollment (in stroops, 7 decimal places).
+    /// Must be either exactly 0 (free course) or within
+    /// `[MIN_COURSE_PRICE_STROOPS, MAX_COURSE_PRICE_STROOPS]`
+    /// (0.01 USDC to 100,000 USDC) — enforced at registration to catch
+    /// prices accidentally entered in the wrong unit.
     pub price: i128,
     /// Platform fee percentage (0-100). Remainder goes to instructor.
     /// e.g. platform_fee_percent = 20 → instructor gets 80%
@@ -257,6 +261,17 @@ impl HamplardContract {
     const PERSISTENT_TTL_EXTEND_TO: u32 = 6_300_000;
     const MAX_COURSE_ID_LEN: u32 = 256;
     const MAX_COURSE_TITLE_LEN: u32 = 512;
+    /// Minimum non-zero course price accepted at registration, denominated
+    /// in stroops at the expected 7-decimal-place precision (0.01 USDC).
+    /// Catches an instructor accidentally entering a price in whole-dollar
+    /// units instead of stroops (e.g. typing `50` meaning $50, instead of
+    /// the correct `500_000_000`).
+    const MIN_COURSE_PRICE_STROOPS: i128 = 100_000;
+    /// Maximum course price accepted at registration, denominated in
+    /// stroops at the expected 7-decimal-place precision (100,000 USDC).
+    /// Catches an accidental extra digit turning a reasonable price into
+    /// an absurd one.
+    const MAX_COURSE_PRICE_STROOPS: i128 = 1_000_000_000_000;
 
     // ----------------------------------------------------------
     // INIT
@@ -363,6 +378,16 @@ impl HamplardContract {
 
         if price < 0 {
             panic!("price cannot be negative");
+        }
+
+        // A price of exactly 0 is a valid free course. Any non-zero price
+        // must be denominated in stroops at the token's expected 7-decimal
+        // precision — reject values so small or so large that they signal
+        // the price was entered in the wrong unit.
+        if price != 0
+            && (price < Self::MIN_COURSE_PRICE_STROOPS || price > Self::MAX_COURSE_PRICE_STROOPS)
+        {
+            panic!("price is outside the expected USDC precision range (0 for free, or 0.01-100000 USDC in stroops)");
         }
 
         if env
