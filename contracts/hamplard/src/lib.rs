@@ -499,7 +499,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_approved"), course_id.clone()),
-            (course_id, course.instructor, env.ledger().sequence()),
+            (course_id, course.instructor, admin, env.ledger().sequence()),
         );
     }
 
@@ -663,7 +663,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
-            course_id,
+            (course_id, admin1, admin2),
         );
     }
 
@@ -991,7 +991,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_completed"), course_id.clone()),
-            student,
+            (student, admin),
         );
     }
 
@@ -1092,7 +1092,7 @@ impl HamplardContract {
                 Symbol::new(&env, "certificate_issued"),
                 certificate_id.clone(),
             ),
-            (student, course_id),
+            (student, course_id, admin),
         );
 
         certificate_id
@@ -1152,6 +1152,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::PlatformPaused, &true);
+
+        env.events().publish(
+            (Symbol::new(&env, "platform_paused"), admin.clone()),
+            admin,
+        );
     }
 
     pub fn unpause_platform(env: Env, admin: Address) {
@@ -1160,6 +1165,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::PlatformPaused, &false);
+
+        env.events().publish(
+            (Symbol::new(&env, "platform_unpaused"), admin.clone()),
+            admin,
+        );
     }
 
     pub fn withdraw_tokens(
@@ -1173,6 +1183,11 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "withdraw_tokens");
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "tokens_withdrawn"), admin.clone()),
+            (admin, token, amount, destination),
+        );
     }
 
     /// Propose a new admin address (step 1 of two-step transfer).
@@ -1215,7 +1230,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "admin_proposed"), new_admin.clone()),
-            new_admin,
+            (new_admin, admin1, admin2),
         );
     }
 
@@ -1295,12 +1310,17 @@ impl HamplardContract {
 
         let effective_ledger = env.ledger().sequence() + 100;
         let update = TreasuryUpdate {
-            address: new_treasury,
+            address: new_treasury.clone(),
             effective_ledger,
         };
         env.storage()
             .instance()
             .set(&DataKey::PendingTreasury, &update);
+
+        env.events().publish(
+            (Symbol::new(&env, "treasury_updated"), new_treasury.clone()),
+            (admin1, admin2, new_treasury, effective_ledger),
+        );
     }
 
     /// Update the default platform fee percentage.
@@ -1316,6 +1336,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::DefaultFee, &new_fee_pct);
+
+        env.events().publish(
+            (Symbol::new(&env, "default_fee_updated"), admin.clone()),
+            (admin, new_fee_pct),
+        );
     }
 
     /// Admin adds a token contract address to the enrollment whitelist.
@@ -1324,7 +1349,12 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "add_approved_token");
         env.storage()
             .instance()
-            .set(&DataKey::ApprovedToken(token), &true);
+            .set(&DataKey::ApprovedToken(token.clone()), &true);
+
+        env.events().publish(
+            (Symbol::new(&env, "token_whitelisted"), admin.clone()),
+            (admin, token),
+        );
     }
 
     /// Admin removes a token contract address from the enrollment whitelist.
@@ -1333,7 +1363,15 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "remove_approved_token");
         env.storage()
             .instance()
-            .remove(&DataKey::ApprovedToken(token));
+            .remove(&DataKey::ApprovedToken(token.clone()));
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "token_removed_from_whitelist"),
+                admin.clone(),
+            ),
+            (admin, token),
+        );
     }
 
     /// Admin updates the maximum number of courses an instructor can register.
@@ -1346,6 +1384,14 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::MaxCoursesPerInstructor, &new_max);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "max_courses_limit_updated"),
+                admin.clone(),
+            ),
+            (admin, new_max),
+        );
     }
 
     /// Admin freezes/blocks a specific instructor address.
@@ -1357,7 +1403,7 @@ impl HamplardContract {
             .set(&DataKey::InstructorBlocked(instructor.clone()), &true);
         env.events().publish(
             (Symbol::new(&env, "instructor_frozen"), instructor.clone()),
-            instructor,
+            (instructor, admin),
         );
     }
 
@@ -1370,7 +1416,7 @@ impl HamplardContract {
             .remove(&DataKey::InstructorBlocked(instructor.clone()));
         env.events().publish(
             (Symbol::new(&env, "instructor_unfrozen"), instructor.clone()),
-            instructor,
+            (instructor, admin),
         );
     }
 
@@ -1397,6 +1443,14 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::MinReviewDelay, &delay);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "min_review_delay_updated"),
+                admin.clone(),
+            ),
+            (admin, delay),
+        );
     }
 
     /// Get the minimum review delay (in ledger sequences)
@@ -1417,6 +1471,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::RefundWindow, &window);
+
+        env.events().publish(
+            (Symbol::new(&env, "refund_window_updated"), admin.clone()),
+            (admin, window),
+        );
     }
 
     /// Get the refund window (in ledger sequences)
@@ -1567,7 +1626,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "refund_processed"), course_id.clone()),
-            (student, course_id, approved),
+            (student, course_id, approved, admin),
         );
     }
 
