@@ -394,25 +394,37 @@ fn test_enroll_fee_overflow() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Choose a price large enough that price * 100 would overflow i128
+    // Choose a price large enough that price * 100 would overflow i128.
+    // register_course now enforces a sane price range, so we register with
+    // a valid price and then patch storage directly to simulate a course
+    // that somehow ended up with an out-of-range price, to exercise the
+    // overflow guard inside enroll_internal itself.
     let overflow_price: i128 = i128::MAX / 100 + 1;
+    let course_id = String::from_str(&env, "COURSE-OVERFLOW-001");
 
     // register with custom 100% platform fee to force multiplication by 100
     client.register_course(
         &instructor,
-        &String::from_str(&env, "COURSE-OVERFLOW-001"),
-        &overflow_price,
+        &course_id,
+        &100_000_000i128,
         &token_id,
         &100u32,
         &None,
     );
-    client.approve_course(&admin, &String::from_str(&env, "COURSE-OVERFLOW-001"));
+    client.approve_course(&admin, &course_id);
+
+    let course_key = DataKey::Course(course_id.clone());
+    env.as_contract(&contract_id, || {
+        let mut course: Course = env.storage().persistent().get(&course_key).unwrap();
+        course.price = overflow_price;
+        env.storage().persistent().set(&course_key, &course);
+    });
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &overflow_price);
 
     // This enroll should panic due to overflow in fee calculation
-    client.enroll(&student, &String::from_str(&env, "COURSE-OVERFLOW-001"));
+    client.enroll(&student, &course_id);
 }
 
 #[test]
@@ -2653,7 +2665,7 @@ fn test_enroll_total_earned_overflow() {
         &admin,
         &instructor,
         "COURSE-OVERFLOW-2",
-        1,
+        100_000,
     );
 
     let course_id = String::from_str(&env, "COURSE-OVERFLOW-2");
@@ -2831,6 +2843,87 @@ fn test_concurrent_completion() {
     client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "ev")));
     // Second completion should panic
     client.mark_completed(&admin, &student, &course_id, &Some(String::from_str(&env, "ev2")));
+}
+
+// ============================================================
+// ISSUE 183: COURSE PRICE DENOMINATION RANGE CHECK
+// ============================================================
+
+#[test]
+#[should_panic(expected = "price is outside the expected USDC precision range")]
+fn test_register_course_price_too_low_rejected() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // 50 stroops — clearly a whole-dollar-unit mistake, not real stroops
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PRICE-LOW"),
+        &50i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "price is outside the expected USDC precision range")]
+fn test_register_course_price_too_high_rejected() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Absurdly large — an extra few zeros beyond any sane course price
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PRICE-HIGH"),
+        &2_000_000_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+}
+
+#[test]
+fn test_register_course_price_zero_still_allowed() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-PRICE-FREE");
+    client.register_course(&instructor, &course_id, &0i128, &token_id, &0u32, &None);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.price, 0);
+}
+
+#[test]
+fn test_register_course_price_at_range_boundaries_succeeds() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let min_course_id = String::from_str(&env, "COURSE-PRICE-MIN");
+    client.register_course(
+        &instructor,
+        &min_course_id,
+        &100_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    assert_eq!(client.get_course(&min_course_id).unwrap().price, 100_000);
+
+    let max_course_id = String::from_str(&env, "COURSE-PRICE-MAX");
+    client.register_course(
+        &instructor,
+        &max_course_id,
+        &1_000_000_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    assert_eq!(
+        client.get_course(&max_course_id).unwrap().price,
+        1_000_000_000_000
+    );
 }
 
 // ============================================================
