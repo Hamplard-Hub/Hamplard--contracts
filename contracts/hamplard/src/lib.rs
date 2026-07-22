@@ -1329,6 +1329,16 @@ impl HamplardContract {
             panic!("treasury cannot be the secondary_admin address");
         }
 
+        let current_treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .unwrap_or_else(|| panic!("treasury not set"));
+
+        if new_treasury == current_treasury {
+            panic!("new treasury address must differ from current treasury");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);

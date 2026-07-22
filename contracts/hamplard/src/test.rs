@@ -1259,6 +1259,16 @@ fn test_treasury_update_delay() {
     assert_eq!(token_client.balance(&new_treasury), platform_fee); // new treasury receives it
 }
 
+#[test]
+#[should_panic(expected = "new treasury address must differ from current treasury")]
+fn test_update_treasury_same_address_rejected() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Try to update treasury to the same address
+    client.update_treasury(&admin, &sec_admin, &treasury);
+}
+
 // ============================================================
 // INPUT LENGTH VALIDATION TESTS (#20)
 // ============================================================
@@ -3294,6 +3304,7 @@ fn test_events_emitted_for_admin_operations() {
         &course_id,
         &String::from_str(&env, "Attribution Course"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
     let (event_student, event_course_id, event_admin): (Address, String, Address) =
