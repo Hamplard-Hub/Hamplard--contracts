@@ -673,7 +673,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
     // Verify certificate
     assert!(client.verify_certificate(&cert_id));
 
-    let cert = client.get_certificate(&cert_id);
+    let cert = client.get_certificate(&student, &cert_id);
     assert_eq!(cert.student, student);
     assert!(!cert.revoked);
     assert_eq!(cert.course_id, course_id);
@@ -763,7 +763,7 @@ fn test_revoke_certificate() {
     client.revoke_certificate(&admin, &cert_id, &reason);
     assert!(!client.verify_certificate(&cert_id));
 
-    let cert = client.get_certificate(&cert_id);
+    let cert = client.get_certificate(&admin, &cert_id);
     assert!(cert.revoked);
     assert_eq!(cert.revoked_by, Some(admin.clone()));
     assert!(cert.revoked_at_ledger.is_some());
@@ -810,7 +810,7 @@ fn test_revoke_certificate_metadata_persisted() {
     );
 
     // Certificate should have no revocation metadata before revocation
-    let cert_before = client.get_certificate(&cert_id);
+    let cert_before = client.get_certificate(&admin, &cert_id);
     assert!(!cert_before.revoked);
     assert!(cert_before.revoked_by.is_none());
     assert!(cert_before.revoked_at_ledger.is_none());
@@ -821,7 +821,7 @@ fn test_revoke_certificate_metadata_persisted() {
     client.revoke_certificate(&admin, &cert_id, &reason);
 
     // All revocation metadata must be stored after revocation
-    let cert_after = client.get_certificate(&cert_id);
+    let cert_after = client.get_certificate(&admin, &cert_id);
     assert!(cert_after.revoked);
     assert_eq!(cert_after.revoked_by, Some(admin.clone()));
     assert!(cert_after.revoked_at_ledger.unwrap() >= ledger_before);
@@ -872,7 +872,7 @@ fn test_issue_certificate_with_instructor_signature() {
         &Some(signature.clone()),
     );
 
-    let cert = client.get_certificate(&cert_id);
+    let cert = client.get_certificate(&admin, &cert_id);
     assert_eq!(cert.instructor_signature, Some(signature));
 }
 
@@ -916,7 +916,7 @@ fn test_issue_certificate_without_instructor_signature() {
         &None,
     );
 
-    let cert = client.get_certificate(&cert_id);
+    let cert = client.get_certificate(&admin, &cert_id);
     assert!(cert.instructor_signature.is_none());
 }
 
@@ -2619,7 +2619,7 @@ fn test_verify_certificate_false_does_not_mutate_state() {
     assert!(!client.verify_certificate(&cert_id));
 
     // The certificate record itself must still exist and be readable for audit
-    let cert = client.get_certificate(&cert_id);
+    let cert = client.get_certificate(&admin, &cert_id);
     assert!(cert.revoked);
     assert_eq!(cert.revoked_by, Some(admin));
 }
@@ -3089,7 +3089,7 @@ fn test_course_certificate_id_collision_verification() {
     assert_eq!(course.id, matching_id);
     assert_eq!(course.instructor, instructor);
 
-    let cert = client.get_certificate(&matching_id);
+    let cert = client.get_certificate(&admin, &matching_id);
     assert_eq!(cert.id, matching_id);
     assert_eq!(cert.student, student);
     assert!(client.verify_certificate(&matching_id));
@@ -3815,4 +3815,105 @@ fn test_approve_course_event_details() {
     assert_eq!(event_admin, admin);
     assert_eq!(event_ledger, 12345);
 }
+
+#[test]
+fn test_get_certificate_authorized_roles() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-GET-CERT");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-GET-CERT",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-123");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &None,
+    );
+
+    // 1. Student can retrieve
+    let cert1 = client.get_certificate(&student, &cert_id);
+    assert_eq!(cert1.student, student);
+
+    // 2. Instructor can retrieve
+    let cert2 = client.get_certificate(&instructor, &cert_id);
+    assert_eq!(cert2.student, student);
+
+    // 3. Admin can retrieve
+    let cert3 = client.get_certificate(&admin, &cert_id);
+    assert_eq!(cert3.student, student);
+}
+
+#[test]
+#[should_panic]
+fn test_get_certificate_unauthorized_third_party_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-GET-CERT");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-GET-CERT",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-123");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &None,
+    );
+
+    let third_party = Address::generate(&env);
+    env.mock_all_auths_allowing_non_root_auth();
+
+    // Call as third party, without student signature/auth.
+    // This should panic due to missing auth on student.
+    client.get_certificate(&third_party, &cert_id);
+}
+
 
