@@ -1711,11 +1711,22 @@ impl HamplardContract {
     }
 
     /// Get a certificate by ID
-    pub fn get_certificate(env: Env, certificate_id: String) -> Certificate {
-        env.storage()
+    pub fn get_certificate(env: Env, caller: Address, certificate_id: String) -> Certificate {
+        caller.require_auth();
+        let cert = env
+            .storage()
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
-            .unwrap_or_else(|| panic!("certificate not found"))
+            .unwrap_or_else(|| panic!("certificate not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == cert.instructor;
+        let is_student = caller == cert.student;
+
+        if !is_student && !is_admin && !is_instructor {
+            cert.student.require_auth();
+        }
+        cert
     }
 
     /// Check whether a student is enrolled in a course
