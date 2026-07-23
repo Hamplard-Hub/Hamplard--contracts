@@ -779,6 +779,10 @@ impl HamplardContract {
             panic!("course is not available for enrollment");
         }
 
+        if env.ledger().sequence() <= course.created_at_ledger {
+            panic!("cannot enroll in the same ledger the course was registered");
+        }
+
         if env
             .storage()
             .persistent()
@@ -1535,8 +1539,6 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "treasury_updated"), new_treasury.clone()),
-        env.events().publish(
-            (Symbol::new(&env, "treasury_updated"), new_treasury.clone()),
             (
                 old_treasury,
                 new_treasury,
@@ -1545,7 +1547,6 @@ impl HamplardContract {
                 ledger_sequence,
                 effective_ledger,
             ),
-        );
         );
     }
 

@@ -65,6 +65,11 @@ fn register_and_approve_course(
         &0u32, // use platform default fee
         &None,
     );
+    // Advance past the registration ledger so enroll()'s same-ledger guard
+    // doesn't reject enrollments that happen right after this helper returns.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
     client.approve_course(admin, &String::from_str(env, course_id));
 }
 
@@ -347,6 +352,9 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
     assert_eq!(client.get_platform_fee(), 35);
 
     client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
     client.enroll(&student, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
 
     let platform_share = price * 20 / 100;
@@ -418,6 +426,9 @@ fn test_enroll_fee_overflow() {
         let mut course: Course = env.storage().persistent().get(&course_key).unwrap();
         course.price = overflow_price;
         env.storage().persistent().set(&course_key, &course);
+    });
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
     });
 
     let student = Address::generate(&env);
@@ -569,6 +580,32 @@ fn test_enroll_pending_course() {
     );
 
     client.enroll(&student, &String::from_str(&env, "COURSE-PENDING"));
+}
+
+#[test]
+#[should_panic(expected = "cannot enroll in the same ledger the course was registered")]
+fn test_enroll_same_ledger_as_registration_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-SAME-LEDGER");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    client.approve_course(&admin, &course_id);
+
+    // Enrolling in the very same ledger the course was registered in must
+    // be rejected, even though the course is already Active — a review
+    // delay of at least one ledger sequence is required.
+    client.enroll(&student, &course_id);
 }
 
 #[test]
@@ -1570,6 +1607,9 @@ fn test_enroll_with_non_whitelisted_token_fails() {
         &None,
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     // Enrollment must fail because the token is not whitelisted
     client.enroll(&student, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
@@ -2639,6 +2679,9 @@ fn test_enroll_at_capacity_succeeds() {
         &Some(1u32),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-EXACT"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -2666,6 +2709,9 @@ fn test_enroll_beyond_capacity_rejected() {
         &Some(1u32),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-FULL"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     let student_a = Address::generate(&env);
     let student_b = Address::generate(&env);
@@ -2692,6 +2738,9 @@ fn test_enroll_unlimited_capacity() {
         &None,
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-NONE"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     let course_id = String::from_str(&env, "COURSE-CAP-NONE");
     let asset_client = token::StellarAssetClient::new(&env, &token_id);
@@ -2734,6 +2783,9 @@ fn test_batch_enroll_respects_capacity() {
         &Some(0u32),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -3067,6 +3119,9 @@ fn test_course_certificate_id_collision_verification() {
         &None,
     );
     client.approve_course(&admin, &matching_id);
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
 
     // Enroll and complete
     client.enroll(&student, &matching_id);
@@ -3368,6 +3423,63 @@ fn test_re_enroll_after_completion_succeeds() {
 
 #[test]
 fn test_re_enroll_archives_original_completion_and_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-002",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-002");
+    let cert_id = String::from_str(&env, "CERT-REENROLL-002");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_original")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &student,
+        &course_id,
+        &String::from_str(&env, "Re-enroll Course"),
+        &String::from_str(&env, "ref"),
+        &None,
+        &None,
+    );
+
+    client.re_enroll(&student, &course_id);
+
+    // The certificate issued for the original completion is untouched
+    assert!(client.verify_certificate(&cert_id));
+    let cert = client.get_certificate(&cert_id);
+    assert_eq!(cert.student, student);
+    assert!(!cert.revoked);
+
+    // The original completed enrollment was archived, not lost
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(history.len(), 1);
+    let archived = history.get(0).unwrap();
+    assert!(archived.completed);
+    assert_eq!(archived.certificate_id, Some(cert_id));
+    assert_eq!(
+        archived.evidence_hash,
+        Some(String::from_str(&env, "evidence_original"))
+    );
+}
+
+// ============================================================
 // ISSUE 99: ADMIN ATTRIBUTION ON EVENTS
 // ============================================================
 
@@ -3406,20 +3518,6 @@ fn test_events_emitted_for_admin_operations() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-REENROLL-002",
-        500_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-REENROLL-002");
-    let cert_id = String::from_str(&env, "CERT-REENROLL-002");
-
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
 
     // approve_course
@@ -3440,13 +3538,14 @@ fn test_events_emitted_for_admin_operations() {
     assert_eq!(event_admin, admin);
 
     // mark_completed
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
     client.enroll(&student, &course_id);
     client.mark_completed(
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "evidence_original")),
-    );
         &Some(String::from_str(&env, "evidence")),
     );
     let (event_student, event_admin): (Address, Address) =
@@ -3461,30 +3560,90 @@ fn test_events_emitted_for_admin_operations() {
         &cert_id,
         &student,
         &course_id,
-        &String::from_str(&env, "Re-enroll Course"),
+        &String::from_str(&env, "Attribution Course"),
         &String::from_str(&env, "ref"),
         &None,
         &None,
     );
+    let (event_student, event_course_id, event_admin): (Address, String, Address) =
+        last_event_val(&env, &contract_id, "certificate_issued").try_into_val(&env).unwrap();
+    assert_eq!(event_student, student);
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_admin, admin);
 
-    client.re_enroll(&student, &course_id);
+    // pause_platform / unpause_platform
+    client.pause_platform(&admin);
+    assert!(has_event(&env, &contract_id, "platform_paused"));
+    let event_admin: Address = last_event_val(&env, &contract_id, "platform_paused").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
 
-    // The certificate issued for the original completion is untouched
-    assert!(client.verify_certificate(&cert_id));
-    let cert = client.get_certificate(&cert_id);
-    assert_eq!(cert.student, student);
-    assert!(!cert.revoked);
+    client.unpause_platform(&admin);
+    let event_admin: Address = last_event_val(&env, &contract_id, "platform_unpaused").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
 
-    // The original completed enrollment was archived, not lost
-    let history = client.get_enrollment_history(&student, &student, &course_id);
-    assert_eq!(history.len(), 1);
-    let archived = history.get(0).unwrap();
-    assert!(archived.completed);
-    assert_eq!(archived.certificate_id, Some(cert_id));
-    assert_eq!(
-        archived.evidence_hash,
-        Some(String::from_str(&env, "evidence_original"))
-    );
+    // update_default_fee
+    client.update_default_fee(&admin, &25u32);
+    let (event_admin, event_fee): (Address, u32) =
+        last_event_val(&env, &contract_id, "default_fee_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_fee, 25u32);
+
+    // add_approved_token / remove_approved_token
+    let other_token = Address::generate(&env);
+    client.add_approved_token(&admin, &other_token);
+    let (event_admin, event_token): (Address, Address) =
+        last_event_val(&env, &contract_id, "token_whitelisted").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, other_token);
+
+    client.remove_approved_token(&admin, &other_token);
+    let (event_admin, event_token): (Address, Address) =
+        last_event_val(&env, &contract_id, "token_removed_from_whitelist").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, other_token);
+
+    // update_max_courses_limit
+    client.update_max_courses_limit(&admin, &99u32);
+    let (event_admin, event_max): (Address, u32) =
+        last_event_val(&env, &contract_id, "max_courses_limit_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_max, 99u32);
+
+    // freeze_instructor / unfreeze_instructor
+    client.freeze_instructor(&admin, &instructor);
+    let (event_instructor, event_admin): (Address, Address) =
+        last_event_val(&env, &contract_id, "instructor_frozen").try_into_val(&env).unwrap();
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+
+    client.unfreeze_instructor(&admin, &instructor);
+    let (event_instructor, event_admin): (Address, Address) =
+        last_event_val(&env, &contract_id, "instructor_unfrozen").try_into_val(&env).unwrap();
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+
+    // update_min_review_delay
+    client.update_min_review_delay(&admin, &5u32);
+    let (event_admin, event_delay): (Address, u32) =
+        last_event_val(&env, &contract_id, "min_review_delay_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_delay, 5u32);
+
+    // update_refund_window
+    client.update_refund_window(&admin, &2000u32);
+    let (event_admin, event_window): (Address, u32) =
+        last_event_val(&env, &contract_id, "refund_window_updated").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_window, 2000u32);
+
+    // withdraw_tokens (contract holds nothing, so withdraw 0)
+    client.withdraw_tokens(&admin, &token_id, &0i128, &admin);
+    let (event_admin, event_token, event_amount, event_dest): (Address, Address, i128, Address) =
+        last_event_val(&env, &contract_id, "tokens_withdrawn").try_into_val(&env).unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, token_id);
+    assert_eq!(event_amount, 0i128);
+    assert_eq!(event_dest, admin);
 }
 
 #[test]
@@ -3590,89 +3749,35 @@ fn test_re_enroll_multiple_times_accumulates_history() {
 #[test]
 #[should_panic(expected = "unauthorized")]
 fn test_get_enrollment_history_unauthorized_access() {
-        &String::from_str(&env, "Attribution Course"),
-        &String::from_str(&env, "ref"),
-        &None,
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    let random_user = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-006",
+        200_000_000,
     );
-    let (event_student, event_course_id, event_admin): (Address, String, Address) =
-        last_event_val(&env, &contract_id, "certificate_issued").try_into_val(&env).unwrap();
-    assert_eq!(event_student, student);
-    assert_eq!(event_course_id, course_id);
-    assert_eq!(event_admin, admin);
+    let course_id = String::from_str(&env, "COURSE-REENROLL-006");
 
-    // pause_platform / unpause_platform
-    client.pause_platform(&admin);
-    assert!(has_event(&env, &contract_id, "platform_paused"));
-    let event_admin: Address = last_event_val(&env, &contract_id, "platform_paused").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.re_enroll(&student, &course_id);
 
-    client.unpause_platform(&admin);
-    let event_admin: Address = last_event_val(&env, &contract_id, "platform_unpaused").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-
-    // update_default_fee
-    client.update_default_fee(&admin, &25u32);
-    let (event_admin, event_fee): (Address, u32) =
-        last_event_val(&env, &contract_id, "default_fee_updated").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_fee, 25u32);
-
-    // add_approved_token / remove_approved_token
-    let other_token = Address::generate(&env);
-    client.add_approved_token(&admin, &other_token);
-    let (event_admin, event_token): (Address, Address) =
-        last_event_val(&env, &contract_id, "token_whitelisted").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_token, other_token);
-
-    client.remove_approved_token(&admin, &other_token);
-    let (event_admin, event_token): (Address, Address) =
-        last_event_val(&env, &contract_id, "token_removed_from_whitelist").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_token, other_token);
-
-    // update_max_courses_limit
-    client.update_max_courses_limit(&admin, &99u32);
-    let (event_admin, event_max): (Address, u32) =
-        last_event_val(&env, &contract_id, "max_courses_limit_updated").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_max, 99u32);
-
-    // freeze_instructor / unfreeze_instructor
-    client.freeze_instructor(&admin, &instructor);
-    let (event_instructor, event_admin): (Address, Address) =
-        last_event_val(&env, &contract_id, "instructor_frozen").try_into_val(&env).unwrap();
-    assert_eq!(event_instructor, instructor);
-    assert_eq!(event_admin, admin);
-
-    client.unfreeze_instructor(&admin, &instructor);
-    let (event_instructor, event_admin): (Address, Address) =
-        last_event_val(&env, &contract_id, "instructor_unfrozen").try_into_val(&env).unwrap();
-    assert_eq!(event_instructor, instructor);
-    assert_eq!(event_admin, admin);
-
-    // update_min_review_delay
-    client.update_min_review_delay(&admin, &5u32);
-    let (event_admin, event_delay): (Address, u32) =
-        last_event_val(&env, &contract_id, "min_review_delay_updated").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_delay, 5u32);
-
-    // update_refund_window
-    client.update_refund_window(&admin, &2000u32);
-    let (event_admin, event_window): (Address, u32) =
-        last_event_val(&env, &contract_id, "refund_window_updated").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_window, 2000u32);
-
-    // withdraw_tokens (contract holds nothing, so withdraw 0)
-    client.withdraw_tokens(&admin, &token_id, &0i128, &admin);
-    let (event_admin, event_token, event_amount, event_dest): (Address, Address, i128, Address) =
-        last_event_val(&env, &contract_id, "tokens_withdrawn").try_into_val(&env).unwrap();
-    assert_eq!(event_admin, admin);
-    assert_eq!(event_token, token_id);
-    assert_eq!(event_amount, 0i128);
-    assert_eq!(event_dest, admin);
+    // A random address must not be able to read the history
+    client.get_enrollment_history(&random_user, &student, &course_id);
 }
 
 #[test]
@@ -3735,8 +3840,6 @@ fn test_process_refund_event_includes_admin() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
-    let random_user = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
 
     register_and_approve_course(
@@ -3745,22 +3848,6 @@ fn test_process_refund_event_includes_admin() {
         &token_id,
         &admin,
         &instructor,
-        "COURSE-REENROLL-006",
-        200_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-REENROLL-006");
-
-    client.enroll(&student, &course_id);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(String::from_str(&env, "evidence")),
-    );
-    client.re_enroll(&student, &course_id);
-
-    // A random address must not be able to read the history
-    client.get_enrollment_history(&random_user, &student, &course_id);
         "COURSE-REFUND-ATTR",
         500_000_000,
     );
