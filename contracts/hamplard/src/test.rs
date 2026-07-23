@@ -3465,3 +3465,38 @@ fn test_process_refund_event_includes_admin() {
     assert!(event_approved);
     assert_eq!(event_admin, admin);
 }
+
+#[test]
+fn test_approve_course_event_details() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-EVENT-101"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+    );
+    let course_id = String::from_str(&env, "COURSE-EVENT-101");
+    
+    env.ledger().set_sequence(12345);
+    
+    client.approve_course(&admin, &course_id);
+
+    let (event_course_id, event_instructor, event_admin, event_ledger): (
+        String,
+        Address,
+        Address,
+        u32,
+    ) = last_event_val(&env, &contract_id, "course_approved")
+        .try_into_val(&env)
+        .unwrap();
+
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_instructor, instructor);
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_ledger, 12345);
+}
+
