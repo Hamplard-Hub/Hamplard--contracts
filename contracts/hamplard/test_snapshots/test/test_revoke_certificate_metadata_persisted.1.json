@@ -285,6 +285,7 @@
                 {
                   "string": "ref"
                 },
+                "void",
                 "void"
               ]
             }
@@ -474,6 +475,12 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "instructor_signature"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

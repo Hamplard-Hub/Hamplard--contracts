@@ -801,10 +801,14 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("course not found"));
         let token_client = token::Client::new(env, &course.token);
 
-        // Calculate revenue split (overflow-safe).
-        // The course's stored fee is fixed at registration time and takes
-        // precedence over any later changes to the global default fee.
-        let pct = course.platform_fee_percent as i128;
+        // Fetch the current platform fee from global config and use it at enrollment time.
+        // This ensures that fee policy updates take immediate effect for new enrollments.
+        let default_fee: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultFee)
+            .unwrap_or(20);
+        let pct = default_fee as i128;
         let platform_amount = course
             .price
             .checked_mul(pct)
@@ -1327,6 +1331,16 @@ impl HamplardContract {
 
         if new_treasury == secondary_admin {
             panic!("treasury cannot be the secondary_admin address");
+        }
+
+        let current_treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .unwrap_or_else(|| panic!("treasury not set"));
+
+        if new_treasury == current_treasury {
+            panic!("new treasury address must differ from current treasury");
         }
 
         env.storage()

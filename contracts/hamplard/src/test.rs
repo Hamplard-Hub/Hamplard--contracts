@@ -331,6 +331,7 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
 
     let price: i128 = 1_000_000_000;
 
+    // Register course with default fee (0 means use platform default)
     client.register_course(
         &instructor,
         &String::from_str(&env, "COURSE-FEE-UPDATE-001"),
@@ -341,15 +342,56 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
     );
     assert_eq!(client.get_platform_fee(), 20);
 
-    // The course fee is fixed at registration time and should continue to govern
-    // enrollment splits even if the global default fee changes later.
+    // Update platform default fee - enrollments should now use the new fee
     client.update_default_fee(&admin, &35u32);
     assert_eq!(client.get_platform_fee(), 35);
 
     client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
     client.enroll(&student, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
 
-    let platform_share = price * 20 / 100;
+    // Platform fee should now be 35% (new default), not 20%
+    let platform_share = price * 35 / 100;
+    let instructor_share = price - platform_share;
+
+    assert_eq!(token_client.balance(&treasury), platform_share);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share,
+    );
+}
+
+#[test]
+fn test_enroll_fee_uses_live_default_fee() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+
+    // Register course with custom 40% fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-CUSTOM-FEE"),
+        &price,
+        &token_id,
+        &40u32,
+        &None,
+    );
+    assert_eq!(client.get_platform_fee(), 20);
+
+    // Update platform default fee to 10% - new enrollments now use live default
+    client.update_default_fee(&admin, &10u32);
+    assert_eq!(client.get_platform_fee(), 10);
+
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
+    client.enroll(&student, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
+
+    // Platform fee should be 10% (live default fee), not 40% (custom course fee)
+    // This ensures fee policy changes take immediate effect for all enrollments
+    let platform_share = price * 10 / 100;
     let instructor_share = price - platform_share;
 
     assert_eq!(token_client.balance(&treasury), platform_share);
@@ -422,6 +464,9 @@ fn test_enroll_fee_overflow() {
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &overflow_price);
+
+    // Update default fee to 100% to ensure the fee calculation uses the higher value
+    client.update_default_fee(&admin, &100u32);
 
     // This enroll should panic due to overflow in fee calculation
     client.enroll(&student, &course_id);
@@ -1257,6 +1302,16 @@ fn test_treasury_update_delay() {
     client.enroll(&student_2, &course_id);
     assert_eq!(token_client.balance(&treasury), platform_fee); // unchanged
     assert_eq!(token_client.balance(&new_treasury), platform_fee); // new treasury receives it
+}
+
+#[test]
+#[should_panic(expected = "new treasury address must differ from current treasury")]
+fn test_update_treasury_same_address_rejected() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Try to update treasury to the same address
+    client.update_treasury(&admin, &sec_admin, &treasury);
 }
 
 // ============================================================
@@ -3294,6 +3349,7 @@ fn test_events_emitted_for_admin_operations() {
         &course_id,
         &String::from_str(&env, "Attribution Course"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
     let (event_student, event_course_id, event_admin): (Address, String, Address) =
