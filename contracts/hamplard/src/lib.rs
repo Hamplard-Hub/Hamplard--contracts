@@ -196,6 +196,21 @@ pub struct RefundRequest {
     pub status: RefundStatus,
 }
 
+/// Aggregate on-chain reputation stats for an instructor, accumulated
+/// across all of their courses. Gives students an on-chain signal of an
+/// instructor's track record without relying on off-chain review systems.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstructorStats {
+    /// Total number of enrollments across all of the instructor's courses
+    /// (incremented on `enroll`, `batch_enroll`, and `re_enroll`).
+    pub total_students: u32,
+    /// Total number of enrollments marked completed via `mark_completed`.
+    pub total_completions: u32,
+    /// Total number of certificates issued via `issue_certificate`.
+    pub total_certificates: u32,
+}
+
 // ============================================================
 // STORAGE KEYS
 // ============================================================
@@ -245,6 +260,9 @@ pub enum DataKey {
     /// Archived past `Enrollment` records for a (student, course_id) pair,
     /// preserved when a completed student re-enrolls via `re_enroll()`.
     EnrollmentHistory(Address, String),
+    /// Aggregate reputation stats for an instructor (total students,
+    /// completions, certificates issued) — see `InstructorStats`.
+    InstructorStats(Address),
 }
 
 // ============================================================
@@ -897,6 +915,13 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        Self::update_instructor_stats(env, &course.instructor, |s| {
+            s.total_students = s
+                .total_students
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("instructor stats overflow"));
+        });
+
         // Emit enrollment receipt event with complete payment breakdown
         env.events().publish(
             (Symbol::new(env, "student_enrolled"), course_id.clone()),
@@ -1072,6 +1097,13 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        Self::update_instructor_stats(&env, &course.instructor, |s| {
+            s.total_students = s
+                .total_students
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("instructor stats overflow"));
+        });
+
         env.events().publish(
             (Symbol::new(&env, "student_re_enrolled"), course_id.clone()),
             (
@@ -1195,6 +1227,13 @@ impl HamplardContract {
                 .set(&DataKey::Course(course_id.clone()), &course);
         }
 
+        Self::update_instructor_stats(&env, &course.instructor, |s| {
+            s.total_completions = s
+                .total_completions
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("instructor stats overflow"));
+        });
+
         env.events().publish(
             (Symbol::new(&env, "course_completed"), course_id.clone()),
             (student, admin),
@@ -1292,6 +1331,13 @@ impl HamplardContract {
             &DataKey::Enrollment(student.clone(), course_id.clone()),
             &enrollment,
         );
+
+        Self::update_instructor_stats(&env, &certificate.instructor, |s| {
+            s.total_certificates = s
+                .total_certificates
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("instructor stats overflow"));
+        });
 
         env.events().publish(
             (
@@ -1875,6 +1921,24 @@ impl HamplardContract {
             .unwrap_or(0)
     }
 
+    /// Get an instructor's on-chain reputation stats — total students
+    /// enrolled, total completions, and total certificates issued across
+    /// all of their courses. Gives students an on-chain signal of an
+    /// instructor's track record. A completion rate can be derived off
+    /// this as `total_completions / total_students`.
+    ///
+    /// Returns zeroed stats if the instructor has no recorded activity yet.
+    pub fn get_instructor_stats(env: Env, instructor: Address) -> InstructorStats {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstructorStats(instructor))
+            .unwrap_or(InstructorStats {
+                total_students: 0,
+                total_completions: 0,
+                total_certificates: 0,
+            })
+    }
+
     // ----------------------------------------------------------
     // READ-ONLY QUERIES
     // ----------------------------------------------------------
@@ -2101,6 +2165,28 @@ impl HamplardContract {
         } else {
             env.storage().persistent().set(&key, &new_balance);
         }
+    }
+
+    /// Load an instructor's reputation stats, apply `f`, and persist the result.
+    fn update_instructor_stats<F: FnOnce(&mut InstructorStats)>(
+        env: &Env,
+        instructor: &Address,
+        f: F,
+    ) {
+        let key = DataKey::InstructorStats(instructor.clone());
+        let mut stats: InstructorStats =
+            env.storage().persistent().get(&key).unwrap_or(InstructorStats {
+                total_students: 0,
+                total_completions: 0,
+                total_certificates: 0,
+            });
+        f(&mut stats);
+        env.storage().persistent().set(&key, &stats);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 }
 
