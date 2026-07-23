@@ -1305,6 +1305,9 @@ impl HamplardContract {
     }
 
     /// Update the platform treasury address.
+    /// Emits `treasury_updated` immediately so the pending change is
+    /// auditable in real time, even though it only takes effect 100
+    /// ledgers later (see `TreasuryUpdate`).
     pub fn update_treasury(env: Env, admin1: Address, admin2: Address, new_treasury: Address) {
         admin1.require_auth();
         admin2.require_auth();
@@ -1333,7 +1336,14 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let effective_ledger = env.ledger().sequence() + 100;
+        let old_treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .unwrap_or_else(|| panic!("treasury not set"));
+
+        let ledger_sequence = env.ledger().sequence();
+        let effective_ledger = ledger_sequence + 100;
         let update = TreasuryUpdate {
             address: new_treasury.clone(),
             effective_ledger,
@@ -1344,7 +1354,17 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "treasury_updated"), new_treasury.clone()),
-            (admin1, admin2, new_treasury, effective_ledger),
+        env.events().publish(
+            (Symbol::new(&env, "treasury_updated"), new_treasury.clone()),
+            (
+                old_treasury,
+                new_treasury,
+                admin1,
+                admin2,
+                ledger_sequence,
+                effective_ledger,
+            ),
+        );
         );
     }
 
