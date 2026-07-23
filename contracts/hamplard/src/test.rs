@@ -662,10 +662,9 @@ fn test_full_lifecycle_enroll_complete_certify() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &course_title,
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -708,10 +707,9 @@ fn test_certificate_requires_completion() {
     client.issue_certificate(
         &admin,
         &String::from_str(&env, "CERT-EARLY"),
-        &student,
         &String::from_str(&env, "COURSE-NAILS-001"),
         &String::from_str(&env, "Nail Technology"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -748,10 +746,9 @@ fn test_revoke_certificate() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Makeup Artistry"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -801,10 +798,9 @@ fn test_revoke_certificate_metadata_persisted() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Audit Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -864,10 +860,9 @@ fn test_issue_certificate_with_instructor_signature() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Signed Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &Some(signature.clone()),
     );
@@ -908,10 +903,9 @@ fn test_issue_certificate_without_instructor_signature() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Unsigned Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -1411,10 +1405,9 @@ fn test_issue_certificate_title_too_long() {
     client.issue_certificate(
         &admin,
         &String::from_str(&env, "CERT-TITLE-LEN"),
-        &student,
         &course_id,
         &long_title,
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -1450,10 +1443,9 @@ fn test_issue_certificate_id_too_long() {
     client.issue_certificate(
         &admin,
         &long_cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Valid Title"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -1647,10 +1639,9 @@ fn test_certificate_id_collision_across_courses() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student_a,
         &course_a,
         &String::from_str(&env, "Course A"),
-        &String::from_str(&env, "ref_a"),
+        &student_a.to_string(),
         &None,
         &None,
     );
@@ -1668,10 +1659,9 @@ fn test_certificate_id_collision_across_courses() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student_b,
         &course_b,
         &String::from_str(&env, "Course B"),
-        &String::from_str(&env, "ref_b"),
+        &student_b.to_string(),
         &None,
         &None,
     );
@@ -2178,10 +2168,9 @@ fn test_revoke_certificate_unauthorized_includes_operation() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &course_title,
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -2504,10 +2493,9 @@ fn test_verify_certificate_returns_true_for_valid_cert() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -2546,10 +2534,9 @@ fn test_verify_certificate_returns_false_for_revoked_cert() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -2604,10 +2591,9 @@ fn test_verify_certificate_false_does_not_mutate_state() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -3076,10 +3062,9 @@ fn test_course_certificate_id_collision_verification() {
     client.issue_certificate(
         &admin,
         &matching_id, // matching_id used as cert_id
-        &student,
         &matching_id, // matching_id used as course_id
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "enroll-ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -3131,7 +3116,7 @@ fn test_certificate_expiry_behavior() {
     client.mark_completed(&admin, &student, &course_id, &None);
 
     // Issue certificate with expiry at ledger 1000
-    client.issue_certificate(&admin, &cert_id, &student, &course_id, &String::from_str(&env, "Expiry Course"), &String::from_str(&env, "ref"), &Some(1000u32), &None);
+    client.issue_certificate(&admin, &cert_id, &course_id, &String::from_str(&env, "Expiry Course"), &student.to_string(), &Some(1000u32), &None);
 
     // Under current ledger (default is 0), verify should return true
     assert!(client.verify_certificate(&cert_id));
@@ -3459,10 +3444,9 @@ fn test_events_emitted_for_admin_operations() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Re-enroll Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -3847,10 +3831,9 @@ fn test_get_certificate_authorized_roles() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -3900,10 +3883,9 @@ fn test_get_certificate_unauthorized_third_party_fails() {
     client.issue_certificate(
         &admin,
         &cert_id,
-        &student,
         &course_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "ref"),
+        &student.to_string(),
         &None,
         &None,
     );
@@ -3914,6 +3896,69 @@ fn test_get_certificate_unauthorized_third_party_fails() {
     // Call as third party, without student signature/auth.
     // This should panic due to missing auth on student.
     client.get_certificate(&third_party, &cert_id);
+}
+
+#[test]
+fn test_certificate_student_matches_enrollment() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-SECURE",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-SECURE");
+    let cert_id = String::from_str(&env, "CERT-SECURE");
+
+    // Enroll and complete student_a
+    client.enroll(&student_a, &course_id);
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    // Try to issue certificate using student_b's address string as reference.
+    // Since student_b has no enrollment, it must panic.
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.issue_certificate(
+            &admin,
+            &cert_id,
+            &course_id,
+            &String::from_str(&env, "Secure Course"),
+            &student_b.to_string(),
+            &None,
+            &None,
+        );
+    }));
+    assert!(res.is_err());
+
+    // Issue certificate correctly using student_a's address
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Secure Course"),
+        &student_a.to_string(),
+        &None,
+        &None,
+    );
+
+    // Verify certificate's student field matches student_a, not any other address
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert_eq!(cert.student, student_a);
 }
 
 

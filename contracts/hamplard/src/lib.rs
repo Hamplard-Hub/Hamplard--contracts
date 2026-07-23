@@ -1217,7 +1217,6 @@ impl HamplardContract {
         env: Env,
         admin: Address,
         certificate_id: String,
-        student: Address,
         course_id: String,
         course_title: String,
         enrollment_reference: String,
@@ -1236,6 +1235,8 @@ impl HamplardContract {
         if course_title.len() > Self::MAX_COURSE_TITLE_LEN {
             panic!("course_title exceeds maximum length");
         }
+
+        let student = Address::from_string(&env, &enrollment_reference);
 
         // Student must have completed the course
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
@@ -1261,10 +1262,10 @@ impl HamplardContract {
 
         let certificate = Certificate {
             id: certificate_id.clone(),
-            student: student.clone(),
+            student: enrollment.student.clone(),
             course_id: course_id.clone(),
             course_title,
-            enrollment_reference,
+            enrollment_reference: enrollment_reference.clone(),
             instructor: course.instructor,
             issued_at_ledger: env.ledger().sequence(),
             revoked: false,
