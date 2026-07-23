@@ -764,6 +764,10 @@ impl HamplardContract {
             panic!("instructor is frozen");
         }
 
+        if Self::is_admin(env, student) {
+            panic!("admin cannot enroll in courses");
+        }
+
         if *student == course.instructor {
             panic!("instructor cannot enroll in own course");
         }
