@@ -727,9 +727,11 @@ fn test_full_lifecycle_enroll_complete_certify() {
         500_000_000,
     );
 
+    assert_eq!(client.has_completed(&student, &course_id), None);
+
     // Enroll
     client.enroll(&student, &course_id);
-    assert!(!client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(false));
 
     // Mark completed
     client.mark_completed(
@@ -738,7 +740,7 @@ fn test_full_lifecycle_enroll_complete_certify() {
         &course_id,
         &Some(String::from_str(&env, "evidence_hash")),
     );
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 
     // Issue certificate
     client.issue_certificate(
@@ -3062,6 +3064,31 @@ fn test_course_created_at_ledger_is_accurate() {
     assert_eq!(course.created_at_ledger, 12345);
 }
 
+#[test]
+fn test_course_last_updated_ledger_tracks_modifications() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 12000;
+    });
+
+    let course_id = String::from_str(&env, "COURSE-LAST-UPDATED");
+    client.register_course(&instructor, &course_id, &100_000_000, &token_id, &0u32, &None);
+
+    let initial_course = client.get_course(&course_id).unwrap();
+    assert_eq!(initial_course.last_updated_ledger, 12000);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 12010;
+    });
+
+    client.approve_course(&admin, &course_id);
+
+    let updated_course = client.get_course(&course_id).unwrap();
+    assert_eq!(updated_course.last_updated_ledger, 12010);
+}
+
 // ============================================================
 // NEW AUDIT TESTS
 // ============================================================
@@ -3184,6 +3211,34 @@ fn test_freeze_instructor_lifecycle() {
     // Unfreeze instructor
     client.unfreeze_instructor(&admin, &instructor);
     assert!(!client.is_instructor_frozen(&instructor));
+}
+
+#[test]
+fn test_student_blocklist_lifecycle() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    assert!(!client.is_student_blocked(&student));
+
+    client.block_student(&admin, &student);
+    assert!(client.is_student_blocked(&student));
+
+    client.unblock_student(&admin, &student);
+    assert!(!client.is_student_blocked(&student));
+}
+
+#[test]
+#[should_panic(expected = "student is blocked")]
+fn test_blocked_student_cannot_enroll() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "BLOCKED-STUDENT-COURSE", 100_000_000);
+
+    client.block_student(&admin, &student);
+    client.enroll(&student, &String::from_str(&env, "BLOCKED-STUDENT-COURSE"));
 }
 
 #[test]
@@ -3334,6 +3389,39 @@ fn test_frozen_instructor_enrollment_blocked() {
 // ============================================================
 // ISSUE 182: RE-ENROLLMENT AFTER COMPLETION
 // ============================================================
+
+#[test]
+fn test_has_completed_distinguishes_absent_enrollment_from_incomplete() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-COMPLETION-STATUS",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-COMPLETION-STATUS");
+
+    assert_eq!(client.has_completed(&student, &course_id), None);
+
+    client.enroll(&student, &course_id);
+    assert_eq!(client.has_completed(&student, &course_id), Some(false));
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
 
 #[test]
 fn test_re_enroll_after_completion_succeeds() {
