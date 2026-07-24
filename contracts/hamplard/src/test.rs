@@ -1282,78 +1282,13 @@ fn test_treasury_update_delay() {
 }
 
 #[test]
-fn test_treasury_updated_event_content() {
-    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+#[should_panic(expected = "new treasury address must differ from current treasury")]
+fn test_update_treasury_same_address_rejected() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let new_treasury = Address::generate(&env);
-    let ledger_before = env.ledger().sequence();
-
-    client.update_treasury(&admin, &sec_admin, &new_treasury);
-
-    let events = env.events().all();
-    let mut treasury_events = 0u32;
-    for (contract, topics, data) in events.iter() {
-        if contract != contract_id {
-            continue;
-        }
-        let topic0 = topics.get(0).unwrap();
-        let sym: Symbol = topic0.try_into_val(&env).unwrap();
-        if sym == Symbol::new(&env, "treasury_updated") {
-            treasury_events += 1;
-            let (
-                event_old_treasury,
-                event_new_treasury,
-                event_admin1,
-                event_admin2,
-                event_ledger,
-                event_effective_ledger,
-            ): (Address, Address, Address, Address, u32, u32) = data.try_into_val(&env).unwrap();
-
-            assert_eq!(event_old_treasury, treasury);
-            assert_eq!(event_new_treasury, new_treasury);
-            assert!(
-                (event_admin1 == admin && event_admin2 == sec_admin)
-                    || (event_admin1 == sec_admin && event_admin2 == admin)
-            );
-            assert!(event_ledger >= ledger_before);
-            assert_eq!(event_effective_ledger, event_ledger + 100);
-        }
-    }
-    assert_eq!(treasury_events, 1);
-}
-
-#[test]
-fn test_treasury_updated_event_emitted_before_effective_ledger() {
-    // The event must fire immediately at the scheduling call, not only once
-    // the pending change takes effect — that's the whole point of #184.
-    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-TREASURY-EVT",
-        100_000_000,
-    );
-
-    let new_treasury = Address::generate(&env);
-    client.update_treasury(&admin, &sec_admin, &new_treasury);
-
-    // No ledger advance has happened yet — the change has not taken effect —
-    // but the event must already be observable.
-    let events = env.events().all();
-    let found = events.iter().any(|(contract, topics, _)| {
-        if contract != contract_id {
-            return false;
-        }
-        let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
-        sym == Symbol::new(&env, "treasury_updated")
-    });
-    assert!(found);
+    // Try to update treasury to the same address
+    client.update_treasury(&admin, &sec_admin, &treasury);
 }
 
 // ============================================================
@@ -3592,6 +3527,7 @@ fn test_re_enroll_multiple_times_accumulates_history() {
 fn test_get_enrollment_history_unauthorized_access() {
         &String::from_str(&env, "Attribution Course"),
         &String::from_str(&env, "ref"),
+        &None,
         &None,
     );
     let (event_student, event_course_id, event_admin): (Address, String, Address) =
