@@ -263,6 +263,8 @@ pub enum DataKey {
     /// Aggregate reputation stats for an instructor (total students,
     /// completions, certificates issued) — see `InstructorStats`.
     InstructorStats(Address),
+    /// Blocklist of student addresses who are banned from the platform
+    StudentBlocked(Address),
 }
 
 // ============================================================
@@ -781,6 +783,10 @@ impl HamplardContract {
         let course = Self::get_course_internal(env, course_id)
             .unwrap_or_else(|| panic!("course not found"));
 
+        if Self::is_student_blocked_internal(env, student) {
+            panic!("student is blocked");
+        }
+
         if Self::is_instructor_frozen_internal(env, &course.instructor) {
             panic!("instructor is frozen");
         }
@@ -972,6 +978,10 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
+
+        if Self::is_student_blocked_internal(&env, &student) {
+            panic!("student is blocked");
+        }
 
         if Self::is_instructor_frozen_internal(&env, &course.instructor) {
             panic!("instructor is frozen");
@@ -1713,6 +1723,38 @@ impl HamplardContract {
         Self::is_instructor_frozen_internal(&env, &instructor)
     }
 
+    /// Admin blocks/bans a specific student address from the platform.
+    /// Blocked students cannot enroll in any course.
+    pub fn block_student(env: Env, admin: Address, student: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "block_student");
+        env.storage()
+            .instance()
+            .set(&DataKey::StudentBlocked(student.clone()), &true);
+        env.events().publish(
+            (Symbol::new(&env, "student_blocked"), student.clone()),
+            (student, admin),
+        );
+    }
+
+    /// Admin unblocks a previously blocked student address.
+    pub fn unblock_student(env: Env, admin: Address, student: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "unblock_student");
+        env.storage()
+            .instance()
+            .remove(&DataKey::StudentBlocked(student.clone()));
+        env.events().publish(
+            (Symbol::new(&env, "student_unblocked"), student.clone()),
+            (student, admin),
+        );
+    }
+
+    /// Check if a student is blocked/banned from the platform
+    pub fn is_student_blocked(env: Env, student: Address) -> bool {
+        Self::is_student_blocked_internal(&env, &student)
+    }
+
     /// Get the current per-instructor course registration limit.
     pub fn get_max_courses_limit(env: Env) -> u32 {
         env.storage()
@@ -2124,6 +2166,13 @@ impl HamplardContract {
         env.storage()
             .instance()
             .get(&DataKey::InstructorBlocked(instructor.clone()))
+            .unwrap_or(false)
+    }
+
+    fn is_student_blocked_internal(env: &Env, student: &Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::StudentBlocked(student.clone()))
             .unwrap_or(false)
     }
 
