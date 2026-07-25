@@ -265,6 +265,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {

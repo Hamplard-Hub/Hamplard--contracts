@@ -223,7 +223,7 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 0,
+    "sequence_number": 1,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -342,8 +342,14 @@
                         "symbol": "created_at_ledger"
                       },
                       "val": {
-                        "u32": 0
+                        "u32": 1
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -431,7 +437,7 @@
             },
             "ext": "v0"
           },
-          6300000
+          6300001
         ]
       ],
       [
@@ -486,6 +492,12 @@
                       "val": {
                         "u32": 0
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -919,7 +931,7 @@
             },
             "ext": "v0"
           },
-          6311999
+          6312000
         ]
       ],
       [
@@ -985,7 +997,7 @@
             },
             "ext": "v0"
           },
-          6311999
+          6312000
         ]
       ],
       [
