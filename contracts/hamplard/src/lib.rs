@@ -56,6 +56,9 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
 };
@@ -110,6 +113,10 @@ pub struct Course {
     /// Ledger sequence when the course was registered
     pub created_at_ledger: u32,
     pub max_capacity: Option<u32>,
+    /// Minimum ledger sequences that must elapse between a student's
+    /// enroll() and mark_completed() for this course. Captured from the
+    /// platform's `DefaultMinCompletionLedgers` at registration time.
+    pub min_completion_ledgers: u32,
 }
 
 /// An enrollment record — one per student per course
@@ -245,10 +252,16 @@ pub enum DataKey {
     InstructorEarnings(Address, Address),
     /// Number of courses registered by an instructor
     InstructorCourseCount(Address),
+    /// Ordered list of course IDs registered by a specific instructor
+    /// (append-only — course status changes never remove an entry).
+    InstructorCourseList(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
     /// Minimum ledger sequences required between course registration and approval
     MinReviewDelay,
+    /// Default minimum ledger sequences required between enroll() and
+    /// mark_completed() for newly-registered courses (admin-configurable).
+    DefaultMinCompletionLedgers,
     /// Refund window delay in ledger sequences
     RefundWindow,
     /// Refund request record by (student_address, course_id)
@@ -452,6 +465,12 @@ impl HamplardContract {
             platform_fee_pct
         };
 
+        let min_completion_ledgers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultMinCompletionLedgers)
+            .unwrap_or(0);
+
         let course = Course {
             id: course_id.clone(),
             instructor: instructor.clone(),
@@ -463,7 +482,8 @@ impl HamplardContract {
             total_earned: 0,
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
-            max_capacity, // ← ADD THIS
+            max_capacity,
+            min_completion_ledgers,
         };
 
         env.storage()
@@ -495,6 +515,23 @@ impl HamplardContract {
         env.storage().instance().set(
             &DataKey::InstructorCourseCount(instructor.clone()),
             &(current_count + 1),
+        );
+
+        // Append to the per-instructor course list
+        let instructor_list_key = DataKey::InstructorCourseList(instructor.clone());
+        let mut instructor_courses: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&instructor_list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        instructor_courses.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&instructor_list_key, &instructor_courses);
+        env.storage().persistent().extend_ttl(
+            &instructor_list_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
         env.events().publish(
@@ -835,6 +872,19 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(env, course_id)
             .unwrap_or_else(|| panic!("course not found"));
         let token_client = token::Client::new(env, &course.token);
+
+        // Atomicity guarantee: Soroban executes a single contract invocation
+        // (and everything it calls) as one atomic unit — no other
+        // transaction can observe or mutate this course's state between the
+        // status check in validate_enrollment() above and the token
+        // transfer below. This re-check exists anyway, immediately before
+        // payment, so that if a future refactor ever separates
+        // course-fetching from payment (e.g. introduces an async step),
+        // the status is still re-verified at the tightest possible point
+        // rather than relying solely on the earlier check.
+        if course.status != CourseStatus::Active {
+            panic!("course is not available for enrollment");
+        }
 
         // Fetch the current platform fee from global config and use it at enrollment time.
         // This ensures that fee policy updates take immediate effect for new enrollments.
@@ -1219,6 +1269,17 @@ impl HamplardContract {
 
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
 
+        let course_for_check = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+        let elapsed = env
+            .ledger()
+            .sequence()
+            .checked_sub(enrollment.enrolled_at_ledger)
+            .unwrap_or(0);
+        if elapsed < course_for_check.min_completion_ledgers {
+            panic!("minimum enrollment duration has not elapsed");
+        }
+
         if enrollment.course_id != course_id {
             panic!("enrollment course_id mismatch");
         }
@@ -1293,7 +1354,7 @@ impl HamplardContract {
             panic!("course_title exceeds maximum length");
         }
 
-        let student = Address::from_string(&env, &enrollment_reference);
+        let student = Address::from_string(&enrollment_reference);
 
         // Student must have completed the course
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
@@ -1791,6 +1852,37 @@ impl HamplardContract {
             .unwrap_or(0)
     }
 
+    /// Update the default minimum enrollment duration (in ledger sequences)
+    /// that newly-registered courses will require between enroll() and
+    /// mark_completed(). Does not retroactively change already-registered
+    /// courses.
+    pub fn update_min_completion_ledgers(env: Env, admin: Address, ledgers: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "update_min_completion_ledgers");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultMinCompletionLedgers, &ledgers);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "min_completion_ledgers_updated"),
+                admin.clone(),
+            ),
+            (admin, ledgers),
+        );
+    }
+
+    /// Get the default minimum enrollment duration (in ledger sequences)
+    pub fn get_min_completion_ledgers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DefaultMinCompletionLedgers)
+            .unwrap_or(0)
+    }
+
     /// Update the refund window (in ledger sequences)
     pub fn update_refund_window(env: Env, admin: Address, window: u32) {
         admin.require_auth();
@@ -1977,6 +2069,18 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::InstructorCourseCount(instructor))
             .unwrap_or(0)
+    }
+
+    /// Get the ordered list of course IDs an instructor has registered.
+    /// The list is append-only: pausing, unpausing, or archiving a course
+    /// changes only its `Course.status` and never removes it from this
+    /// list, so it always reflects every course the instructor has ever
+    /// registered.
+    pub fn get_courses_by_instructor(env: Env, instructor: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstructorCourseList(instructor))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Get an instructor's on-chain reputation stats — total students
