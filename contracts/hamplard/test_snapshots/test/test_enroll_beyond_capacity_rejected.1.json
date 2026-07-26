@@ -401,6 +401,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "max_capacity"
                       },
                       "val": {
@@ -468,6 +476,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1
@@ -607,6 +623,14 @@
                       },
                       "val": {
                         "string": "COURSE-CAP-FULL"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

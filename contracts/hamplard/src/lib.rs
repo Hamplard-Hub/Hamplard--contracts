@@ -18,6 +18,7 @@
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `get_platform_fee` — retrieves platform fee configuration (admin only)
 //! - `withdraw_tokens` — emergency sweep of contract-held tokens (admin only)
 //!
 //! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
@@ -117,6 +118,10 @@ pub struct Course {
     /// enroll() and mark_completed() for this course. Captured from the
     /// platform's `DefaultMinCompletionLedgers` at registration time.
     pub min_completion_ledgers: u32,
+    /// Incremental version counter tracking course metadata updates
+    pub version: u32,
+    /// Ledger sequence when the course was last updated
+    pub last_updated_ledger: u32,
 }
 
 /// An enrollment record — one per student per course
@@ -139,6 +144,8 @@ pub struct Enrollment {
     pub certificate_id: Option<String>,
     /// Optional proof of completion evidence (e.g. hash)
     pub evidence_hash: Option<String>,
+    /// Course version active at the time of enrollment
+    pub course_version: u32,
 }
 
 /// An on-chain certificate of completion
@@ -484,6 +491,8 @@ impl HamplardContract {
             created_at_ledger: env.ledger().sequence(),
             max_capacity,
             min_completion_ledgers,
+            version: 1,
+            last_updated_ledger: env.ledger().sequence(),
         };
 
         env.storage()
@@ -578,6 +587,7 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Active;
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -750,6 +760,78 @@ impl HamplardContract {
             (Symbol::new(&env, "course_archived"), course_id.clone()),
             (course_id, admin1, admin2),
         );
+    }
+
+    /// Instructor or admin updates course details (e.g. price, capacity).
+    /// Increments the course version so prior student enrollments remain bound to
+    /// their original enrollment terms.
+    pub fn update_course(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        new_price: Option<i128>,
+        new_max_capacity: Option<Option<u32>>,
+    ) -> u32 {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        let mut modified = false;
+
+        if let Some(price) = new_price {
+            if price < 0 {
+                panic!("price cannot be negative");
+            }
+            if price != 0
+                && (price < Self::MIN_COURSE_PRICE_STROOPS || price > Self::MAX_COURSE_PRICE_STROOPS)
+            {
+                panic!("price is outside the expected USDC precision range (0 for free, or 0.01-100000 USDC in stroops)");
+            }
+            course.price = price;
+            modified = true;
+        }
+
+        if let Some(capacity) = new_max_capacity {
+            course.max_capacity = capacity;
+            modified = true;
+        }
+
+        if !modified {
+            return course.version;
+        }
+
+        course.version = course
+            .version
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("course version overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_updated"), course_id.clone()),
+            (course_id, course.version, caller),
+        );
+
+        course.version
     }
 
     // ----------------------------------------------------------
@@ -949,6 +1031,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            course_version: course.version,
         };
 
         env.storage().persistent().set(
@@ -1140,6 +1223,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            course_version: course.version,
         };
 
         env.storage().persistent().set(&enrollment_key, &new_enrollment);
@@ -2185,15 +2269,15 @@ impl HamplardContract {
     }
 
     /// Check whether a student has completed a course
-    pub fn has_completed(env: Env, student: Address, course_id: String) -> bool {
+    pub fn has_completed(env: Env, student: Address, course_id: String) -> Option<bool> {
         if let Some(enrollment) = env
             .storage()
             .persistent()
             .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id))
         {
-            enrollment.completed
+            Some(enrollment.completed)
         } else {
-            false
+            None
         }
     }
 
@@ -2243,8 +2327,10 @@ impl HamplardContract {
         page
     }
 
-    /// Get the current platform fee percentage
-    pub fn get_platform_fee(env: Env) -> u32 {
+    /// Get the current platform fee percentage (Admin only)
+    pub fn get_platform_fee(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "get_platform_fee");
         env.storage()
             .instance()
             .get::<DataKey, u32>(&DataKey::DefaultFee)

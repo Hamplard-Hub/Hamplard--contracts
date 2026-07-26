@@ -302,6 +302,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 12345
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "max_capacity"
                       },
                       "val": "void"
@@ -370,6 +378,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     }
                   ]

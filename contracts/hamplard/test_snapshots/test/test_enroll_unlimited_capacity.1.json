@@ -658,6 +658,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "max_capacity"
                       },
                       "val": "void"
@@ -726,6 +734,14 @@
                       },
                       "val": {
                         "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     }
                   ]
@@ -866,6 +882,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -977,6 +1001,14 @@
                       },
                       "val": {
                         "string": "COURSE-CAP-NONE"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
@@ -1096,6 +1128,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -1211,6 +1251,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -1322,6 +1370,14 @@
                       },
                       "val": {
                         "string": "COURSE-CAP-NONE"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

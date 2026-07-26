@@ -449,6 +449,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "max_capacity"
                       },
                       "val": "void"
@@ -514,6 +522,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1

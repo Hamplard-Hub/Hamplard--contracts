@@ -79,11 +79,11 @@ fn register_and_approve_course(
 
 #[test]
 fn test_init_success() {
-    let (env, contract_id, _token_id, _admin, sec_admin, _treasury, _instructor) = setup();
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Platform fee should be 20%
-    assert_eq!(client.get_platform_fee(), 20);
+    assert_eq!(client.get_platform_fee(&admin), 20);
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn test_admin_instance_ttl_extended_on_admin_ops() {
 
     // If Admin key expired, get_platform_fee would return default or panic.
     // With TTL extension, this must return the updated value.
-    assert_eq!(client.get_platform_fee(), 25);
+    assert_eq!(client.get_platform_fee(&admin), 25);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_treasury_instance_ttl_extended_on_transfer_admin() {
     client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec);
     client.accept_admin(&new_admin, &new_sec);
     client.update_default_fee(&new_admin, &30u32);
-    assert_eq!(client.get_platform_fee(), 30);
+    assert_eq!(client.get_platform_fee(&new_admin), 30);
 }
 
 // ============================================================
@@ -345,11 +345,11 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
         &0u32,
         &None,
     );
-    assert_eq!(client.get_platform_fee(), 20);
+    assert_eq!(client.get_platform_fee(&admin), 20);
 
     // Update platform default fee - enrollments should now use the new fee
     client.update_default_fee(&admin, &35u32);
-    assert_eq!(client.get_platform_fee(), 35);
+    assert_eq!(client.get_platform_fee(&admin), 35);
 
     client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-UPDATE-001"));
     env.ledger().with_mut(|l| {
@@ -388,18 +388,18 @@ fn test_enroll_fee_uses_live_default_fee() {
         &40u32,
         &None,
     );
-    assert_eq!(client.get_platform_fee(), 20);
+    assert_eq!(client.get_platform_fee(&admin), 20);
 
     // Update platform default fee to 10% - new enrollments now use live default
     client.update_default_fee(&admin, &10u32);
-    assert_eq!(client.get_platform_fee(), 10);
+    assert_eq!(client.get_platform_fee(&admin), 10);
 
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
     // Advance past the registration ledger so enroll()'s same-ledger guard
     // doesn't reject this enrollment.
     env.ledger().with_mut(|l| {
         l.sequence_number += 1;
     });
-    client.approve_course(&admin, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
     client.enroll(&student, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
 
     // Platform fee should be 10% (live default fee), not 40% (custom course fee)
@@ -1037,9 +1037,9 @@ fn test_update_platform_fee() {
     let (env, contract_id, _, admin, sec_admin, _, _) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    assert_eq!(client.get_platform_fee(), 20);
+    assert_eq!(client.get_platform_fee(&admin), 20);
     client.update_default_fee(&admin, &25u32);
-    assert_eq!(client.get_platform_fee(), 25);
+    assert_eq!(client.get_platform_fee(&admin), 25);
 }
 
 #[test]
@@ -1714,7 +1714,7 @@ fn test_two_step_admin_transfer_success() {
 
     // New admin can now exercise admin privileges
     client.update_default_fee(&new_admin, &15u32);
-    assert_eq!(client.get_platform_fee(), 15);
+    assert_eq!(client.get_platform_fee(&new_admin), 15);
 }
 
 #[test]
@@ -2060,7 +2060,7 @@ fn test_enrollment_ttl_extended_on_write() {
         &course_id,
         &Some(String::from_str(&env, "proof")),
     );
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 // ============================================================
@@ -3600,7 +3600,7 @@ fn test_re_enroll_after_completion_succeeds() {
         &course_id,
         &Some(String::from_str(&env, "evidence_1")),
     );
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 
     let treasury_before = token::Client::new(&env, &token_id).balance(&treasury);
 
@@ -4429,7 +4429,7 @@ fn test_mark_completed_after_min_duration_succeeds() {
         &Some(String::from_str(&env, "evidence")),
     );
 
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 #[test]
@@ -4461,7 +4461,7 @@ fn test_mark_completed_default_zero_delay_allows_immediate_completion() {
         &Some(String::from_str(&env, "evidence")),
     );
 
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 // ============================================================
