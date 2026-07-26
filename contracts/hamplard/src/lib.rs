@@ -110,6 +110,9 @@ pub struct Course {
     /// Ledger sequence when the course was registered
     pub created_at_ledger: u32,
     pub max_capacity: Option<u32>,
+    /// Optional ledger sequence at which the course expires and becomes
+    /// no longer enrollable. After this ledger, enrollment is blocked.
+    pub expires_at_ledger: Option<u32>,
 }
 
 /// An enrollment record — one per student per course
@@ -382,6 +385,7 @@ impl HamplardContract {
         token: Address,
         platform_fee_pct: u32,
         max_capacity: Option<u32>,
+        expires_at_ledger: Option<u32>,
     ) -> String {
         instructor.require_auth();
 
@@ -461,7 +465,8 @@ impl HamplardContract {
             total_earned: 0,
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
-            max_capacity, // ← ADD THIS
+            max_capacity,
+            expires_at_ledger,
         };
 
         env.storage()
@@ -640,6 +645,9 @@ impl HamplardContract {
             panic!("course must be paused before archiving");
         }
 
+        let mut refund_count = 0u32;
+        let mut total_refunded = 0i128;
+
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
             let platform_fee_pct = course.platform_fee_percent as i128;
@@ -692,6 +700,9 @@ impl HamplardContract {
                         if course.active_enrollments > 0 {
                             course.active_enrollments -= 1;
                         }
+
+                        refund_count += 1;
+                        total_refunded += platform_amount + instructor_amount;
                     }
                 }
             }
@@ -709,7 +720,14 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
-            (course_id, admin1, admin2),
+            (
+                course_id.clone(),
+                admin1.clone(),
+                admin2.clone(),
+                refund_count,
+                total_refunded,
+                env.ledger().sequence(),
+            ),
         );
     }
 
@@ -811,6 +829,12 @@ impl HamplardContract {
         if let Some(cap) = course.max_capacity {
             if course.total_enrollments >= cap {
                 panic!("course has reached maximum enrollment capacity");
+            }
+        }
+
+        if let Some(expiry) = course.expires_at_ledger {
+            if env.ledger().sequence() >= expiry {
+                panic!("course has expired");
             }
         }
 
@@ -1399,7 +1423,14 @@ impl HamplardContract {
                 Symbol::new(&env, "certificate_revoked"),
                 certificate_id.clone(),
             ),
-            (certificate_id, admin, reason),
+            (
+                admin.clone(),
+                certificate_id.clone(),
+                cert.student.clone(),
+                cert.course_id.clone(),
+                reason.clone(),
+                env.ledger().sequence(),
+            ),
         );
     }
 
