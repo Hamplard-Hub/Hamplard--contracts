@@ -1034,6 +1034,12 @@ impl HamplardContract {
             }
         }
 
+        if let Some(expiry) = course.expires_at_ledger {
+            if env.ledger().sequence() >= expiry {
+                panic!("course has expired");
+            }
+        }
+
         // Archive the completed enrollment — including its evidence hash
         // and certificate_id linkage — before it is overwritten.
         let history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
