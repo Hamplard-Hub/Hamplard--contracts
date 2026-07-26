@@ -113,10 +113,19 @@ pub struct Course {
     /// Ledger sequence when the course was registered
     pub created_at_ledger: u32,
     pub max_capacity: Option<u32>,
+    /// Optional enrollment expiry duration in ledger sequences.
+    /// If set, an enrollment is considered inactive (expired) after
+    /// `enrolled_at_ledger + enrollment_expiry_ledgers` ledgers.
+    /// Expired enrollments cannot be marked completed and are treated
+    /// as inactive, freeing the conceptual course slot.
+    pub enrollment_expiry_ledgers: Option<u32>,
     /// Minimum ledger sequences that must elapse between a student's
     /// enroll() and mark_completed() for this course. Captured from the
     /// platform's `DefaultMinCompletionLedgers` at registration time.
     pub min_completion_ledgers: u32,
+    /// Ledger sequence of the most recent state-changing write to this record
+    /// (registration, approval, pause/unpause, archival, capacity update, etc.).
+    pub last_updated_ledger: u32,
 }
 
 /// An enrollment record — one per student per course
@@ -483,7 +492,9 @@ impl HamplardContract {
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
             max_capacity,
+            enrollment_expiry_ledgers: None,
             min_completion_ledgers,
+            last_updated_ledger: env.ledger().sequence(),
         };
 
         env.storage()
@@ -578,6 +589,7 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Active;
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -613,6 +625,7 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Paused;
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -646,6 +659,7 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Active;
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -742,6 +756,7 @@ impl HamplardContract {
 
         course.status = CourseStatus::Archived;
 
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -749,6 +764,49 @@ impl HamplardContract {
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
             (course_id, admin1, admin2),
+        );
+    }
+
+    /// Instructor configures an optional enrollment expiry for a course.
+    ///
+    /// After `expiry_ledgers` ledger sequences from the moment a student
+    /// enrolls, that enrollment is considered expired and cannot be marked
+    /// as completed. Set to `None` to remove the expiry.
+    ///
+    /// # Arguments
+    /// - `caller`         — must be the course instructor or admin
+    /// - `course_id`      — the course to update
+    /// - `expiry_ledgers` — optional expiry duration in ledger sequences
+    pub fn set_enrollment_expiry(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        expiry_ledgers: Option<u32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        course.enrollment_expiry_ledgers = expiry_ledgers;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "enrollment_expiry_set"),
+                course_id.clone(),
+            ),
+            (course_id, expiry_ledgers),
         );
     }
 
@@ -975,6 +1033,7 @@ impl HamplardContract {
             .total_earned
             .checked_add(course.price)
             .unwrap_or_else(|| panic!("total earned overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -1161,6 +1220,7 @@ impl HamplardContract {
             .total_earned
             .checked_add(course.price)
             .unwrap_or_else(|| panic!("total earned overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
@@ -1288,6 +1348,19 @@ impl HamplardContract {
             panic!("already marked as completed");
         }
 
+        // Check enrollment expiry — expired enrollments cannot be completed
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+        if let Some(expiry_ledgers) = course.enrollment_expiry_ledgers {
+            let expiry_at = enrollment
+                .enrolled_at_ledger
+                .checked_add(expiry_ledgers)
+                .unwrap_or(u32::MAX);
+            if env.ledger().sequence() >= expiry_at {
+                panic!("enrollment has expired");
+            }
+        }
+
         enrollment.completed = true;
         enrollment.evidence_hash = evidence_hash;
 
@@ -1301,6 +1374,7 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("course not found"));
         if course.active_enrollments > 0 {
             course.active_enrollments -= 1;
+            course.last_updated_ledger = env.ledger().sequence();
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
@@ -1347,6 +1421,9 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
+        if certificate_id.len() == 0 {
+            panic!("certificate_id cannot be empty");
+        }
         if certificate_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("certificate_id exceeds maximum length");
         }
@@ -2035,6 +2112,7 @@ impl HamplardContract {
                 course.active_enrollments -= 1;
             }
 
+            course.last_updated_ledger = env.ledger().sequence();
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
@@ -2184,16 +2262,36 @@ impl HamplardContract {
             .has(&DataKey::Enrollment(student, course_id))
     }
 
-    /// Check whether a student has completed a course
-    pub fn has_completed(env: Env, student: Address, course_id: String) -> bool {
+    /// Check whether a student has completed a course.
+    ///
+    /// Returns:
+    /// - `None`        — student has no enrollment record for this course
+    /// - `Some(false)` — enrolled but not yet completed (or enrollment has expired)
+    /// - `Some(true)`  — enrollment exists and is marked completed
+    pub fn has_completed(env: Env, student: Address, course_id: String) -> Option<bool> {
         if let Some(enrollment) = env
             .storage()
             .persistent()
-            .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id))
+            .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id.clone()))
         {
-            enrollment.completed
+            if enrollment.completed {
+                return Some(true);
+            }
+            // Not yet completed — check if the enrollment window has expired
+            if let Some(course) = Self::get_course_internal(&env, &course_id) {
+                if let Some(expiry_ledgers) = course.enrollment_expiry_ledgers {
+                    let expiry_at = enrollment
+                        .enrolled_at_ledger
+                        .checked_add(expiry_ledgers)
+                        .unwrap_or(u32::MAX);
+                    if env.ledger().sequence() >= expiry_at {
+                        return Some(false); // Expired — treat as inactive
+                    }
+                }
+            }
+            Some(false)
         } else {
-            false
+            None
         }
     }
 

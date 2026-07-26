@@ -2060,7 +2060,7 @@ fn test_enrollment_ttl_extended_on_write() {
         &course_id,
         &Some(String::from_str(&env, "proof")),
     );
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 // ============================================================
@@ -3600,7 +3600,7 @@ fn test_re_enroll_after_completion_succeeds() {
         &course_id,
         &Some(String::from_str(&env, "evidence_1")),
     );
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 
     let treasury_before = token::Client::new(&env, &token_id).balance(&treasury);
 
@@ -4217,6 +4217,51 @@ fn test_get_certificate_unauthorized_third_party_fails() {
 }
 
 #[test]
+#[should_panic]
+fn test_certificate_student_b_without_enrollment_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-SECURE-B",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-SECURE-B");
+    let cert_id = String::from_str(&env, "CERT-SECURE-B");
+
+    // Enroll and complete student_a only
+    client.enroll(&student_a, &course_id);
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    // Try to issue certificate using student_b's address — must panic (no enrollment)
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Secure Course"),
+        &student_b.to_string(),
+        &None,
+        &None,
+    );
+}
+
+#[test]
 fn test_certificate_student_matches_enrollment() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -4247,21 +4292,6 @@ fn test_certificate_student_matches_enrollment() {
         &course_id,
         &Some(String::from_str(&env, "evidence")),
     );
-
-    // Try to issue certificate using student_b's address string as reference.
-    // Since student_b has no enrollment, it must panic.
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.issue_certificate(
-            &admin,
-            &cert_id,
-            &course_id,
-            &String::from_str(&env, "Secure Course"),
-            &student_b.to_string(),
-            &None,
-            &None,
-        );
-    }));
-    assert!(res.is_err());
 
     // Issue certificate correctly using student_a's address
     client.issue_certificate(
@@ -4429,7 +4459,7 @@ fn test_mark_completed_after_min_duration_succeeds() {
         &Some(String::from_str(&env, "evidence")),
     );
 
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 #[test]
@@ -4461,7 +4491,7 @@ fn test_mark_completed_default_zero_delay_allows_immediate_completion() {
         &Some(String::from_str(&env, "evidence")),
     );
 
-    assert!(client.has_completed(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
 
 // ============================================================
@@ -4495,3 +4525,276 @@ fn test_enroll_rejected_for_just_paused_course() {
 }
 
 
+// ============================================================
+// ISSUE FIX TESTS
+// ============================================================
+
+// --- Issue: Empty certificate ID should be rejected ---
+
+#[test]
+#[should_panic(expected = "certificate_id cannot be empty")]
+fn test_issue_certificate_empty_id_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EMPTY-CERT",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EMPTY-CERT");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    // Empty certificate ID must be rejected
+    client.issue_certificate(
+        &admin,
+        &String::from_str(&env, ""),
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+}
+
+// --- Issue: Double revocation should be rejected ---
+
+#[test]
+#[should_panic(expected = "certificate is already revoked")]
+fn test_revoke_certificate_double_revocation_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REVOKE-DBL",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-REVOKE-DBL");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-DBL-REVOKE");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+
+    // First revocation — should succeed
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    // Second revocation — must panic
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "DOUBLE_REVOKE_ATTEMPT"),
+    );
+}
+
+// --- Issue: Same-address admin transfer should be rejected ---
+
+#[test]
+#[should_panic(expected = "proposed admin addresses are identical to current admin addresses")]
+fn test_transfer_admin_same_address_rejected() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Attempt to transfer admin to the exact same pair — must panic
+    client.transfer_admin(&admin, &sec_admin, &admin, &sec_admin);
+}
+
+// --- Issue: Enrollment expiry scenarios ---
+
+#[test]
+#[should_panic(expected = "enrollment has expired")]
+fn test_mark_completed_panics_when_enrollment_expired() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-001");
+
+    // Instructor sets an expiry of 100 ledger sequences
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+
+    // Student enrolls
+    client.enroll(&student, &course_id);
+
+    // Advance ledger past the expiry window
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 200;
+    });
+
+    // mark_completed must panic because the enrollment has expired
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "late_evidence")),
+    );
+}
+
+#[test]
+fn test_has_completed_returns_false_when_enrollment_expired() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-002",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-002");
+
+    // Instructor sets an expiry of 50 ledger sequences
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(50u32));
+
+    // Student enrolls
+    client.enroll(&student, &course_id);
+
+    // Before expiry: has_completed should be false (not completed yet)
+    assert_ne!(client.has_completed(&student, &course_id), Some(true));
+
+    // Advance ledger past the expiry window
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 100;
+    });
+
+    // After expiry: has_completed should still be false (expired enrollment, not completed)
+    assert_ne!(client.has_completed(&student, &course_id), Some(true));
+}
+
+#[test]
+fn test_has_completed_returns_true_when_completed_before_expiry() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-003",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-003");
+
+    // Instructor sets a generous expiry of 1000 ledger sequences
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(1000u32));
+
+    // Student enrolls and completes within the window
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    // Advance past the expiry — completed flag must still be true
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 2000;
+    });
+
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
+
+#[test]
+fn test_enrollment_expiry_none_allows_completion_at_any_time() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-EXPIRY",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-NO-EXPIRY");
+
+    // No expiry set (default None) — student enrolls
+    client.enroll(&student, &course_id);
+
+    // Advance many ledgers
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1_000_000;
+    });
+
+    // Without an expiry, mark_completed must succeed regardless of elapsed time
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "late_evidence")),
+    );
+
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
