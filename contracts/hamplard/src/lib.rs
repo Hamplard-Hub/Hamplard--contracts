@@ -1455,6 +1455,7 @@ impl HamplardContract {
         let course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
 
+        let issued_at_ledger = env.ledger().sequence();
         let certificate = Certificate {
             id: certificate_id.clone(),
             student: enrollment.student.clone(),
@@ -1462,7 +1463,7 @@ impl HamplardContract {
             course_title,
             enrollment_reference: enrollment_reference.clone(),
             instructor: course.instructor,
-            issued_at_ledger: env.ledger().sequence(),
+            issued_at_ledger,
             revoked: false,
             revoked_by: None,
             revoked_at_ledger: None,
@@ -1496,12 +1497,14 @@ impl HamplardContract {
                 .unwrap_or_else(|| panic!("instructor stats overflow"));
         });
 
+        // The certificate ID is indexed in the topics for efficient filtering;
+        // the payload carries the issuance details and audit actor.
         env.events().publish(
             (
                 Symbol::new(&env, "certificate_issued"),
                 certificate_id.clone(),
             ),
-            (student, course_id, admin),
+            (student, course_id, admin, issued_at_ledger),
         );
 
         certificate_id

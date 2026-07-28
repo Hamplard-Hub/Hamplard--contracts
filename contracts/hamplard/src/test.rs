@@ -772,6 +772,77 @@ fn test_full_lifecycle_enroll_complete_certify() {
 }
 
 #[test]
+fn test_certificate_issued_event_contains_full_issuance_details() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-CERT-EVENT-001");
+    let certificate_id = String::from_str(&env, "CERT-EVENT-001");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-EVENT-001",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "completion-proof")),
+    );
+
+    client.issue_certificate(
+        &admin,
+        &certificate_id,
+        &course_id,
+        &String::from_str(&env, "Certificate Event Course"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+
+    let mut issuance_events = 0u32;
+    for (contract, topics, data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+
+        let topic_name: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic_name != Symbol::new(&env, "certificate_issued") {
+            continue;
+        }
+
+        issuance_events += 1;
+        assert_eq!(topics.len(), 2);
+        let event_certificate_id: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
+        assert_eq!(event_certificate_id, certificate_id);
+
+        let (event_student, event_course_id, event_admin, event_ledger): (
+            Address,
+            String,
+            Address,
+            u32,
+        ) = data.try_into_val(&env).unwrap();
+        assert_eq!(event_student, student);
+        assert_eq!(event_course_id, course_id);
+        assert_eq!(event_admin, admin);
+
+        let certificate = client.get_certificate(&student, &certificate_id);
+        assert_eq!(event_ledger, certificate.issued_at_ledger);
+    }
+
+    assert_eq!(issuance_events, 1);
+}
+
+#[test]
 #[should_panic(expected = "student has not completed this course")]
 fn test_certificate_requires_completion() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
@@ -3766,11 +3837,19 @@ fn test_events_emitted_for_admin_operations() {
         &None,
         &None,
     );
-    let (event_student, event_course_id, event_admin): (Address, String, Address) =
-        last_event_val(&env, &contract_id, "certificate_issued").try_into_val(&env).unwrap();
+    let (event_student, event_course_id, event_admin, event_ledger): (
+        Address,
+        String,
+        Address,
+        u32,
+    ) = last_event_val(&env, &contract_id, "certificate_issued")
+        .try_into_val(&env)
+        .unwrap();
     assert_eq!(event_student, student);
     assert_eq!(event_course_id, course_id);
     assert_eq!(event_admin, admin);
+    let certificate = client.get_certificate(&student, &cert_id);
+    assert_eq!(event_ledger, certificate.issued_at_ledger);
 
     // pause_platform / unpause_platform
     client.pause_platform(&admin);
