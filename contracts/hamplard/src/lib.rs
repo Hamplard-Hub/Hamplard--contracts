@@ -837,6 +837,9 @@ impl HamplardContract {
             panic!("course must be paused before archiving");
         }
 
+        let mut refund_count = 0u32;
+        let mut total_refunded = 0i128;
+
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
             let platform_fee_pct = course.platform_fee_percent as i128;
@@ -919,7 +922,14 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
-            (course_id, admin1, admin2),
+            (
+                course_id.clone(),
+                admin1.clone(),
+                admin2.clone(),
+                refund_count,
+                total_refunded,
+                env.ledger().sequence(),
+            ),
         );
     }
 
@@ -1234,6 +1244,12 @@ impl HamplardContract {
             }
         }
 
+        if let Some(expiry) = course.expires_at_ledger {
+            if env.ledger().sequence() >= expiry {
+                panic!("course has expired");
+            }
+        }
+
         if !env
             .storage()
             .instance()
@@ -1480,6 +1496,12 @@ impl HamplardContract {
         if let Some(cap) = course.max_capacity {
             if course.total_enrollments >= cap {
                 panic!("course has reached maximum enrollment capacity");
+            }
+        }
+
+        if let Some(expiry) = course.expires_at_ledger {
+            if env.ledger().sequence() >= expiry {
+                panic!("course has expired");
             }
         }
 
@@ -1943,7 +1965,14 @@ impl HamplardContract {
                 Symbol::new(&env, "certificate_revoked"),
                 certificate_id.clone(),
             ),
-            (certificate_id, admin, reason),
+            (
+                admin.clone(),
+                certificate_id.clone(),
+                cert.student.clone(),
+                cert.course_id.clone(),
+                reason.clone(),
+                env.ledger().sequence(),
+            ),
         );
     }
 

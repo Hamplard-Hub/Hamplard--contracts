@@ -1069,6 +1069,91 @@ fn test_revoke_certificate() {
 }
 
 #[test]
+fn test_event_certificate_revoked() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EVENT-REVOKE",
+        300_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EVENT-REVOKE");
+    let cert_id = String::from_str(&env, "CERT-REVOKE-123");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "proof")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Title"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+
+    let ledger_before = env.ledger().sequence();
+    let reason = String::from_str(&env, "ACADEMIC_DISHONESTY");
+    client.revoke_certificate(&admin, &cert_id, &reason);
+
+    // Verify certificate_revoked event was emitted exactly once with correct data
+    let events = env.events().all();
+    let mut revoke_events = 0u32;
+
+    for (contract, topics, data) in events.iter() {
+        if contract != contract_id {
+            continue;
+        }
+
+        let topic0 = topics.get(0).unwrap();
+        let sym: Symbol = topic0.try_into_val(&env).unwrap();
+
+        if sym == Symbol::new(&env, "certificate_revoked") {
+            revoke_events += 1;
+
+            // Verify topic 1 is the certificate_id
+            let topic1: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            assert_eq!(topic1, cert_id);
+
+            // Verify event data: (admin, certificate_id, student, course_id, reason, ledger_sequence)
+            let (
+                event_admin,
+                event_certificate_id,
+                event_student,
+                event_course_id,
+                event_reason,
+                event_ledger,
+            ): (Address, String, Address, String, String, u32) =
+                data.try_into_val(&env).unwrap();
+
+            assert_eq!(event_admin, admin);
+            assert_eq!(event_certificate_id, cert_id);
+            assert_eq!(event_student, student);
+            assert_eq!(event_course_id, course_id);
+            assert_eq!(event_reason, reason);
+            assert!(event_ledger >= ledger_before);
+        }
+    }
+
+    // Ensure exactly one certificate_revoked event was emitted
+    assert_eq!(revoke_events, 1);
+}
+
+#[test]
 fn test_revoke_certificate_metadata_persisted() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -4464,6 +4549,9 @@ fn test_multi_sig_admin_events_record_both_actors() {
             .try_into_val(&env)
             .unwrap();
     assert_eq!(event_course_id, course_id);
+    assert_eq!(refund_count, 0);
+    assert_eq!(total_refunded, 0);
+    assert!(ledger_seq >= 1);
     assert!(
         (event_admin1 == admin && event_admin2 == sec_admin)
             || (event_admin1 == sec_admin && event_admin2 == admin)
