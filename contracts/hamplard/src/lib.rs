@@ -113,6 +113,10 @@ pub struct Course {
     /// Ledger sequence when the course was registered
     pub created_at_ledger: u32,
     pub max_capacity: Option<u32>,
+    /// Optional ledger sequence before which new enrollments are rejected.
+    /// Allows instructors/admins to create a grace period after approval before
+    /// student intake begins.
+    pub enrollment_start_ledger: Option<u32>,
     /// Optional enrollment expiry duration in ledger sequences.
     /// If set, an enrollment is considered inactive (expired) after
     /// `enrolled_at_ledger + enrollment_expiry_ledgers` ledgers.
@@ -513,6 +517,7 @@ impl HamplardContract {
             status: CourseStatus::Pending,
             created_at_ledger: env.ledger().sequence(),
             max_capacity,
+            enrollment_start_ledger: None,
             enrollment_expiry_ledgers: None,
             min_completion_ledgers,
             last_updated_ledger: env.ledger().sequence(),
@@ -789,6 +794,46 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor or admin configures an optional ledger sequence when enrollment opens.
+    ///
+    /// Set to `None` to allow enrollment immediately after the course becomes Active.
+    /// When set, `enroll()` rejects students until the current ledger sequence is
+    /// greater than or equal to `enrollment_start_ledger`.
+    ///
+    /// # Arguments
+    /// - `caller`                  — must be the course instructor or admin
+    /// - `course_id`               — the course to update
+    /// - `enrollment_start_ledger` — optional ledger sequence when enrollment opens
+    pub fn set_enrollment_start_ledger(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        enrollment_start_ledger: Option<u32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        course.enrollment_start_ledger = enrollment_start_ledger;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_start_set"), course_id.clone()),
+            (course_id, enrollment_start_ledger),
+        );
+    }
+
     /// Instructor configures an optional enrollment expiry for a course.
     ///
     /// After `expiry_ledgers` ledger sequences from the moment a student
@@ -876,10 +921,7 @@ impl HamplardContract {
         );
 
         env.events().publish(
-            (
-                Symbol::new(&env, "content_hash_updated"),
-                course_id.clone(),
-            ),
+            (Symbol::new(&env, "content_hash_updated"), course_id.clone()),
             (course_id, caller, content_hash),
         );
     }
@@ -949,8 +991,8 @@ impl HamplardContract {
             panic!("platform is paused");
         }
 
-        let course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| panic!("course not found"));
+        let course =
+            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
 
         if Self::is_student_blocked_internal(env, student) {
             panic!("student is blocked");
@@ -974,6 +1016,12 @@ impl HamplardContract {
 
         if env.ledger().sequence() <= course.created_at_ledger {
             panic!("cannot enroll in the same ledger the course was registered");
+        }
+
+        if let Some(enrollment_start_ledger) = course.enrollment_start_ledger {
+            if env.ledger().sequence() < enrollment_start_ledger {
+                panic!("enrollment has not started for this course");
+            }
         }
 
         if env
@@ -1001,8 +1049,8 @@ impl HamplardContract {
     fn enroll_internal(env: &Env, student: &Address, course_id: &String) {
         Self::validate_enrollment(env, student, course_id);
 
-        let mut course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| panic!("course not found"));
+        let mut course =
+            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
         let token_client = token::Client::new(env, &course.token);
 
         // Atomicity guarantee: Soroban executes a single contract invocation
@@ -1275,7 +1323,9 @@ impl HamplardContract {
             evidence_hash: None,
         };
 
-        env.storage().persistent().set(&enrollment_key, &new_enrollment);
+        env.storage()
+            .persistent()
+            .set(&enrollment_key, &new_enrollment);
         env.storage().persistent().extend_ttl(
             &enrollment_key,
             Self::PERSISTENT_TTL_THRESHOLD,
@@ -1640,10 +1690,8 @@ impl HamplardContract {
             .instance()
             .set(&DataKey::PlatformPaused, &true);
 
-        env.events().publish(
-            (Symbol::new(&env, "platform_paused"), admin.clone()),
-            admin,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "platform_paused"), admin.clone()), admin);
     }
 
     pub fn unpause_platform(env: Env, admin: Address) {
@@ -1991,10 +2039,7 @@ impl HamplardContract {
             .set(&DataKey::MinReviewDelay, &delay);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "min_review_delay_updated"),
-                admin.clone(),
-            ),
+            (Symbol::new(&env, "min_review_delay_updated"), admin.clone()),
             (admin, delay),
         );
     }
@@ -2287,13 +2332,18 @@ impl HamplardContract {
     /// - The enrollment record has exceeded its TTL and been garbage collected
     ///
     /// To check only existence without retrieving data, use `is_enrolled()`.
-    pub fn get_enrollment(env: Env, caller: Address, student: Address, course_id: String) -> Option<Enrollment> {
+    pub fn get_enrollment(
+        env: Env,
+        caller: Address,
+        student: Address,
+        course_id: String,
+    ) -> Option<Enrollment> {
         caller.require_auth();
         let is_admin = Self::is_admin(&env, &caller);
         let course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
         let is_instructor = caller == course.instructor;
-        
+
         if caller != student && !is_admin && !is_instructor {
             panic!("unauthorized");
         }
@@ -2445,7 +2495,9 @@ impl HamplardContract {
     // ----------------------------------------------------------
 
     fn get_course_internal(env: &Env, course_id: &String) -> Option<Course> {
-        env.storage().persistent().get(&DataKey::Course(course_id.clone()))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Course(course_id.clone()))
     }
 
     fn get_enrollment_internal(env: &Env, student: &Address, course_id: &String) -> Enrollment {
@@ -2533,11 +2585,14 @@ impl HamplardContract {
     ) {
         let key = DataKey::InstructorStats(instructor.clone());
         let mut stats: InstructorStats =
-            env.storage().persistent().get(&key).unwrap_or(InstructorStats {
-                total_students: 0,
-                total_completions: 0,
-                total_certificates: 0,
-            });
+            env.storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or(InstructorStats {
+                    total_students: 0,
+                    total_completions: 0,
+                    total_certificates: 0,
+                });
         f(&mut stats);
         env.storage().persistent().set(&key, &stats);
         env.storage().persistent().extend_ttl(
