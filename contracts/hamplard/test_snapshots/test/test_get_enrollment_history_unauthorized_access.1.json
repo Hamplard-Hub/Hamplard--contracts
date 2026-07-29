@@ -531,6 +531,14 @@
                       "val": {
                         "u32": 2
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
                     }
                   ]
                 }
@@ -670,6 +678,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -783,6 +799,14 @@
                           },
                           "val": {
                             "string": "COURSE-REENROLL-006"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "course_version"
+                          },
+                          "val": {
+                            "u32": 1
                           }
                         },
                         {

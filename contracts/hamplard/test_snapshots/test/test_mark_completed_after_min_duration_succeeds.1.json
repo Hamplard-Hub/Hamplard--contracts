@@ -433,6 +433,7 @@
                         "symbol": "last_updated_ledger"
                       },
                       "val": {
+                        "u32": 1
                         "u32": 51
                       }
                     },
@@ -503,6 +504,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1
@@ -642,6 +651,14 @@
                       },
                       "val": {
                         "string": "COURSE-MIN-DURATION-2"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
