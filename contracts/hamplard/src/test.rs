@@ -2,13 +2,22 @@
 
 use super::*;
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke},
-token, Address, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val,
+    token, Address, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val,
 };
 
 // ============================================================
 // TEST HELPERS
 // ============================================================
+
+#[contract]
+struct NonReceivableInstructorContract;
+
+#[contractimpl]
+impl NonReceivableInstructorContract {
+    pub fn ping(_env: Env) {}
+}
 
 fn setup() -> (Env, Address, Address, Address, Address, Address, Address) {
     let env = Env::default();
@@ -323,6 +332,44 @@ fn test_enroll_success_with_payment_split() {
     let course = client.get_course(&String::from_str(&env, "COURSE-FASHION-001")).unwrap();
     assert_eq!(course.total_enrollments, 1);
     assert_eq!(course.total_earned, price);
+}
+
+#[test]
+fn test_enroll_succeeds_when_instructor_is_contract_address() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let instructor_contract = env.register(NonReceivableInstructorContract, ());
+    let instructor = instructor_contract.clone();
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CONTRACT-INSTRUCTOR-001",
+        price,
+    );
+
+    client.enroll(
+        &student,
+        &String::from_str(&env, "COURSE-CONTRACT-INSTRUCTOR-001"),
+    );
+
+    let platform_share = price * 20 / 100;
+    let instructor_share = price - platform_share;
+
+    // Enrollment remains functional because instructor payout is pull-based.
+    assert_eq!(token_client.balance(&treasury), platform_share);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share
+    );
 }
 
 #[test]
