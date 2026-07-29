@@ -79,6 +79,8 @@ pub enum CourseStatus {
     Paused,
     /// Permanently removed from the platform
     Archived,
+    /// Rejected by admin — not approved for the platform
+    Rejected,
 }
 
 /// A course listing stored on-chain
@@ -137,6 +139,11 @@ pub struct Course {
     /// commitment. Updated only by the instructor or admin via
     /// `update_content_hash()`.
     pub content_hash: BytesN<32>,
+    /// Optional maximum number of certificates that can be issued for this course.
+    /// When set, enforces a hard limit on certificate issuance to prevent credential dilution.
+    pub max_certificates: Option<u32>,
+    /// Number of certificates issued for this course
+    pub certificates_issued: u32,
 }
 
 /// An enrollment record — one per student per course
@@ -159,6 +166,8 @@ pub struct Enrollment {
     pub certificate_id: Option<String>,
     /// Optional proof of completion evidence (e.g. hash)
     pub evidence_hash: Option<String>,
+    /// Whether this enrollment has been refunded
+    pub is_refunded: bool,
 }
 
 /// An on-chain certificate of completion
@@ -522,6 +531,8 @@ impl HamplardContract {
             min_completion_ledgers,
             last_updated_ledger: env.ledger().sequence(),
             content_hash,
+            max_certificates: None,
+            certificates_issued: 0,
         };
 
         env.storage()
@@ -627,6 +638,38 @@ impl HamplardContract {
         );
     }
 
+    /// Admin rejects a Pending course, transitioning it to Rejected status.
+    ///
+    /// # Arguments
+    /// - `admin`     — must match the stored admin address
+    /// - `course_id` — the course to reject
+    /// - `reason`    — rejection reason (e.g., "CONTENT_POLICY_VIOLATION", "DUPLICATE_COURSE")
+    pub fn reject_course(env: Env, admin: Address, course_id: String, reason: String) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "reject_course");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if course.status != CourseStatus::Pending {
+            panic!("course is not pending approval");
+        }
+
+        course.status = CourseStatus::Rejected;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_rejected"), course_id.clone()),
+            (course_id, course.instructor, admin, reason, env.ledger().sequence()),
+        );
+    }
+
     /// Instructor or admin pauses a course.
     /// Existing enrollments are unaffected — students can still access content.
     /// New enrollments are blocked until the course is unpaused.
@@ -659,7 +702,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_paused"), course_id.clone()),
-            course_id,
+            (course_id, CourseStatus::Paused, caller, env.ledger().sequence()),
         );
     }
 
@@ -693,7 +736,7 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_unpaused"), course_id.clone()),
-            course_id,
+            (course_id, CourseStatus::Active, caller, env.ledger().sequence()),
         );
     }
 
@@ -733,10 +776,10 @@ impl HamplardContract {
             for student in students.iter() {
                 let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
                 if env.storage().persistent().has(&enrollment_key) {
-                    let enrollment: Enrollment =
+                    let mut enrollment: Enrollment =
                         env.storage().persistent().get(&enrollment_key).unwrap();
 
-                    if !enrollment.completed {
+                    if !enrollment.completed && !enrollment.is_refunded {
                         let platform_amount = enrollment
                             .amount_paid
                             .checked_mul(platform_fee_pct)
@@ -765,8 +808,9 @@ impl HamplardContract {
                             );
                         }
 
-                        // Remove enrollment
-                        env.storage().persistent().remove(&enrollment_key);
+                        // Mark enrollment as refunded instead of removing it
+                        enrollment.is_refunded = true;
+                        env.storage().persistent().set(&enrollment_key, &enrollment);
 
                         // Decrement active enrollments
                         if course.active_enrollments > 0 {
@@ -1129,6 +1173,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            is_refunded: false,
         };
 
         env.storage().persistent().set(
@@ -1321,6 +1366,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            is_refunded: false,
         };
 
         env.storage()
@@ -1453,6 +1499,10 @@ impl HamplardContract {
 
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
 
+        if enrollment.is_refunded {
+            panic!("cannot mark refunded enrollment as completed");
+        }
+
         let course_for_check = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
         let elapsed = env
@@ -1576,8 +1626,15 @@ impl HamplardContract {
             panic!("certificate ID already exists");
         }
 
-        let course = Self::get_course_internal(&env, &course_id)
+        let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
+
+        // Check per-course certificate limit
+        if let Some(max_certs) = course.max_certificates {
+            if course.certificates_issued >= max_certs {
+                panic!("course has reached maximum certificate issuance limit");
+            }
+        }
 
         let issued_at_ledger = env.ledger().sequence();
         let certificate = Certificate {
@@ -1586,7 +1643,7 @@ impl HamplardContract {
             course_id: course_id.clone(),
             course_title,
             enrollment_reference: enrollment_reference.clone(),
-            instructor: course.instructor,
+            instructor: course.instructor.clone(),
             issued_by: env.current_contract_address(),
             issued_at_ledger,
             revoked: false,
@@ -1614,6 +1671,16 @@ impl HamplardContract {
             &DataKey::Enrollment(student.clone(), course_id.clone()),
             &enrollment,
         );
+
+        // Increment certificate count for course
+        course.certificates_issued = course
+            .certificates_issued
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("certificate count overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
 
         Self::update_instructor_stats(&env, &certificate.instructor, |s| {
             s.total_certificates = s
@@ -2185,7 +2252,7 @@ impl HamplardContract {
             let mut course = Self::get_course_internal(&env, &course_id)
                 .unwrap_or_else(|| panic!("course not found"));
             let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
-            let enrollment = env
+            let mut enrollment = env
                 .storage()
                 .persistent()
                 .get::<DataKey, Enrollment>(&enrollment_key)
@@ -2227,8 +2294,9 @@ impl HamplardContract {
                 );
             }
 
-            // Remove enrollment
-            env.storage().persistent().remove(&enrollment_key);
+            // Mark enrollment as refunded instead of removing it
+            enrollment.is_refunded = true;
+            env.storage().persistent().set(&enrollment_key, &enrollment);
 
             // Decrement active enrollments
             if course.active_enrollments > 0 {
