@@ -259,6 +259,8 @@ pub enum DataKey {
     Admin,
     /// Secondary admin address for multi-sig operations
     SecondaryAdmin,
+    /// Optional ledger sequence when the admin role expires
+    AdminExpiresAt,
     /// Platform treasury address — receives the platform fee share
     Treasury,
     /// Platform default fee percentage (overrideable per course)
@@ -303,6 +305,10 @@ pub enum DataKey {
     InstructorStats(Address),
     /// Blocklist of student addresses who are banned from the platform
     StudentBlocked(Address),
+    /// Total active enrollments across all courses platform-wide
+    TotalActiveEnrollments,
+    /// Maximum total active enrollments allowed platform-wide
+    PlatformEnrollmentCap,
 }
 
 // ============================================================
@@ -772,6 +778,18 @@ impl HamplardContract {
                         if course.active_enrollments > 0 {
                             course.active_enrollments -= 1;
                         }
+
+                        // Decrement platform-wide active enrollment counter
+                        let total_active: u32 = env
+                            .storage()
+                            .instance()
+                            .get(&DataKey::TotalActiveEnrollments)
+                            .unwrap_or(0);
+                        if total_active > 0 {
+                            env.storage()
+                                .instance()
+                                .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
+                        }
                     }
                 }
             }
@@ -1044,6 +1062,22 @@ impl HamplardContract {
         {
             panic!("course token is not approved");
         }
+
+        // Check platform-wide enrollment cap
+        if let Some(platform_cap) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
+        {
+            let total_active: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalActiveEnrollments)
+                .unwrap_or(0);
+            if total_active >= platform_cap {
+                panic!("platform has reached maximum total enrollment capacity");
+            }
+        }
     }
 
     fn enroll_internal(env: &Env, student: &Address, course_id: &String) {
@@ -1159,6 +1193,19 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+
+        // Increment platform-wide active enrollment counter
+        let total_active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalActiveEnrollments)
+            .unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::TotalActiveEnrollments,
+            &(total_active
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("platform enrollment counter overflow"))),
+        );
 
         Self::update_instructor_stats(env, &course.instructor, |s| {
             s.total_students = s
@@ -1349,6 +1396,19 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        // Increment platform-wide active enrollment counter
+        let total_active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalActiveEnrollments)
+            .unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::TotalActiveEnrollments,
+            &(total_active
+                .checked_add(1)
+                .unwrap_or_else(|| panic!("platform enrollment counter overflow"))),
+        );
+
         Self::update_instructor_stats(&env, &course.instructor, |s| {
             s.total_students = s
                 .total_students
@@ -1455,6 +1515,12 @@ impl HamplardContract {
 
         let course_for_check = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
+        
+        // Validate course is in a valid state for completion (Active or Paused, not Archived)
+        if course_for_check.status == CourseStatus::Archived {
+            panic!("cannot mark completion for archived course");
+        }
+        
         let elapsed = env
             .ledger()
             .sequence()
@@ -1502,6 +1568,18 @@ impl HamplardContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
+        }
+
+        // Decrement platform-wide active enrollment counter
+        let total_active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalActiveEnrollments)
+            .unwrap_or(0);
+        if total_active > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
         }
 
         Self::update_instructor_stats(&env, &course.instructor, |s| {
@@ -2027,6 +2105,73 @@ impl HamplardContract {
             .unwrap_or(50)
     }
 
+    /// Set the admin role expiry ledger sequence.
+    /// When the current ledger exceeds this value, admin operations are blocked.
+    /// Pass `None` to remove the expiry (admin role remains valid indefinitely).
+    pub fn set_admin_expiry(env: Env, admin1: Address, admin2: Address, expires_at: Option<u32>) {
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
+        
+        if let Some(expiry) = expires_at {
+            if expiry <= env.ledger().sequence() {
+                panic!("expiry must be in the future");
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::AdminExpiresAt, &expiry);
+        } else {
+            env.storage().instance().remove(&DataKey::AdminExpiresAt);
+        }
+        
+        env.events().publish(
+            (Symbol::new(&env, "admin_expiry_set"), admin1.clone()),
+            (admin1, admin2, expires_at),
+        );
+    }
+
+    /// Get the admin role expiry ledger sequence, if set.
+    pub fn get_admin_expiry(env: Env) -> Option<u32> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AdminExpiresAt)
+    }
+
+    /// Set the platform-wide maximum total active enrollment cap.
+    /// Pass `None` to remove the cap (unlimited enrollments).
+    pub fn set_platform_enrollment_cap(env: Env, admin: Address, cap: Option<u32>) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_platform_enrollment_cap");
+        
+        if let Some(cap_value) = cap {
+            env.storage()
+                .instance()
+                .set(&DataKey::PlatformEnrollmentCap, &cap_value);
+        } else {
+            env.storage().instance().remove(&DataKey::PlatformEnrollmentCap);
+        }
+        
+        env.events().publish(
+            (Symbol::new(&env, "platform_enrollment_cap_set"), admin.clone()),
+            (admin, cap),
+        );
+    }
+
+    /// Get the platform-wide maximum total active enrollment cap, if set.
+    pub fn get_platform_enrollment_cap(env: Env) -> Option<u32> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformEnrollmentCap)
+    }
+
+    /// Get the current total active enrollments platform-wide.
+    pub fn get_total_active_enrollments(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalActiveEnrollments)
+            .unwrap_or(0)
+    }
+
     /// Update the minimum review delay (in ledger sequences)
     pub fn update_min_review_delay(env: Env, admin: Address, delay: u32) {
         admin.require_auth();
@@ -2239,6 +2384,18 @@ impl HamplardContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
+
+            // Decrement platform-wide active enrollment counter
+            let total_active: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalActiveEnrollments)
+                .unwrap_or(0);
+            if total_active > 0 {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
+            }
 
             request.status = RefundStatus::Approved;
         } else {
@@ -2529,6 +2686,17 @@ impl HamplardContract {
     fn require_admin(env: &Env, caller: &Address, operation: &str) {
         if !Self::is_admin(env, caller) {
             panic!("unauthorized: {} - caller is not admin", operation);
+        }
+        
+        // Check if admin role has expired
+        if let Some(expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::AdminExpiresAt)
+        {
+            if env.ledger().sequence() >= expires_at {
+                panic!("admin role has expired");
+            }
         }
     }
 
