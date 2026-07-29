@@ -462,6 +462,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
@@ -474,6 +480,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
@@ -543,6 +557,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1

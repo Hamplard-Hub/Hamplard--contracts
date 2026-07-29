@@ -642,6 +642,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
@@ -654,6 +660,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "last_updated_ledger"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
@@ -726,6 +740,14 @@
                       },
                       "val": {
                         "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     }
                   ]
@@ -866,6 +888,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -977,6 +1007,14 @@
                       },
                       "val": {
                         "string": "COURSE-HAIR-001"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
@@ -1096,6 +1134,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -1211,6 +1257,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -1322,6 +1376,14 @@
                       },
                       "val": {
                         "string": "COURSE-HAIR-001"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
