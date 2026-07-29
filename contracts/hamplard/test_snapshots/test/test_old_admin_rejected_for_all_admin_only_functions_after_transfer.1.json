@@ -860,6 +860,7 @@
                         "symbol": "last_updated_ledger"
                       },
                       "val": {
+                        "u32": 1
                         "u32": 2
                       }
                     },
@@ -930,6 +931,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1
@@ -1098,6 +1107,14 @@
                       "val": {
                         "u32": 1
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
                     }
                   ]
                 }
@@ -1242,6 +1259,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -1355,6 +1380,14 @@
                       },
                       "val": {
                         "string": "COURSE-OLD-ADMIN-REFUND"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {
