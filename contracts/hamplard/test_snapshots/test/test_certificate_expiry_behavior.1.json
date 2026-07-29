@@ -686,6 +686,14 @@
                       "val": {
                         "u32": 1
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
                     }
                   ]
                 }
@@ -823,6 +831,14 @@
                       },
                       "val": {
                         "string": "COURSE-EXPIRY"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

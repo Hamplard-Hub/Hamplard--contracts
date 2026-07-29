@@ -514,6 +514,14 @@
                       "val": {
                         "u32": 1
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
                     }
                   ]
                 }
@@ -649,6 +657,14 @@
                       },
                       "val": {
                         "string": "COURSE-EARN-DBL"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

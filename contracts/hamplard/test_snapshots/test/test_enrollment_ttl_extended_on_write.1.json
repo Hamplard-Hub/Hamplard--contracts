@@ -411,6 +411,7 @@
                         "symbol": "last_updated_ledger"
                       },
                       "val": {
+                        "u32": 1
                         "u32": 5000001
                       }
                     },
@@ -481,6 +482,14 @@
                     {
                       "key": {
                         "symbol": "total_enrollments"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
                       },
                       "val": {
                         "u32": 1
@@ -620,6 +629,14 @@
                       },
                       "val": {
                         "string": "COURSE-TTL-002"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

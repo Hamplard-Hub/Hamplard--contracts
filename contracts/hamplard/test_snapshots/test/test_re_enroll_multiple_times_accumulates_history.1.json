@@ -679,6 +679,14 @@
                       "val": {
                         "u32": 3
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
                     }
                   ]
                 }
@@ -818,6 +826,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "course_version"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "enrolled_at_ledger"
                       },
                       "val": {
@@ -935,6 +951,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "course_version"
+                          },
+                          "val": {
+                            "u32": 1
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "enrolled_at_ledger"
                           },
                           "val": {
@@ -1000,6 +1024,14 @@
                           },
                           "val": {
                             "string": "COURSE-REENROLL-005"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "course_version"
+                          },
+                          "val": {
+                            "u32": 1
                           }
                         },
                         {

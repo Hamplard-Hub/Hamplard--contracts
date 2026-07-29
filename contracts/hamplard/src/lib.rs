@@ -18,6 +18,7 @@
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `get_platform_fee` — retrieves platform fee configuration (admin only)
 //! - `withdraw_tokens` — emergency sweep of contract-held tokens (admin only)
 //!
 //! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
@@ -127,6 +128,10 @@ pub struct Course {
     /// enroll() and mark_completed() for this course. Captured from the
     /// platform's `DefaultMinCompletionLedgers` at registration time.
     pub min_completion_ledgers: u32,
+    /// Incremental version counter tracking course metadata updates
+    pub version: u32,
+    /// Ledger sequence when the course was last updated
+    pub last_updated_ledger: u32,
     /// Ledger sequence of the most recent state-changing write to this record
     /// (registration, approval, pause/unpause, archival, capacity update, etc.).
     pub last_updated_ledger: u32,
@@ -159,6 +164,8 @@ pub struct Enrollment {
     pub certificate_id: Option<String>,
     /// Optional proof of completion evidence (e.g. hash)
     pub evidence_hash: Option<String>,
+    /// Course version active at the time of enrollment
+    pub course_version: u32,
 }
 
 /// An on-chain certificate of completion
@@ -526,6 +533,8 @@ impl HamplardContract {
             enrollment_start_ledger: None,
             enrollment_expiry_ledgers: None,
             min_completion_ledgers,
+            version: 1,
+            last_updated_ledger: env.ledger().sequence(),
             last_updated_ledger: env.ledger().sequence(),
             content_hash,
         };
@@ -812,6 +821,16 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor or admin updates course details (e.g. price, capacity).
+    /// Increments the course version so prior student enrollments remain bound to
+    /// their original enrollment terms.
+    pub fn update_course(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        new_price: Option<i128>,
+        new_max_capacity: Option<Option<u32>>,
+    ) -> u32 {
     /// Instructor or admin configures an optional ledger sequence when enrollment opens.
     ///
     /// Set to `None` to allow enrollment immediately after the course becomes Active.
@@ -840,6 +859,54 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        let mut modified = false;
+
+        if let Some(price) = new_price {
+            if price < 0 {
+                panic!("price cannot be negative");
+            }
+            if price != 0
+                && (price < Self::MIN_COURSE_PRICE_STROOPS || price > Self::MAX_COURSE_PRICE_STROOPS)
+            {
+                panic!("price is outside the expected USDC precision range (0 for free, or 0.01-100000 USDC in stroops)");
+            }
+            course.price = price;
+            modified = true;
+        }
+
+        if let Some(capacity) = new_max_capacity {
+            course.max_capacity = capacity;
+            modified = true;
+        }
+
+        if !modified {
+            return course.version;
+        }
+
+        course.version = course
+            .version
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("course version overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_updated"), course_id.clone()),
+            (course_id, course.version, caller),
+        );
+
+        course.version
         course.enrollment_start_ledger = enrollment_start_ledger;
         course.last_updated_ledger = env.ledger().sequence();
         env.storage()
@@ -1163,6 +1230,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            course_version: course.version,
         };
 
         env.storage().persistent().set(
@@ -1368,6 +1436,7 @@ impl HamplardContract {
             certificate_issued: false,
             certificate_id: None,
             evidence_hash: None,
+            course_version: course.version,
         };
 
         env.storage()
@@ -2560,6 +2629,7 @@ impl HamplardContract {
             .has(&DataKey::Enrollment(student, course_id))
     }
 
+    /// Check whether a student has completed a course
     /// Check whether a student has completed a course.
     ///
     /// Returns:
@@ -2572,6 +2642,7 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id.clone()))
         {
+            Some(enrollment.completed)
             if enrollment.completed {
                 return Some(true);
             }
@@ -2639,8 +2710,10 @@ impl HamplardContract {
         page
     }
 
-    /// Get the current platform fee percentage
-    pub fn get_platform_fee(env: Env) -> u32 {
+    /// Get the current platform fee percentage (Admin only)
+    pub fn get_platform_fee(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "get_platform_fee");
         env.storage()
             .instance()
             .get::<DataKey, u32>(&DataKey::DefaultFee)
