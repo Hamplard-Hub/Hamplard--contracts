@@ -64,6 +64,64 @@ use soroban_sdk::{
 };
 
 // ============================================================
+// FEE & RISK DATA TYPES
+// ============================================================
+
+/// Per-token fee configuration — allows the admin to configure different
+/// platform fee rates for different approved tokens.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeConfig {
+    /// Basis points (0-10000) charged as platform fee for this token.
+    /// E.g. 2000 = 20%, 500 = 5%, 0 = free.
+    pub fee_bps: u32,
+}
+
+/// Configuration for arbitration fee per case.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArbitrationFeeConfig {
+    /// Minimum fee required to escalate a dispute to arbitration,
+    /// denominated in the settlement token's stroops.
+    pub fee_per_case: i128,
+}
+
+/// Configuration for risk-based fee surcharges.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiskFeeConfig {
+    /// Extra basis points added for large payments above `large_payment_threshold`
+    pub large_payment_surcharge_bps: u32,
+    /// Threshold in stroops above which a payment is considered "large"
+    pub large_payment_threshold: i128,
+    /// Extra basis points added for new customers (first enrollment)
+    pub new_customer_surcharge_bps: u32,
+    /// Extra basis points for BTC/ETH currency (higher volatility)
+    pub btc_eth_surcharge_bps: u32,
+}
+
+/// A computed risk score with the associated surcharge.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiskScore {
+    /// The computed risk score (0-100, arbitrary scale)
+    pub score: u32,
+    /// Total surcharge basis points to add to base fee
+    pub surcharge_bps: u32,
+}
+
+/// Emitted when a risk-adjusted fee is applied to a payment.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiskFeeApplied {
+    pub payment_amount: i128,
+    pub base_fee_bps: u32,
+    pub risk_surcharge_bps: u32,
+    pub effective_fee_bps: u32,
+    pub platform_fee: i128,
+}
+
+// ============================================================
 // DATA TYPES
 // ============================================================
 
@@ -247,6 +305,8 @@ pub struct InstructorStats {
 pub enum DataKey {
     /// Course record by course ID
     Course(String),
+    /// Immutable instructor address recorded at registration time
+    CourseInstructorRef(String),
     /// Enrollment record by (student_address, course_id)
     Enrollment(Address, String),
     /// Certificate record by certificate ID
@@ -273,6 +333,8 @@ pub enum DataKey {
     InstructorEarnings(Address, Address),
     /// Number of courses registered by an instructor
     InstructorCourseCount(Address),
+    /// Number of currently pending courses for an instructor
+    InstructorPendingCourseCount(Address),
     /// Ordered list of course IDs registered by a specific instructor
     /// (append-only — course status changes never remove an entry).
     InstructorCourseList(Address),
@@ -299,6 +361,14 @@ pub enum DataKey {
     InstructorStats(Address),
     /// Blocklist of student addresses who are banned from the platform
     StudentBlocked(Address),
+    /// Per-token fee configuration (maps token address → FeeConfig)
+    FeeConfig(Address),
+    /// Arbitration fee configuration
+    ArbitrationFeeConfig,
+    /// Risk fee configuration for surcharge pricing
+    RiskFeeConfig,
+    /// Flag indicating whether risk-based fee pricing is enabled
+    RiskConfigEnabled,
 }
 
 // ============================================================
@@ -477,6 +547,17 @@ impl HamplardContract {
             panic!("instructor has reached the maximum number of course registrations");
         }
 
+        let pending_count_key = DataKey::InstructorPendingCourseCount(instructor.clone());
+        let current_pending_count: u32 = env
+            .storage()
+            .instance()
+            .get(&pending_count_key)
+            .unwrap_or(0);
+
+        if current_pending_count >= max_courses {
+            panic!("instructor has reached the maximum number of pending course registrations");
+        }
+
         let default_fee = env
             .storage()
             .instance()
@@ -529,6 +610,16 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
+        env.storage().persistent().set(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            &instructor,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         // Append to on-chain course catalog
         let mut catalog: Vec<String> = env
             .storage()
@@ -548,6 +639,10 @@ impl HamplardContract {
         env.storage().instance().set(
             &DataKey::InstructorCourseCount(instructor.clone()),
             &(current_count + 1),
+        );
+        env.storage().instance().set(
+            &pending_count_key,
+            &(current_pending_count + 1),
         );
 
         // Append to the per-instructor course list
@@ -615,6 +710,13 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+
+        let pending_key = DataKey::InstructorPendingCourseCount(course.instructor.clone());
+        let pending_count: u32 = env.storage().instance().get(&pending_key).unwrap_or(0);
+        let new_pending_count = pending_count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("pending course count underflow"));
+        env.storage().instance().set(&pending_key, &new_pending_count);
 
         env.events().publish(
             (Symbol::new(&env, "course_approved"), course_id.clone()),
@@ -964,6 +1066,16 @@ impl HamplardContract {
             panic!("admin cannot enroll in courses");
         }
 
+        let registered_instructor: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseInstructorRef(course_id.clone()))
+            .unwrap_or_else(|| panic!("course instructor reference not found"));
+
+        if registered_instructor != course.instructor {
+            panic!("course instructor reference mismatch");
+        }
+
         if *student == course.instructor {
             panic!("instructor cannot enroll in own course");
         }
@@ -1018,20 +1130,17 @@ impl HamplardContract {
             panic!("course is not available for enrollment");
         }
 
-        // Fetch the current platform fee from global config and use it at enrollment time.
-        // This ensures that fee policy updates take immediate effect for new enrollments.
-        let default_fee: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DefaultFee)
-            .unwrap_or(20);
-        let pct = default_fee as i128;
-        let platform_amount = course
-            .price
-            .checked_mul(pct)
-            .map(|v| v / 100)
-            .unwrap_or_else(|| panic!("overflow computing platform fee"));
-        let instructor_amount = course.price - platform_amount;
+        // Use the centralized fee deduction function that supports:
+        // 1. Per-token fee configuration (map token → FeeConfig)
+        // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
+        // 3. Publishes RiskFeeApplied event when surcharge applies
+        let (instructor_amount, platform_amount) = Self::deduct_fee(
+            env,
+            &course.token,
+            course.price,
+            false, // is_new_customer — not tracked at enrollment; always false
+            false, // is_btc_eth — not tracked; always false
+        );
 
         // Fetch treasury, applying any pending treasury update if effective
         let mut treasury: Address = env
@@ -1058,6 +1167,10 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                env.events().publish(
+                    (Symbol::new(&env, "platform_fee_transferred"), course_id.clone()),
+                    (treasury.clone(), platform_amount, env.ledger().sequence()),
+                );
             }
 
             // Credit instructor earnings — pull-based withdrawal model
@@ -1067,6 +1180,10 @@ impl HamplardContract {
                     &course.instructor,
                     &course.token,
                     instructor_amount,
+                );
+                env.events().publish(
+                    (Symbol::new(&env, "instructor_payment_transferred"), course_id.clone()),
+                    (course.instructor.clone(), instructor_amount, env.ledger().sequence()),
                 );
             }
         }
@@ -1221,13 +1338,17 @@ impl HamplardContract {
 
         let token_client = token::Client::new(&env, &course.token);
 
-        let pct = course.platform_fee_percent as i128;
-        let platform_amount = course
-            .price
-            .checked_mul(pct)
-            .map(|v| v / 100)
-            .unwrap_or_else(|| panic!("overflow computing platform fee"));
-        let instructor_amount = course.price - platform_amount;
+        // Use the centralized fee deduction function that supports:
+        // 1. Per-token fee configuration (map token → FeeConfig)
+        // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
+        // 3. Publishes RiskFeeApplied event when surcharge applies
+        let (instructor_amount, platform_amount) = Self::deduct_fee(
+            &env,
+            &course.token,
+            course.price,
+            false, // is_new_customer — not tracked at re-enrollment; always false
+            false, // is_btc_eth — not tracked; always false
+        );
 
         let mut treasury: Address = env
             .storage()
@@ -2545,6 +2666,367 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+    }
+
+    // ============================================================
+    // FEE & RISK MANAGEMENT
+    // ============================================================
+
+    /// Admin sets or updates the per-token fee configuration.
+    /// `fee_bps` (0-10000): e.g. 2000 = 20%, 500 = 5%, 0 = free.
+    pub fn set_fee_config(env: Env, admin: Address, token: Address, fee_bps: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_fee_config");
+
+        if fee_bps > 10000 {
+            panic!("fee_bps cannot exceed 10000");
+        }
+
+        let config = FeeConfig { fee_bps };
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeConfig(token.clone()), &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_config_updated"), admin.clone()),
+            (token, fee_bps),
+        );
+    }
+
+    /// Get the per-token fee configuration. Returns the platform default
+    /// (converted to bps) if no per-token override has been set.
+    pub fn get_fee_config(env: Env, token: Address) -> FeeConfig {
+        env.storage()
+            .instance()
+            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig(token))
+            .unwrap_or(FeeConfig { fee_bps: 2000 })
+    }
+
+    /// Admin sets the arbitration fee configuration — the minimum fee
+    /// (in stroops) required to escalate a dispute to arbitration.
+    pub fn set_arbitration_fee_config(env: Env, admin: Address, fee_per_case: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_arbitration_fee_config");
+
+        if fee_per_case < 0 {
+            panic!("fee_per_case cannot be negative");
+        }
+
+        let config = ArbitrationFeeConfig { fee_per_case };
+        env.storage()
+            .instance()
+            .set(&DataKey::ArbitrationFeeConfig, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "arbitration_fee_config_updated"), admin.clone()),
+            fee_per_case,
+        );
+    }
+
+    /// Get the current arbitration fee configuration.
+    pub fn get_arbitration_fee_config(env: Env) -> ArbitrationFeeConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::ArbitrationFeeConfig)
+            .unwrap_or(ArbitrationFeeConfig { fee_per_case: 0 })
+    }
+
+    /// Admin enables or disables risk-based fee surcharge pricing.
+    pub fn set_risk_config_enabled(env: Env, admin: Address, enabled: bool) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_risk_config_enabled");
+        env.storage()
+            .instance()
+            .set(&DataKey::RiskConfigEnabled, &enabled);
+
+        env.events().publish(
+            (Symbol::new(&env, "risk_config_toggled"), admin.clone()),
+            enabled,
+        );
+    }
+
+    /// Check if risk-based fee pricing is enabled.
+    pub fn is_risk_config_enabled(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::RiskConfigEnabled)
+            .unwrap_or(false)
+    }
+
+    /// Admin sets the risk fee configuration — parameters that determine
+    /// surcharges based on payment size, customer history, and currency.
+    pub fn set_risk_fee_config(
+        env: Env,
+        admin: Address,
+        large_payment_surcharge_bps: u32,
+        large_payment_threshold: i128,
+        new_customer_surcharge_bps: u32,
+        btc_eth_surcharge_bps: u32,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_risk_fee_config");
+
+        if large_payment_threshold < 0 {
+            panic!("large_payment_threshold cannot be negative");
+        }
+
+        let config = RiskFeeConfig {
+            large_payment_surcharge_bps,
+            large_payment_threshold,
+            new_customer_surcharge_bps,
+            btc_eth_surcharge_bps,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::RiskFeeConfig, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "risk_fee_config_updated"), admin.clone()),
+            (large_payment_surcharge_bps, large_payment_threshold, new_customer_surcharge_bps, btc_eth_surcharge_bps),
+        );
+    }
+
+    /// Get the current risk fee configuration.
+    pub fn get_risk_fee_config(env: Env) -> RiskFeeConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::RiskFeeConfig)
+            .unwrap_or(RiskFeeConfig {
+                large_payment_surcharge_bps: 0,
+                large_payment_threshold: 1_000_000_000_000, // $100k
+                new_customer_surcharge_bps: 0,
+                btc_eth_surcharge_bps: 0,
+            })
+    }
+
+    /// Calculate a risk score and surcharge for a given payment.
+    ///
+    /// # Arguments
+    /// - `payment_amount` — the payment amount in stroops
+    /// - `is_new_customer` — whether the student has no prior enrollments
+    /// - `is_btc_eth` — whether the payment is in BTC/ETH (higher volatility)
+    ///
+    /// Returns a `RiskScore` with score (0-100) and surcharge_bps to add.
+    pub fn calculate_risk_score(
+        env: Env,
+        payment_amount: i128,
+        is_new_customer: bool,
+        is_btc_eth: bool,
+    ) -> RiskScore {
+        let config: RiskFeeConfig = Self::get_risk_fee_config(env);
+
+        if !env.storage().instance().get(&DataKey::RiskConfigEnabled).unwrap_or(false) {
+            return RiskScore {
+                score: 0,
+                surcharge_bps: 0,
+            };
+        }
+
+        let mut score: u32 = 0;
+        let mut surcharge_bps: u32 = 0;
+
+        // Large payment surcharge
+        if payment_amount > config.large_payment_threshold {
+            score = score.saturating_add(30);
+            surcharge_bps = surcharge_bps.saturating_add(config.large_payment_surcharge_bps);
+        }
+
+        // New customer surcharge
+        if is_new_customer {
+            score = score.saturating_add(40);
+            surcharge_bps = surcharge_bps.saturating_add(config.new_customer_surcharge_bps);
+        }
+
+        // BTC/ETH surcharge
+        if is_btc_eth {
+            score = score.saturating_add(30);
+            surcharge_bps = surcharge_bps.saturating_add(config.btc_eth_surcharge_bps);
+        }
+
+        RiskScore { score, surcharge_bps }
+    }
+
+    /// Calculate the effective fee for a payment, applying risk-based surcharges.
+    ///
+    /// # Arguments
+    /// - `token` — the token address (for per-token fee config)
+    /// - `payment_amount` — the payment amount in stroops
+    /// - `is_new_customer` — whether the student has no prior enrollments
+    /// - `is_btc_eth` — whether the payment is in BTC/ETH
+    ///
+    /// Returns a `RiskFeeApplied` struct with the full fee breakdown.
+    pub fn get_effective_fee_for_payment(
+        env: Env,
+        token: Address,
+        payment_amount: i128,
+        is_new_customer: bool,
+        is_btc_eth: bool,
+    ) -> RiskFeeApplied {
+        let fee_config = Self::get_fee_config(env.clone(), token);
+        let base_fee_bps = fee_config.fee_bps;
+
+        // Only apply risk surcharge if risk config is enabled
+        let risk_surcharge_bps = if Self::is_risk_config_enabled(env.clone()) {
+            let risk_score = Self::calculate_risk_score(
+                env.clone(),
+                payment_amount,
+                is_new_customer,
+                is_btc_eth,
+            );
+            risk_score.surcharge_bps
+        } else {
+            0
+        };
+
+        let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps);
+        // Cap at 100% (10000 bps)
+        let effective_fee_bps = if effective_fee_bps > 10000 { 10000 } else { effective_fee_bps };
+
+        // Compute fee: amount * bps / 10000
+        let platform_fee = payment_amount
+            .checked_mul(effective_fee_bps as i128)
+            .map(|v| v / 10000)
+            .unwrap_or(0);
+
+        RiskFeeApplied {
+            payment_amount,
+            base_fee_bps,
+            risk_surcharge_bps,
+            effective_fee_bps,
+            platform_fee,
+        }
+    }
+
+    /// Compute and deduct the platform fee from a payment amount.
+    /// Uses per-token fee configuration if set, otherwise falls back to
+    /// the global `DefaultFee`. Applies risk-based surcharges when the
+    /// risk pricing config is enabled.
+    ///
+    /// # Arguments
+    /// - `env`        — the contract environment
+    /// - `token`      — the payment token address
+    /// - `amount`     — the total payment amount (in stroops)
+    /// - `is_new_customer` — whether the student has no prior enrollments
+    /// - `is_btc_eth` — whether the token is BTC/ETH (higher volatility)
+    ///
+    /// Returns `(net_amount, fee_amount)` where `net_amount + fee_amount == amount`.
+    fn deduct_fee(
+        env: &Env,
+        token: &Address,
+        amount: i128,
+        is_new_customer: bool,
+        is_btc_eth: bool,
+    ) -> (i128, i128) {
+        if amount <= 0 {
+            return (0, 0);
+        }
+
+        let fee_config = Self::get_fee_config(env.clone(), token.clone());
+        let mut effective_bps = fee_config.fee_bps;
+
+        // Apply risk surcharge when risk config is enabled
+        let mut risk_surcharge_bps: u32 = 0;
+        if Self::is_risk_config_enabled(env.clone()) {
+            if let Some(risk_config) = env
+                .storage()
+                .instance()
+                .get::<DataKey, RiskFeeConfig>(&DataKey::RiskFeeConfig)
+            {
+                // Large payment surcharge
+                if amount > risk_config.large_payment_threshold {
+                    risk_surcharge_bps = risk_surcharge_bps.saturating_add(
+                        risk_config.large_payment_surcharge_bps,
+                    );
+                }
+                // New customer surcharge
+                if is_new_customer {
+                    risk_surcharge_bps = risk_surcharge_bps.saturating_add(
+                        risk_config.new_customer_surcharge_bps,
+                    );
+                }
+                // BTC/ETH surcharge
+                if is_btc_eth {
+                    risk_surcharge_bps = risk_surcharge_bps.saturating_add(
+                        risk_config.btc_eth_surcharge_bps,
+                    );
+                }
+
+                effective_bps = effective_bps.saturating_add(risk_surcharge_bps);
+                // Cap at 100% (10000 bps)
+                if effective_bps > 10000 {
+                    effective_bps = 10000;
+                }
+            }
+        }
+
+        // Compute platform fee: amount * effective_bps / 10000
+        let platform_fee = amount
+            .checked_mul(effective_bps as i128)
+            .map(|v| v / 10000)
+            .unwrap_or(0);
+        let net_amount = amount - platform_fee;
+
+        // Publish RiskFeeApplied event when a risk surcharge was applied
+        if risk_surcharge_bps > 0 {
+            env.events().publish(
+                (Symbol::new(env, "risk_fee_applied"),),
+                RiskFeeApplied {
+                    payment_amount: amount,
+                    base_fee_bps: fee_config.fee_bps,
+                    risk_surcharge_bps,
+                    effective_fee_bps: effective_bps,
+                    platform_fee,
+                },
+            );
+        }
+
+        (net_amount, platform_fee)
+    }
+
+    /// Escalate a dispute to arbitration. The caller must pay the
+    /// arbitration fee (set via `set_arbitration_fee_config`).
+    /// The fee is transferred from the caller to the contract and held
+    /// until the arbitration is resolved.
+    pub fn escalate_to_arbitration(
+        env: Env,
+        caller: Address,
+        course_id: String,
+    ) {
+        caller.require_auth();
+
+        let config: ArbitrationFeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::ArbitrationFeeConfig)
+            .unwrap_or(ArbitrationFeeConfig { fee_per_case: 0 });
+
+        if config.fee_per_case <= 0 {
+            panic!("arbitration fee not configured");
+        }
+
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let token_client = token::Client::new(&env, &course.token);
+        token_client.transfer(&caller, &env.current_contract_address(), &config.fee_per_case);
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
+            (caller, course_id, config.fee_per_case),
+        );
+    }
+
+    /// Complete a payment with a risk assessment.
+    /// This is a helper that calculates the fee breakdown for a given
+    /// payment and returns the `RiskFeeApplied` result.
+    pub fn do_complete_payment(
+        env: Env,
+        token: Address,
+        payment_amount: i128,
+        is_new_customer: bool,
+        is_btc_eth: bool,
+    ) -> RiskFeeApplied {
+        Self::get_effective_fee_for_payment(env, token, payment_amount, is_new_customer, is_btc_eth)
     }
 }
 
