@@ -126,6 +126,13 @@ pub struct Course {
     /// Ledger sequence of the most recent state-changing write to this record
     /// (registration, approval, pause/unpause, archival, capacity update, etc.).
     pub last_updated_ledger: u32,
+    /// SHA-256 (or equivalent 32-byte) hash of the off-chain course content
+    /// (syllabus, video manifest, etc.) at registration time.
+    /// Allows students and auditors to verify that off-chain materials have not
+    /// been silently changed after enrollment by comparing against the stored
+    /// commitment. Updated only by the instructor or admin via
+    /// `update_content_hash()`.
+    pub content_hash: BytesN<32>,
 }
 
 /// An enrollment record — one per student per course
@@ -167,6 +174,11 @@ pub struct Certificate {
     pub enrollment_reference: String,
     /// Instructor's address (for attribution)
     pub instructor: Address,
+    /// The contract address that issued this certificate.
+    /// Allows external verifiers to distinguish certificates issued by
+    /// different deployments (testnet, mainnet, upgraded versions) without
+    /// relying on off-chain metadata.
+    pub issued_by: Address,
     /// Ledger sequence when the certificate was issued
     pub issued_at_ledger: u32,
     /// Whether this certificate has been revoked (e.g. cheating)
@@ -326,9 +338,12 @@ impl HamplardContract {
     /// Called once by the deployer immediately after deployment.
     ///
     /// # Arguments
-    /// - `admin`            — admin address (approves courses, issues certificates)
-    /// - `treasury`         — platform treasury address (receives platform fee share)
-    /// - `default_fee_pct`  — default platform fee percentage (e.g. 20 = 20%)
+    /// - `admin`                    — admin address (approves courses, issues certificates)
+    /// - `treasury`                 — platform treasury address (receives platform fee share)
+    /// - `default_fee_pct`          — default platform fee percentage (e.g. 20 = 20%)
+    /// - `refund_window_ledgers`    — number of ledger sequences after enrollment during which a
+    ///                                refund request is accepted; requests after this window are
+    ///                                automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
     pub fn init(
         env: Env,
         admin: Address,
@@ -336,6 +351,7 @@ impl HamplardContract {
         treasury: Address,
         default_fee_pct: u32,
         max_courses_per_instructor: u32,
+        refund_window_ledgers: u32,
     ) {
         admin.require_auth();
 
@@ -382,6 +398,9 @@ impl HamplardContract {
             &DataKey::MaxCoursesPerInstructor,
             &max_courses_per_instructor,
         );
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &refund_window_ledgers);
     }
 
     // ----------------------------------------------------------
@@ -398,6 +417,7 @@ impl HamplardContract {
     /// - `price`            — enrollment price in USDC stroops
     /// - `token`            — USDC Stellar Asset Contract address
     /// - `platform_fee_pct` — optional fee override; pass 0 to use platform default
+    /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
     pub fn register_course(
         env: Env,
         instructor: Address,
@@ -406,6 +426,7 @@ impl HamplardContract {
         token: Address,
         platform_fee_pct: u32,
         max_capacity: Option<u32>,
+        content_hash: BytesN<32>,
     ) -> String {
         instructor.require_auth();
 
@@ -495,6 +516,7 @@ impl HamplardContract {
             enrollment_expiry_ledgers: None,
             min_completion_ledgers,
             last_updated_ledger: env.ledger().sequence(),
+            content_hash,
         };
 
         env.storage()
@@ -807,6 +829,58 @@ impl HamplardContract {
                 course_id.clone(),
             ),
             (course_id, expiry_ledgers),
+        );
+    }
+
+    /// Update the content hash commitment for a course.
+    ///
+    /// Only the course instructor or the platform admin may call this.
+    /// The course must not be Archived — content updates on a retired course
+    /// have no practical effect and are rejected to avoid misleading auditors.
+    ///
+    /// # Arguments
+    /// - `caller`       — instructor or admin address (must sign)
+    /// - `course_id`    — the course whose hash is being updated
+    /// - `content_hash` — new 32-byte hash of the off-chain course content
+    pub fn update_content_hash(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        content_hash: BytesN<32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update content hash of an archived course");
+        }
+
+        course.content_hash = content_hash.clone();
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "content_hash_updated"),
+                course_id.clone(),
+            ),
+            (course_id, caller, content_hash),
         );
     }
 
@@ -1463,6 +1537,7 @@ impl HamplardContract {
             course_title,
             enrollment_reference: enrollment_reference.clone(),
             instructor: course.instructor,
+            issued_by: env.current_contract_address(),
             issued_at_ledger,
             revoked: false,
             revoked_by: None,
@@ -2186,8 +2261,21 @@ impl HamplardContract {
     // READ-ONLY QUERIES
     // ----------------------------------------------------------
 
-    /// Get a course record by ID
+    /// Get a course record by ID.
+    /// Extends the course's persistent storage TTL on every read so that
+    /// actively queried courses never expire silently due to read-only traffic.
     pub fn get_course(env: Env, course_id: String) -> Option<Course> {
+        let key = DataKey::Course(course_id.clone());
+        // Extend TTL whenever the entry exists, regardless of whether we return
+        // Some or None — the has() check is cheap and the extend is a no-op when
+        // the entry is absent.
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
         Self::get_course_internal(&env, &course_id)
     }
 
