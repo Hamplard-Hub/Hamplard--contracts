@@ -1329,6 +1329,33 @@ fn test_pause_and_unpause_course() {
     assert_eq!(course.status, CourseStatus::Active);
 }
 
+/// Double-pause must be rejected (Active-status precondition)
+#[test]
+#[should_panic(expected = "course is not active")]
+fn test_pause_course_double_pause_rejected() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-DOUBLE-PAUSE");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-DOUBLE-PAUSE",
+        100_000_000,
+    );
+
+    // First pause succeeds
+    client.pause_course(&instructor, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Paused);
+
+    // Second pause on already-Paused course must panic
+    client.pause_course(&instructor, &course_id);
+}
+
 #[test]
 fn test_update_platform_fee() {
     let (env, contract_id, _, admin, sec_admin, _, _) = setup();
