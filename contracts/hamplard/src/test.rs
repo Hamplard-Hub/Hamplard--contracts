@@ -5155,6 +5155,147 @@ fn test_revoke_certificate_double_revocation_rejected() {
     );
 }
 
+// --- Issue #116: Revocation must be a one-way, permanent operation ---
+
+#[test]
+fn test_revoke_certificate_metadata_unchanged_after_rejected_double_revoke() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-IMMUTABLE-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-IMMUTABLE-001");
+    let cert_id = String::from_str(&env, "CERT-IMMUTABLE-001");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Test Course"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+
+    let original_reason = String::from_str(&env, "ISSUED_IN_ERROR");
+    client.revoke_certificate(&admin, &cert_id, &original_reason);
+
+    let cert_after_first = client.get_certificate(&admin, &cert_id);
+    assert!(cert_after_first.revoked);
+
+    // A second (rejected) revocation attempt must not mutate any stored
+    // revocation metadata — the panic happens before any write.
+    let result = client.try_revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "DOUBLE_REVOKE_ATTEMPT"),
+    );
+    assert!(result.is_err());
+
+    let cert_after_second = client.get_certificate(&admin, &cert_id);
+    assert!(cert_after_second.revoked);
+    assert_eq!(cert_after_second.revoked_by, cert_after_first.revoked_by);
+    assert_eq!(
+        cert_after_second.revoked_at_ledger,
+        cert_after_first.revoked_at_ledger
+    );
+    assert_eq!(
+        cert_after_second.revocation_reason,
+        Some(original_reason)
+    );
+}
+
+#[test]
+#[should_panic(expected = "certificate ID already exists")]
+fn test_revoke_certificate_id_cannot_be_reused_to_unrevoke() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REUSE-A",
+        500_000_000,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REUSE-B",
+        500_000_000,
+    );
+
+    let course_a = String::from_str(&env, "COURSE-REUSE-A");
+    let course_b = String::from_str(&env, "COURSE-REUSE-B");
+    let cert_id = String::from_str(&env, "CERT-REUSE-SHARED");
+
+    // Issue and revoke a certificate under course A.
+    client.enroll(&student_a, &course_a);
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_a,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_a,
+        &String::from_str(&env, "Course A"),
+        &student_a.to_string(),
+        &None,
+        &None,
+    );
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "ISSUED_IN_ERROR"));
+
+    // A completely unrelated enrollment must not be able to reuse the same
+    // certificate ID to create a fresh, non-revoked record — doing so would
+    // effectively "un-revoke" the credential under that ID.
+    client.enroll(&student_b, &course_b);
+    client.mark_completed(
+        &admin,
+        &student_b,
+        &course_b,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_b,
+        &String::from_str(&env, "Course B"),
+        &student_b.to_string(),
+        &None,
+        &None,
+    );
+}
+
 // --- Issue: Same-address admin transfer should be rejected ---
 
 #[test]
