@@ -259,7 +259,9 @@ pub struct Certificate {
     pub issued_by: Address,
     /// Ledger sequence when the certificate was issued
     pub issued_at_ledger: u32,
-    /// Whether this certificate has been revoked (e.g. cheating)
+    /// Whether this certificate has been revoked (e.g. cheating).
+    /// One-way and append-only: once `true`, no function may set this back
+    /// to `false`. See `revoke_certificate` for the sole write path.
     pub revoked: bool,
     /// Admin address that performed the revocation, if revoked
     pub revoked_by: Option<Address>,
@@ -2014,14 +2016,18 @@ impl HamplardContract {
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id.clone()))
             .unwrap_or_else(|| panic!("certificate not found"));
 
-        if cert.revoked {
-            panic!("certificate is already revoked");
-        }
+        // Revocation is permanent: once `revoked` is true it can never be
+        // cleared, so the only legal transition here is false -> true.
+        assert!(!cert.revoked, "certificate is already revoked");
 
         cert.revoked = true;
         cert.revoked_by = Some(admin.clone());
         cert.revoked_at_ledger = Some(env.ledger().sequence());
         cert.revocation_reason = Some(reason.clone());
+
+        // Defensive check against a future edit accidentally weakening the
+        // transition above (e.g. making revocation conditional or toggleable).
+        assert!(cert.revoked, "revocation must remain true; revocation cannot be reversed");
 
         env.storage()
             .persistent()
