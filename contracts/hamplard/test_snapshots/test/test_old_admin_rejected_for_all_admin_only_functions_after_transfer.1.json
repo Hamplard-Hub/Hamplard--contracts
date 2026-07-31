@@ -72,6 +72,9 @@
                 },
                 {
                   "u32": 50
+                },
+                {
+                  "u32": 1000
                 }
               ]
             }
@@ -154,7 +157,10 @@
                 {
                   "u32": 0
                 },
-                "void"
+                "void",
+                {
+                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
               ]
             }
           },
@@ -446,7 +452,10 @@
                 {
                   "u32": 0
                 },
-                "void"
+                "void",
+                {
+                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
               ]
             }
           },
@@ -739,6 +748,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "issued_by"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "revocation_reason"
                       },
                       "val": "void"
@@ -827,6 +844,22 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificates_issued"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": {
+                        "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "created_at_ledger"
                       },
                       "val": {
@@ -836,6 +869,18 @@
                     {
                       "key": {
                         "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_start_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "expires_at_ledger"
                       },
                       "val": "void"
                     },
@@ -860,13 +905,18 @@
                         "symbol": "last_updated_ledger"
                       },
                       "val": {
-                        "u32": 1
                         "u32": 2
                       }
                     },
                     {
                       "key": {
                         "symbol": "max_capacity"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_certificates"
                       },
                       "val": "void"
                     },
@@ -1000,6 +1050,22 @@
                     },
                     {
                       "key": {
+                        "symbol": "certificates_issued"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": {
+                        "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "created_at_ledger"
                       },
                       "val": {
@@ -1009,6 +1075,18 @@
                     {
                       "key": {
                         "symbol": "enrollment_expiry_ledgers"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "enrollment_start_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "expires_at_ledger"
                       },
                       "val": "void"
                     },
@@ -1039,6 +1117,12 @@
                     {
                       "key": {
                         "symbol": "max_capacity"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_certificates"
                       },
                       "val": "void"
                     },
@@ -1117,6 +1201,96 @@
                       }
                     }
                   ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          6300001
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "CourseInstructorRef"
+                },
+                {
+                  "string": "COURSE-OLD-ADMIN"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CourseInstructorRef"
+                    },
+                    {
+                      "string": "COURSE-OLD-ADMIN"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          6300000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "CourseInstructorRef"
+                },
+                {
+                  "string": "COURSE-OLD-ADMIN-REFUND"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CourseInstructorRef"
+                    },
+                    {
+                      "string": "COURSE-OLD-ADMIN-REFUND"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 }
               }
             },
@@ -1283,6 +1457,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "is_refunded"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "student"
                       },
                       "val": {
@@ -1403,6 +1585,14 @@
                         "symbol": "evidence_hash"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "is_refunded"
+                      },
+                      "val": {
+                        "bool": false
+                      }
                     },
                     {
                       "key": {
@@ -1604,6 +1794,54 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "InstructorTotalEarnings"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "InstructorTotalEarnings"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 800000000
+                  }
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          6300001
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "RefundRequest"
                 },
                 {
@@ -1766,6 +2004,21 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "InstructorPendingCourseCount"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "MaxCoursesPerInstructor"
                             }
                           ]
@@ -1790,12 +2043,36 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "RefundWindow"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1000
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "SecondaryAdmin"
                             }
                           ]
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalActiveEnrollments"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
