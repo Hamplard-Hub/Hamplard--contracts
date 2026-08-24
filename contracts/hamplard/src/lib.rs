@@ -25,6 +25,8 @@
 //! - `archive_course` — permanent course removal; may trigger student refunds
 //! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
 //! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
+//! - `propose_upgrade` / `upgrade_contract` / `cancel_upgrade` — time-locked contract code
+//!   upgrade; see "Contract Upgrades" below
 //!
 //! ## Payment Guarantees
 //! - On enrollment the full course price is transferred from the student atomically:
@@ -54,6 +56,18 @@
 //!   `transfer_admin` / `accept_admin` flow with both current admins signing.
 //! - **Treasury update delay** — `update_treasury` takes effect 100 ledgers after proposal;
 //!   enrollments submitted within that window still route fees to the old treasury.
+//!
+//! ## Contract Upgrades
+//! - The contract can migrate to a new Wasm implementation in place, preserving all
+//!   enrollment, certificate, and course data — no redeploy or data loss required to
+//!   ship a fix.
+//! - Upgrades are two-step and time-locked: `propose_upgrade` (both admins) records the
+//!   new Wasm hash and starts a `get_upgrade_timelock()`-ledger review window (default
+//!   ~1 day); `upgrade_contract` (both admins) executes it only after that window has
+//!   elapsed. `cancel_upgrade` withdraws a pending proposal at any time.
+//! - A compromised single admin key cannot upgrade the contract — both admin signatures
+//!   are required for every step, and the time-lock gives observers a chance to react to
+//!   a malicious proposal before it can take effect.
 
 #![no_std]
 
@@ -206,6 +220,10 @@ pub struct Course {
     pub max_certificates: Option<u32>,
     /// Number of certificates issued for this course
     pub certificates_issued: u32,
+    /// Course IDs that must be completed (with an issued, non-revoked
+    /// certificate) before a student may enroll in this course. Empty
+    /// means no prerequisites. Configured via `set_prerequisite_courses`.
+    pub prerequisite_course_ids: Vec<String>,
 }
 
 /// An enrollment record — one per student per course
@@ -398,6 +416,24 @@ pub enum DataKey {
     TotalActiveEnrollments,
     /// Maximum total active enrollments allowed platform-wide
     PlatformEnrollmentCap,
+    /// A proposed contract Wasm upgrade awaiting its time-lock, if any.
+    PendingUpgrade,
+    /// Configurable time-lock (in ledger sequences) that must elapse
+    /// between an upgrade proposal and its execution.
+    UpgradeTimelock,
+}
+
+/// A proposed contract code upgrade awaiting its governance time-lock.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingUpgrade {
+    /// Hash of the new Wasm code, previously uploaded via
+    /// `env.deployer().upload_contract_wasm()`.
+    pub new_wasm_hash: BytesN<32>,
+    /// Ledger sequence when the upgrade was proposed.
+    pub proposed_at_ledger: u32,
+    /// Ledger sequence at or after which `upgrade_contract` may execute.
+    pub effective_ledger: u32,
 }
 
 // ============================================================
@@ -428,6 +464,10 @@ impl HamplardContract {
     /// Catches an accidental extra digit turning a reasonable price into
     /// an absurd one.
     const MAX_COURSE_PRICE_STROOPS: i128 = 1_000_000_000_000;
+    /// Default governance time-lock for contract upgrades, in ledger
+    /// sequences (~17,280 ledgers ≈ 1 day at 5s/ledger). Used when the
+    /// admin has not configured a custom value via `set_upgrade_timelock`.
+    const DEFAULT_UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 
     // ----------------------------------------------------------
     // INIT
@@ -685,6 +725,7 @@ impl HamplardContract {
             content_hash,
             max_certificates: None,
             certificates_issued: 0,
+            prerequisite_course_ids: Vec::new(&env),
         };
 
         env.storage()
@@ -1168,6 +1209,74 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor or admin configures the list of prerequisite course IDs
+    /// that a student must have completed — with an issued, non-revoked
+    /// certificate — before they may enroll in this course.
+    ///
+    /// Pass an empty list to remove all prerequisites.
+    ///
+    /// # Arguments
+    /// - `caller`                  — must be the course instructor or admin
+    /// - `course_id`               — the course to update
+    /// - `prerequisite_course_ids` — course IDs that must be completed first
+    pub fn set_prerequisite_courses(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        prerequisite_course_ids: Vec<String>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        for i in 0..prerequisite_course_ids.len() {
+            let prereq_id = prerequisite_course_ids.get(i).unwrap();
+
+            if prereq_id == course_id {
+                panic!("course cannot be its own prerequisite");
+            }
+
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Course(prereq_id.clone()))
+            {
+                panic!("prerequisite course not found");
+            }
+        }
+
+        course.prerequisite_course_ids = prerequisite_course_ids.clone();
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "prerequisite_courses_set"),
+                course_id.clone(),
+            ),
+            (course_id, prerequisite_course_ids),
+        );
+    }
+
     /// Update the content hash commitment for a course.
     ///
     /// Only the course instructor or the platform admin may call this.
@@ -1350,6 +1459,34 @@ impl HamplardContract {
             .has(&DataKey::ApprovedToken(course.token.clone()))
         {
             panic!("course token is not approved");
+        }
+
+        // Every prerequisite course must have an issued, non-revoked
+        // certificate on record for this student before enrollment proceeds.
+        for i in 0..course.prerequisite_course_ids.len() {
+            let prereq_id = course.prerequisite_course_ids.get(i).unwrap();
+
+            let prereq_enrollment: Option<Enrollment> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Enrollment(student.clone(), prereq_id.clone()));
+
+            let has_valid_certificate = match prereq_enrollment {
+                Some(e) if e.certificate_issued => match e.certificate_id {
+                    Some(cert_id) => env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, Certificate>(&DataKey::Certificate(cert_id))
+                        .map(|c| !c.revoked)
+                        .unwrap_or(false),
+                    None => false,
+                },
+                _ => false,
+            };
+
+            if !has_valid_certificate {
+                panic!("prerequisite course not completed");
+            }
         }
 
         // Check platform-wide enrollment cap
@@ -2062,6 +2199,15 @@ impl HamplardContract {
     /// Revoked certificates remain on-chain for audit purposes but are flagged.
     /// The revoking admin's address, the ledger sequence, and a reason code are
     /// all persisted so the revocation is fully auditable after the fact.
+    ///
+    /// Revocation does **not** clear `Enrollment.certificate_issued` or
+    /// `Enrollment.certificate_id` — that enrollment record permanently
+    /// carries the fact that a certificate was issued for it. Because
+    /// `issue_certificate` panics whenever `certificate_issued` is already
+    /// `true`, a revoked certificate can never be replaced by re-issuing a
+    /// fresh certificate against the same enrollment. Certifying the student
+    /// again requires a new enrollment (see `re_enroll`), which starts from
+    /// a clean `Enrollment` record.
     ///
     /// # Arguments
     /// - `admin`          — must match stored admin
@@ -2827,6 +2973,161 @@ impl HamplardContract {
                 total_completions: 0,
                 total_certificates: 0,
             })
+    }
+
+    // ----------------------------------------------------------
+    // CONTRACT UPGRADE
+    // ----------------------------------------------------------
+    //
+    // Upgrades are two-step and time-locked:
+    //   1. `propose_upgrade`  — both admins sign, recording the new Wasm
+    //      hash and an `effective_ledger` at least `UpgradeTimelock`
+    //      ledgers in the future.
+    //   2. `upgrade_contract` — both admins sign again, after
+    //      `effective_ledger` has passed, to actually swap the code.
+    // This gives observers a mandatory window to review a pending upgrade
+    // (and, if compromised, react) before it can take effect. A pending
+    // upgrade can be withdrawn at any time via `cancel_upgrade`.
+    //
+    // Enrollment, certificate, and all other contract storage is untouched
+    // by an upgrade — only the executable Wasm code is replaced, so
+    // existing data survives across versions.
+
+    /// Propose a contract code upgrade. Requires both admin signatures.
+    ///
+    /// `new_wasm_hash` must reference Wasm already uploaded on-chain via
+    /// `env.deployer().upload_contract_wasm()`. The upgrade cannot be
+    /// executed via `upgrade_contract` until `UpgradeTimelock` ledgers have
+    /// elapsed, giving the community a governance review window.
+    ///
+    /// Proposing again while an upgrade is already pending replaces it
+    /// (and resets the time-lock) rather than stacking proposals.
+    pub fn propose_upgrade(env: Env, admin1: Address, admin2: Address, new_wasm_hash: BytesN<32>) {
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let timelock = Self::get_upgrade_timelock(env.clone());
+        let proposed_at_ledger = env.ledger().sequence();
+        let effective_ledger = proposed_at_ledger
+            .checked_add(timelock)
+            .unwrap_or_else(|| panic!("overflow computing upgrade effective ledger"));
+
+        let pending = PendingUpgrade {
+            new_wasm_hash: new_wasm_hash.clone(),
+            proposed_at_ledger,
+            effective_ledger,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &pending);
+
+        env.events().publish(
+            (Symbol::new(&env, "upgrade_proposed"), new_wasm_hash.clone()),
+            (
+                new_wasm_hash,
+                admin1,
+                admin2,
+                proposed_at_ledger,
+                effective_ledger,
+            ),
+        );
+    }
+
+    /// Cancel a pending upgrade proposal. Requires both admin signatures.
+    pub fn cancel_upgrade(env: Env, admin1: Address, admin2: Address) {
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
+
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic!("no pending upgrade"));
+
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "upgrade_cancelled"),
+                pending.new_wasm_hash.clone(),
+            ),
+            (pending.new_wasm_hash, admin1, admin2, env.ledger().sequence()),
+        );
+    }
+
+    /// Execute a pending upgrade once its time-lock has elapsed. Requires
+    /// both admin signatures. Replaces this contract's executable Wasm —
+    /// all persistent and instance storage (enrollments, certificates,
+    /// courses, admin config, etc.) is preserved across the upgrade.
+    pub fn upgrade_contract(env: Env, admin1: Address, admin2: Address) {
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
+
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic!("no pending upgrade"));
+
+        if env.ledger().sequence() < pending.effective_ledger {
+            panic!("upgrade time-lock has not elapsed");
+        }
+
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "upgrade_executed"),
+                pending.new_wasm_hash.clone(),
+            ),
+            (
+                pending.new_wasm_hash.clone(),
+                admin1,
+                admin2,
+                env.ledger().sequence(),
+            ),
+        );
+
+        env.deployer()
+            .update_current_contract_wasm(pending.new_wasm_hash);
+    }
+
+    /// Configure the upgrade governance time-lock, in ledger sequences.
+    /// Requires both admin signatures. Does not affect an already-pending
+    /// upgrade's `effective_ledger` — propose a new upgrade to apply a
+    /// changed time-lock.
+    pub fn set_upgrade_timelock(env: Env, admin1: Address, admin2: Address, ledgers: u32) {
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeTimelock, &ledgers);
+
+        env.events().publish(
+            (Symbol::new(&env, "upgrade_timelock_updated"), admin1.clone()),
+            (admin1, admin2, ledgers),
+        );
+    }
+
+    /// Get the currently configured upgrade time-lock, in ledger sequences.
+    pub fn get_upgrade_timelock(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeTimelock)
+            .unwrap_or(Self::DEFAULT_UPGRADE_TIMELOCK_LEDGERS)
+    }
+
+    /// Get the currently pending upgrade proposal, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&DataKey::PendingUpgrade)
     }
 
     // ----------------------------------------------------------
