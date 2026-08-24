@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::testutils::storage::Persistent;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke},
@@ -6903,4 +6904,54 @@ fn test_mark_completed_succeeds_on_paused_course() {
         .get_enrollment(&admin, &student, &String::from_str(&env, "COURSE-001"))
         .unwrap();
     assert!(enrollment.completed);
+}
+
+#[test]
+fn test_mark_completed_extends_enrollment_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-COMPLETION",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-TTL-COMPLETION");
+    client.enroll(&student, &course_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 5_000_000;
+        l.min_persistent_entry_ttl = 100_000;
+        l.min_temp_entry_ttl = 100_000;
+    });
+
+    let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
+
+    let ttl_before = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&enrollment_key)
+    });
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    let ttl_after = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&enrollment_key)
+    });
+
+    assert!(
+        ttl_after > ttl_before,
+        "mark_completed should extend the enrollment TTL"
+    );
 }
