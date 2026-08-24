@@ -265,7 +265,7 @@ pub struct Certificate {
     /// Admin address that performed the revocation, if revoked
     pub revoked_by: Option<Address>,
     /// Ledger sequence when the revocation occurred, if revoked
-    pub revoked_at_ledger: Option<u32>,
+    pub revocation_ledger: Option<u32>,
     /// Reason code supplied by the revoking admin, if revoked
     pub revocation_reason: Option<String>,
     /// Optional ledger sequence when the certificate expires
@@ -2004,7 +2004,7 @@ impl HamplardContract {
             issued_at_ledger,
             revoked: false,
             revoked_by: None,
-            revoked_at_ledger: None,
+            revocation_ledger: None,
             revocation_reason: None,
             expires_at_ledger,
             instructor_signature,
@@ -2086,7 +2086,7 @@ impl HamplardContract {
 
         cert.revoked = true;
         cert.revoked_by = Some(admin.clone());
-        cert.revoked_at_ledger = Some(env.ledger().sequence());
+        cert.revocation_ledger = Some(env.ledger().sequence());
         cert.revocation_reason = Some(reason.clone());
 
         // Defensive check against a future edit accidentally weakening the
