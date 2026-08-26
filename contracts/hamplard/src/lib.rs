@@ -250,6 +250,15 @@ pub struct Enrollment {
     pub is_refunded: bool,
     /// Course version active at the time of enrollment
     pub course_version: u32,
+    /// Platform's share of `amount_paid`, as actually deducted at
+    /// enroll()/re_enroll() time via `deduct_fee()`. Persisted so that a
+    /// later refund splits funds in the same proportion that was actually
+    /// collected, even if `FeeConfig(token)` or `course.platform_fee_percent`
+    /// changes afterward.
+    pub platform_amount: i128,
+    /// Instructor's share of `amount_paid`, as actually credited to
+    /// `InstructorEarnings` at enroll()/re_enroll() time.
+    pub instructor_amount: i128,
 }
 
 /// An on-chain certificate of completion
@@ -999,7 +1008,6 @@ impl HamplardContract {
 
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
-            let platform_fee_pct = course.platform_fee_percent as i128;
 
             let treasury: Address = env
                 .storage()
@@ -1014,13 +1022,13 @@ impl HamplardContract {
                         env.storage().persistent().get(&enrollment_key).unwrap();
 
                     if !enrollment.completed && !enrollment.is_refunded {
-                        let platform_amount = enrollment
-                            .amount_paid
-                            .checked_mul(platform_fee_pct)
-                            .map(|v| v / 100)
-                            .unwrap_or_else(|| panic!("overflow computing platform fee"));
-
-                        let instructor_amount = enrollment.amount_paid - platform_amount;
+                        // Use the split actually applied at enroll()/re_enroll()
+                        // time (persisted on the enrollment record) rather than
+                        // recomputing it from course.platform_fee_percent, which
+                        // may have diverged from the FeeConfig (and any risk
+                        // surcharge) that deduct_fee() actually applied.
+                        let platform_amount = enrollment.platform_amount;
+                        let instructor_amount = enrollment.instructor_amount;
 
                         // Refund platform fee from treasury
                         if platform_amount > 0 {
@@ -1606,6 +1614,8 @@ impl HamplardContract {
             evidence_hash: None,
             is_refunded: false,
             course_version: course.version,
+            platform_amount,
+            instructor_amount,
         };
 
         env.storage().persistent().set(
@@ -1823,6 +1833,8 @@ impl HamplardContract {
             evidence_hash: None,
             is_refunded: false,
             course_version: course.version,
+            platform_amount,
+            instructor_amount,
         };
 
         env.storage()
@@ -2850,14 +2862,13 @@ impl HamplardContract {
                 .get::<DataKey, Enrollment>(&enrollment_key)
                 .unwrap_or_else(|| panic!("enrollment not found"));
 
-            let platform_fee_pct = course.platform_fee_percent as i128;
-            let platform_amount = enrollment
-                .amount_paid
-                .checked_mul(platform_fee_pct)
-                .map(|v| v / 100)
-                .unwrap_or_else(|| panic!("overflow computing platform fee"));
-
-            let instructor_amount = enrollment.amount_paid - platform_amount;
+            // Use the split actually applied at enroll()/re_enroll() time
+            // (persisted on the enrollment record) rather than recomputing
+            // it from course.platform_fee_percent, which is never consulted
+            // at enrollment and may have since diverged from the FeeConfig
+            // (and any risk surcharge) that deduct_fee() actually applied.
+            let platform_amount = enrollment.platform_amount;
+            let instructor_amount = enrollment.instructor_amount;
 
             let token_client = token::Client::new(&env, &course.token);
             let treasury: Address = env
