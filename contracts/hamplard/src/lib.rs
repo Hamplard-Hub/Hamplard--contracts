@@ -2066,9 +2066,10 @@ impl HamplardContract {
                 .unwrap_or_else(|| panic!("instructor stats overflow"));
         });
 
+        let completion_ledger = env.ledger().sequence();
         env.events().publish(
             (Symbol::new(&env, "course_completed"), course_id.clone()),
-            (student, admin),
+            (student, admin, completion_ledger),
         );
     }
 

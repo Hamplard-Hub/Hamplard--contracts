@@ -451,6 +451,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
