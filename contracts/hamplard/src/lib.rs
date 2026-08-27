@@ -6,12 +6,13 @@
 //! |-------------------|------------------------|-----------------------------------------------------------------------|
 //! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform  |
 //! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
-//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings     |
+//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings, transfer course (with admin co-approval) |
 //! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll                   |
 //! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
 //!
 //! ## Privileged Operations (single admin)
 //! - `approve_course` — moves a course from Pending to Active
+//! - `transfer_course` — co-approves an instructor-initiated course ownership transfer
 //! - `mark_completed` — marks a student enrollment as completed
 //! - `issue_certificate` — mints an on-chain certificate of completion
 //! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
@@ -975,6 +976,163 @@ impl HamplardContract {
                 course_id,
                 CourseStatus::Active,
                 caller,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Transfer course ownership from the current instructor to a new instructor.
+    ///
+    /// Only the current instructor may initiate the transfer, and the platform
+    /// admin must co-approve in the same invocation. The course record is
+    /// updated in place: enrollment history, earnings already credited to the
+    /// previous instructor, and all other course state are left untouched.
+    /// The course is neither archived nor re-registered.
+    ///
+    /// # Arguments
+    /// - `instructor`     — current course instructor (must sign)
+    /// - `admin`          — platform admin (must sign; co-approval)
+    /// - `course_id`      — the course to transfer
+    /// - `new_instructor` — address that will become the course instructor
+    pub fn transfer_course(
+        env: Env,
+        instructor: Address,
+        admin: Address,
+        course_id: String,
+        new_instructor: Address,
+    ) {
+        instructor.require_auth();
+        admin.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if instructor != course.instructor {
+            panic!("unauthorized");
+        }
+
+        Self::require_admin(&env, &admin, "transfer_course");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot transfer archived course");
+        }
+
+        if new_instructor == course.instructor {
+            panic!("new instructor must differ from current instructor");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &new_instructor) {
+            panic!("instructor is frozen");
+        }
+
+        let max_courses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxCoursesPerInstructor)
+            .unwrap_or(50);
+
+        let new_count_key = DataKey::InstructorCourseCount(new_instructor.clone());
+        let new_count: u32 = env.storage().instance().get(&new_count_key).unwrap_or(0);
+        if new_count >= max_courses {
+            panic!("instructor has reached the maximum number of course registrations");
+        }
+
+        if course.status == CourseStatus::Pending {
+            let new_pending_key = DataKey::InstructorPendingCourseCount(new_instructor.clone());
+            let new_pending: u32 = env.storage().instance().get(&new_pending_key).unwrap_or(0);
+            if new_pending >= max_courses {
+                panic!("instructor has reached the maximum number of pending course registrations");
+            }
+        }
+
+        let previous_instructor = course.instructor.clone();
+
+        course.instructor = new_instructor.clone();
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // Keep CourseInstructorRef in sync so enroll() continues to succeed
+        // after ownership changes. Enrollment records themselves are untouched.
+        env.storage().persistent().set(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            &new_instructor,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        let old_count_key = DataKey::InstructorCourseCount(previous_instructor.clone());
+        let old_count: u32 = env.storage().instance().get(&old_count_key).unwrap_or(0);
+        let decremented_old = old_count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("instructor course count underflow"));
+        env.storage()
+            .instance()
+            .set(&old_count_key, &decremented_old);
+        env.storage()
+            .instance()
+            .set(&new_count_key, &(new_count + 1));
+
+        if course.status == CourseStatus::Pending {
+            let old_pending_key =
+                DataKey::InstructorPendingCourseCount(previous_instructor.clone());
+            let old_pending: u32 = env.storage().instance().get(&old_pending_key).unwrap_or(0);
+            let decremented_pending = old_pending
+                .checked_sub(1)
+                .unwrap_or_else(|| panic!("pending course count underflow"));
+            env.storage()
+                .instance()
+                .set(&old_pending_key, &decremented_pending);
+
+            let new_pending_key = DataKey::InstructorPendingCourseCount(new_instructor.clone());
+            let new_pending: u32 = env.storage().instance().get(&new_pending_key).unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&new_pending_key, &(new_pending + 1));
+        }
+
+        // InstructorCourseList is append-only for the previous instructor
+        // (it records every course they ever registered). Append the course
+        // to the new instructor's list so they can query it going forward.
+        let new_list_key = DataKey::InstructorCourseList(new_instructor.clone());
+        let mut new_instructor_courses: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&new_list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        new_instructor_courses.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&new_list_key, &new_instructor_courses);
+        env.storage().persistent().extend_ttl(
+            &new_list_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_transferred"), course_id.clone()),
+            (
+                course_id,
+                previous_instructor,
+                new_instructor,
+                admin,
                 env.ledger().sequence(),
             ),
         );
