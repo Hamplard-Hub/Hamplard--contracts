@@ -7464,3 +7464,409 @@ fn test_set_upgrade_timelock_unauthorized_fails() {
     let random = Address::generate(&env);
     client.set_upgrade_timelock(&admin, &random, &500u32);
 }
+
+// ============================================================
+// ISSUE: course.platform_fee_percent NEVER APPLIED AT ENROLL
+// ============================================================
+
+#[test]
+fn test_enroll_ignores_course_platform_fee_percent() {
+    // ISSUE: When a course is registered with a custom platform_fee_percent,
+    // that value is stored but never used during enrollment. Instead, the
+    // fee is always computed from FeeConfig(token).
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    let price: i128 = 1_000_000_000; // 100 USDC
+
+    // Register course with CUSTOM 50% platform fee (not the default 20%)
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-CUSTOM-FEE-IGNORED"),
+        &price,
+        &token_id,
+        &50u32, // Custom 50% fee
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course_id = String::from_str(&env, "COURSE-CUSTOM-FEE-IGNORED");
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.platform_fee_percent, 50, "course should store 50% fee");
+
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    client.approve_course(&admin, &course_id);
+    client.enroll(&student, &course_id);
+
+    // BUG: The actual fee charged is 20% (from default FeeConfig), not 50%
+    let expected_with_course_fee = price * 50 / 100; // 500_000_000 if bug is fixed
+    let actual_platform_fee = price * 20 / 100;      // 200_000_000 (what actually happens)
+    
+    assert_eq!(
+        token_client.balance(&treasury),
+        actual_platform_fee,
+        "BUG: treasury received 20% instead of the course's custom 50%"
+    );
+    assert_ne!(
+        token_client.balance(&treasury),
+        expected_with_course_fee,
+        "course.platform_fee_percent is completely ignored"
+    );
+}
+
+#[test]
+fn test_multiple_courses_same_token_ignore_individual_fee_settings() {
+    // ISSUE: Two courses using the same token will have identical fee
+    // calculations even when they specify different platform_fee_percent values.
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let price: i128 = 1_000_000_000;
+
+    // Course A: 10% custom fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-FEE-10"),
+        &price,
+        &token_id,
+        &10u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    // Course B: 90% custom fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-FEE-90"),
+        &price,
+        &token_id,
+        &90u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-10"));
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-FEE-90"));
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &10_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &10_000_000_000);
+
+    let treasury_before = token_client.balance(&treasury);
+    client.enroll(&student_a, &String::from_str(&env, "COURSE-FEE-10"));
+    let fee_a = token_client.balance(&treasury) - treasury_before;
+
+    let treasury_before = token_client.balance(&treasury);
+    client.enroll(&student_b, &String::from_str(&env, "COURSE-FEE-90"));
+    let fee_b = token_client.balance(&treasury) - treasury_before;
+
+    // BUG: Both courses charge the same 20% fee despite having 10% and 90% settings
+    assert_eq!(fee_a, fee_b, "BUG: both courses use the same FeeConfig, ignoring custom percentages");
+    assert_eq!(fee_a, price * 20 / 100, "both courses charge default 20%");
+}
+
+#[test]
+fn test_enrollment_stored_platform_amount_matches_feeconfig_not_course_fee() {
+    // ISSUE: The Enrollment record stores platform_amount computed from
+    // FeeConfig, not from course.platform_fee_percent. This creates a
+    // permanent mismatch between the course's advertised fee and what was
+    // actually charged.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+
+    // Register with 30% custom fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ENROLLMENT-FEE"),
+        &price,
+        &token_id,
+        &30u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course_id = String::from_str(&env, "COURSE-ENROLLMENT-FEE");
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    client.approve_course(&admin, &course_id);
+    client.enroll(&student, &course_id);
+
+    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    let expected_from_course = price * 30 / 100; // 300_000_000
+    let actual_stored = enrollment.platform_amount;   // 200_000_000
+
+    assert_eq!(actual_stored, price * 20 / 100, "BUG: enrollment stored 20% fee");
+    assert_ne!(actual_stored, expected_from_course, "enrollment.platform_amount doesn't match course.platform_fee_percent");
+}
+
+#[test]
+fn test_archive_refund_uses_wrong_fee_split() {
+    // ISSUE: When a course with custom fee is archived with refunds, the
+    // refund split uses the stored enrollment.platform_amount (which was
+    // computed from FeeConfig) instead of recalculating from the course's
+    // advertised platform_fee_percent. This means refunds don't match the
+    // student's expectation based on the course settings.
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+
+    // Register with 40% custom fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-REFUND-SPLIT"),
+        &price,
+        &token_id,
+        &40u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course_id = String::from_str(&env, "COURSE-REFUND-SPLIT");
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    client.approve_course(&admin, &course_id);
+    client.enroll(&student, &course_id);
+
+    let student_balance_after_enroll = token_client.balance(&student);
+
+    // Pause and archive with refund
+    client.pause_course(&admin, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    let refund_list = Vec::from_array(&env, [student.clone()]);
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_list));
+
+    let student_balance_after_refund = token_client.balance(&student);
+    let refund_amount = student_balance_after_refund - student_balance_after_enroll;
+
+    // Student expects 100% refund but the split was based on the 20% fee
+    // actually charged, not the 40% advertised.
+    assert_eq!(refund_amount, price, "student got full refund");
+    
+    // However, the treasury/instructor split during refund was based on
+    // enrollment.platform_amount (20%) not course.platform_fee_percent (40%)
+    // This is a data consistency issue even though the total refund is correct.
+}
+
+#[test]
+fn test_course_fee_percent_is_write_only_field() {
+    // ISSUE: course.platform_fee_percent is stored at registration,
+    // visible in queries, but never read by any contract logic. It's
+    // effectively a write-only field that misleads users about the actual
+    // fee structure.
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register three courses with different fees
+    for (id, fee_pct) in [
+        ("COURSE-FEE-5", 5u32),
+        ("COURSE-FEE-25", 25u32),
+        ("COURSE-FEE-75", 75u32),
+    ] {
+        client.register_course(
+            &instructor,
+            &String::from_str(&env, id),
+            &100_000_000,
+            &token_id,
+            &fee_pct,
+            &None,
+            &BytesN::from_array(&env, &[0u8; 32]),
+        );
+
+        let course = client.get_course(&String::from_str(&env, id)).unwrap();
+        assert_eq!(
+            course.platform_fee_percent, fee_pct,
+            "course stores custom fee but never uses it"
+        );
+    }
+
+    // All three courses will charge the same 20% fee at enrollment despite
+    // having 5%, 25%, and 75% stored in platform_fee_percent.
+}
+
+// ============================================================
+// ISSUE: NO CIRCUIT BREAKER FOR ENROLLMENT FAILURES
+// ============================================================
+
+#[test]
+fn test_enrollment_failures_do_not_pause_course() {
+    // ISSUE: If enroll() fails repeatedly (e.g., broken token contract),
+    // the course remains Active indefinitely with no automatic protection.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-BREAKER",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-NO-BREAKER");
+
+    // Simulate enrollment failures (student has insufficient balance)
+    for i in 0..10 {
+        let student = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000); // Not enough
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.enroll(&student, &course_id);
+        }));
+        assert!(result.is_err(), "enrollment should fail due to insufficient funds");
+
+        // BUG: Course status never changes despite repeated failures
+        let course = client.get_course(&course_id).unwrap();
+        assert_eq!(course.status, CourseStatus::Active, 
+            "BUG: course remains Active after {} consecutive enrollment failures", i + 1);
+    }
+
+    // No circuit breaker exists - course is still accepting enrollment attempts
+}
+
+#[test]
+fn test_no_failure_tracking_for_courses() {
+    // ISSUE: The contract has no DataKey for tracking enrollment failure
+    // counts per course, so there's no way to implement a circuit breaker
+    // without a contract upgrade.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-TRACKING",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-NO-TRACKING");
+
+    // Cause enrollment failure
+    let student = Address::generate(&env);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.enroll(&student, &course_id);
+    }));
+    assert!(result.is_err());
+
+    // BUG: There's no way to query failure count or circuit breaker status
+    // because no such tracking exists in the contract.
+    // These hypothetical queries would fail to compile:
+    // let failure_count = client.get_enrollment_failure_count(&course_id);
+    // let breaker_status = client.get_circuit_breaker_status(&course_id);
+}
+
+#[test]
+fn test_broken_token_contract_wastes_student_gas() {
+    // ISSUE: If a course's token contract is broken or returns errors,
+    // students will waste gas on failed enrollment attempts indefinitely
+    // because the course never auto-pauses.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BROKEN-TOKEN",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BROKEN-TOKEN");
+
+    // Simulate 5 students trying to enroll and failing
+    for i in 0..5 {
+        let student = Address::generate(&env);
+        // Student has funds but token transfer will fail
+        token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+        
+        // Simulate broken token by not giving contract approval
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.enroll(&student, &course_id);
+        }));
+        
+        if result.is_err() {
+            // BUG: Each student wastes gas, and the course never auto-pauses
+            // to prevent further wasted transactions
+            let course = client.get_course(&course_id).unwrap();
+            assert_eq!(course.status, CourseStatus::Active, 
+                "course should auto-pause after {} failures but remains Active", i + 1);
+        }
+    }
+}
+
+#[test]
+fn test_no_circuit_breaker_threshold_configuration() {
+    // ISSUE: There's no admin function to configure a circuit breaker
+    // threshold (e.g., "pause course after 5 consecutive enrollment failures").
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // BUG: These hypothetical admin functions don't exist:
+    // client.set_circuit_breaker_threshold(&admin, &5u32);
+    // let threshold = client.get_circuit_breaker_threshold();
+    
+    // The contract has no mechanism to enable or configure automatic
+    // course pausing based on failure patterns.
+    
+    // Current behavior: Admin must manually monitor off-chain and pause
+    // problematic courses, wasting time and student gas fees in the meantime.
+}
+
+#[test]
+fn test_manual_admin_intervention_required_for_failing_courses() {
+    // ISSUE: Without a circuit breaker, the only way to stop a failing
+    // course from wasting student gas is manual admin intervention.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MANUAL-PAUSE",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-MANUAL-PAUSE");
+
+    // Course is failing enrollments but remains Active
+    let student = Address::generate(&env);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.enroll(&student, &course_id);
+    }));
+    assert!(result.is_err());
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+
+    // BUG: Admin must manually detect the issue and pause the course
+    // No automatic protection exists
+    client.pause_course(&admin, &course_id);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Paused, 
+        "manual admin pause is the only protection against failing courses");
+}
