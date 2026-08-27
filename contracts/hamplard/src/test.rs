@@ -1065,7 +1065,7 @@ fn test_revoke_certificate() {
     let cert = client.get_certificate(&admin, &cert_id);
     assert!(cert.revoked);
     assert_eq!(cert.revoked_by, Some(admin.clone()));
-    assert!(cert.revoked_at_ledger.is_some());
+    assert!(cert.revocation_ledger.is_some());
     assert_eq!(cert.revocation_reason, Some(reason));
 }
 
@@ -1195,7 +1195,7 @@ fn test_revoke_certificate_metadata_persisted() {
     let cert_before = client.get_certificate(&admin, &cert_id);
     assert!(!cert_before.revoked);
     assert!(cert_before.revoked_by.is_none());
-    assert!(cert_before.revoked_at_ledger.is_none());
+    assert!(cert_before.revocation_ledger.is_none());
     assert!(cert_before.revocation_reason.is_none());
 
     let ledger_before = env.ledger().sequence();
@@ -1206,7 +1206,7 @@ fn test_revoke_certificate_metadata_persisted() {
     let cert_after = client.get_certificate(&admin, &cert_id);
     assert!(cert_after.revoked);
     assert_eq!(cert_after.revoked_by, Some(admin.clone()));
-    assert!(cert_after.revoked_at_ledger.unwrap() >= ledger_before);
+    assert!(cert_after.revocation_ledger.unwrap() >= ledger_before);
     assert_eq!(
         cert_after.revocation_reason,
         Some(String::from_str(&env, "ISSUED_IN_ERROR"))
@@ -5293,8 +5293,8 @@ fn test_revoke_certificate_metadata_unchanged_after_rejected_double_revoke() {
     assert!(cert_after_second.revoked);
     assert_eq!(cert_after_second.revoked_by, cert_after_first.revoked_by);
     assert_eq!(
-        cert_after_second.revoked_at_ledger,
-        cert_after_first.revoked_at_ledger
+        cert_after_second.revocation_ledger,
+        cert_after_first.revocation_ledger
     );
     assert_eq!(cert_after_second.revocation_reason, Some(original_reason));
 }
