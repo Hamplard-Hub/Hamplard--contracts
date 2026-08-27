@@ -2035,6 +2035,11 @@ impl HamplardContract {
             &DataKey::Enrollment(student.clone(), course_id.clone()),
             &enrollment,
         );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Enrollment(student.clone(), course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         // Update active enrollments count on course
         let mut course = Self::get_course_internal(&env, &course_id)

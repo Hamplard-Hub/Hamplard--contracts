@@ -143,7 +143,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 },
                 {
                   "i128": {
@@ -181,7 +181,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 }
               ]
             }
@@ -203,7 +203,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 }
               ]
             }
@@ -236,6 +236,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
@@ -252,10 +253,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 },
                 {
-                  "string": "late_evidence"
+                  "string": "evidence"
                 }
               ]
             }
@@ -268,12 +269,12 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 1000001,
+    "sequence_number": 5000001,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
-    "min_persistent_entry_ttl": 4096,
-    "min_temp_entry_ttl": 16,
+    "min_persistent_entry_ttl": 100000,
+    "min_temp_entry_ttl": 100000,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
       [
@@ -347,7 +348,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 }
               ]
             },
@@ -367,7 +368,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-NO-EXPIRY"
+                      "string": "COURSE-TTL-COMPLETION"
                     }
                   ]
                 },
@@ -429,7 +430,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-NO-EXPIRY"
+                        "string": "COURSE-TTL-COMPLETION"
                       }
                     },
                     {
@@ -445,7 +446,7 @@
                         "symbol": "last_updated_ledger"
                       },
                       "val": {
-                        "u32": 1000001
+                        "u32": 5000001
                       }
                     },
                     {
@@ -553,7 +554,7 @@
                   "symbol": "CourseInstructorRef"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 }
               ]
             },
@@ -573,7 +574,7 @@
                       "symbol": "CourseInstructorRef"
                     },
                     {
-                      "string": "COURSE-NO-EXPIRY"
+                      "string": "COURSE-TTL-COMPLETION"
                     }
                   ]
                 },
@@ -620,7 +621,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-NO-EXPIRY"
+                      "string": "COURSE-TTL-COMPLETION"
                     }
                   ]
                 }
@@ -644,7 +645,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-NO-EXPIRY"
+                  "string": "COURSE-TTL-COMPLETION"
                 }
               ]
             },
@@ -667,7 +668,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-NO-EXPIRY"
+                      "string": "COURSE-TTL-COMPLETION"
                     }
                   ]
                 },
@@ -712,7 +713,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-NO-EXPIRY"
+                        "string": "COURSE-TTL-COMPLETION"
                       }
                     },
                     {
@@ -736,7 +737,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "late_evidence"
+                        "string": "evidence"
                       }
                     },
                     {
@@ -761,7 +762,7 @@
             },
             "ext": "v0"
           },
-          7300001
+          11300001
         ]
       ],
       [
@@ -802,7 +803,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-NO-EXPIRY"
+                      "string": "COURSE-TTL-COMPLETION"
                     }
                   ]
                 }
@@ -934,7 +935,7 @@
             },
             "ext": "v0"
           },
-          7300001
+          11300001
         ]
       ],
       [
@@ -1156,7 +1157,7 @@
             },
             "ext": "v0"
           },
-          7300001
+          11300001
         ]
       ],
       [
@@ -1321,7 +1322,7 @@
             },
             "ext": "v0"
           },
-          7312000
+          11312000
         ]
       ],
       [
@@ -1845,7 +1846,7 @@
             },
             "ext": "v0"
           },
-          7300001
+          11300001
         ]
       ]
     ]
