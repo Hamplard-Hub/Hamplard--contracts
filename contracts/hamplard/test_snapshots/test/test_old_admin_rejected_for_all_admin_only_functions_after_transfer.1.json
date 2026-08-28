@@ -756,6 +756,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "revocation_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "revocation_reason"
                       },
                       "val": "void"
@@ -767,12 +773,6 @@
                       "val": {
                         "bool": false
                       }
-                    },
-                    {
-                      "key": {
-                        "symbol": "revoked_at_ledger"
-                      },
-                      "val": "void"
                     },
                     {
                       "key": {
