@@ -523,6 +523,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "revocation_ledger"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "revocation_reason"
                       },
                       "val": {
@@ -535,14 +543,6 @@
                       },
                       "val": {
                         "bool": true
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "revoked_at_ledger"
-                      },
-                      "val": {
-                        "u32": 1
                       }
                     },
                     {
