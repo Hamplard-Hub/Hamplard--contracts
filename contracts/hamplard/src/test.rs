@@ -4306,12 +4306,13 @@ fn test_events_emitted_for_admin_operations() {
         &course_id,
         &Some(String::from_str(&env, "evidence")),
     );
-    let (event_student, event_admin): (Address, Address) =
+    let (event_student, event_admin, event_ledger): (Address, Address, u32) =
         last_event_val(&env, &contract_id, "course_completed")
             .try_into_val(&env)
             .unwrap();
     assert_eq!(event_student, student);
     assert_eq!(event_admin, admin);
+    assert_eq!(event_ledger, env.ledger().sequence());
 
     // issue_certificate
     let cert_id = String::from_str(&env, "CERT-ATTR-001");
@@ -4433,6 +4434,55 @@ fn test_events_emitted_for_admin_operations() {
     assert_eq!(event_token, token_id);
     assert_eq!(event_amount, 0i128);
     assert_eq!(event_dest, admin);
+}
+
+#[test]
+fn test_mark_completed_event_contains_full_completion_details() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    // Register and approve a course
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-COMPLETION-EVENT",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-COMPLETION-EVENT");
+
+    // Enroll student
+    client.enroll(&student, &course_id);
+
+    // Capture the ledger sequence before marking completion
+    let completion_ledger_before = env.ledger().sequence();
+    
+    // Mark as completed
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "completion_evidence")),
+    );
+
+    // Extract the event payload: (student, admin, completion_ledger)
+    let (event_student, event_admin, event_ledger): (Address, Address, u32) =
+        last_event_val(&env, &contract_id, "course_completed")
+            .try_into_val(&env)
+            .unwrap();
+
+    // Verify all event components
+    assert_eq!(event_student, student, "event should include student address");
+    assert_eq!(event_admin, admin, "event should include admin address");
+    assert!(
+        event_ledger >= completion_ledger_before,
+        "event should include ledger sequence of completion"
+    );
 }
 
 #[test]

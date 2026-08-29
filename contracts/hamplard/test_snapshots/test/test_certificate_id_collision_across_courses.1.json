@@ -818,6 +818,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -1020,6 +1028,14 @@
                       },
                       "val": {
                         "u32": 20
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1337,10 +1353,32 @@
                     },
                     {
                       "key": {
+                        "symbol": "instructor_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 240000000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "is_refunded"
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "platform_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 60000000
+                        }
                       }
                     },
                     {
@@ -1470,10 +1508,32 @@
                     },
                     {
                       "key": {
+                        "symbol": "instructor_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 240000000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "is_refunded"
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "platform_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 60000000
+                        }
                       }
                     },
                     {
