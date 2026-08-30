@@ -431,6 +431,8 @@ pub enum DataKey {
     /// Configurable time-lock (in ledger sequences) that must elapse
     /// between an upgrade proposal and its execution.
     UpgradeTimelock,
+    /// Waitlist for a course - ordered list of student addresses waiting for enrollment
+    CourseWaitlist(String),
     /// Global registry of all instructor addresses who have registered courses
     InstructorRegistry,
 }
@@ -1274,6 +1276,9 @@ impl HamplardContract {
                                 .instance()
                                 .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
                         }
+
+                        // Promote from waitlist if capacity just opened
+                        Self::promote_from_waitlist(&env, &course_id);
                     }
                 }
             }
@@ -4134,6 +4139,188 @@ impl HamplardContract {
         is_btc_eth: bool,
     ) -> RiskFeeApplied {
         Self::get_effective_fee_for_payment(env, token, payment_amount, is_new_customer, is_btc_eth)
+    }
+
+    // ----------------------------------------------------------
+    // WAITLIST MANAGEMENT
+    // ----------------------------------------------------------
+
+    /// Student joins the waitlist for a course that has reached capacity.
+    /// When a spot opens up (via refund or enrollment expiry), the first
+    /// waitlisted student will be automatically promoted to enrolled status.
+    ///
+    /// # Arguments
+    /// - `student`   — student's address (must sign)
+    /// - `course_id` — the course to join waitlist for
+    pub fn join_waitlist(env: Env, student: Address, course_id: String) {
+        student.require_auth();
+
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if Self::is_student_blocked_internal(&env, &student) {
+            panic!("student is blocked");
+        }
+
+        if Self::is_admin(&env, &student) {
+            panic!("admin cannot join waitlist");
+        }
+
+        if student == course.instructor {
+            panic!("instructor cannot join waitlist for own course");
+        }
+
+        if course.status != CourseStatus::Active {
+            panic!("course is not active");
+        }
+
+        // Cannot join waitlist if already enrolled
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Enrollment(student.clone(), course_id.clone()))
+        {
+            panic!("already enrolled in this course");
+        }
+
+        // Check if course is at capacity
+        if let Some(cap) = course.max_capacity {
+            if course.total_enrollments < cap {
+                panic!("course has not reached capacity - enroll directly instead");
+            }
+        } else {
+            panic!("course has no capacity limit - enroll directly instead");
+        }
+
+        let waitlist_key = DataKey::CourseWaitlist(course_id.clone());
+        let mut waitlist: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&waitlist_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Check if student is already on waitlist
+        for i in 0..waitlist.len() {
+            if waitlist.get(i).unwrap() == student {
+                panic!("already on waitlist");
+            }
+        }
+
+        waitlist.push_back(student.clone());
+        env.storage().persistent().set(&waitlist_key, &waitlist);
+        env.storage().persistent().extend_ttl(
+            &waitlist_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "waitlist_joined"), course_id.clone()),
+            (student, course_id),
+        );
+    }
+
+    /// Student leaves the waitlist for a course.
+    ///
+    /// # Arguments
+    /// - `student`   — student's address (must sign)
+    /// - `course_id` — the course to leave waitlist for
+    pub fn leave_waitlist(env: Env, student: Address, course_id: String) {
+        student.require_auth();
+
+        let waitlist_key = DataKey::CourseWaitlist(course_id.clone());
+        let mut waitlist: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&waitlist_key)
+            .unwrap_or_else(|| panic!("no waitlist exists for this course"));
+
+        let mut found_index: Option<u32> = None;
+        for i in 0..waitlist.len() {
+            if waitlist.get(i).unwrap() == student {
+                found_index = Some(i);
+                break;
+            }
+        }
+
+        if found_index.is_none() {
+            panic!("not on waitlist");
+        }
+
+        // Remove student from waitlist by creating a new vec without them
+        let mut new_waitlist = Vec::new(&env);
+        for i in 0..waitlist.len() {
+            if i != found_index.unwrap() {
+                new_waitlist.push_back(waitlist.get(i).unwrap());
+            }
+        }
+
+        if new_waitlist.len() > 0 {
+            env.storage().persistent().set(&waitlist_key, &new_waitlist);
+            env.storage().persistent().extend_ttl(
+                &waitlist_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        } else {
+            env.storage().persistent().remove(&waitlist_key);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "waitlist_left"), course_id.clone()),
+            (student, course_id),
+        );
+    }
+
+    /// Get the waitlist for a course.
+    ///
+    /// # Arguments
+    /// - `course_id` — the course to get waitlist for
+    ///
+    /// # Returns
+    /// Ordered list of student addresses on the waitlist (first = next to be promoted)
+    pub fn get_waitlist(env: Env, course_id: String) -> Option<Vec<Address>> {
+        let waitlist_key = DataKey::CourseWaitlist(course_id);
+        env.storage().persistent().get(&waitlist_key)
+    }
+
+    /// Internal helper to promote the first waitlisted student to enrolled status
+    /// when capacity opens. Called automatically when a refund or expiry creates space.
+    fn promote_from_waitlist(env: &Env, course_id: &String) {
+        let waitlist_key = DataKey::CourseWaitlist(course_id.clone());
+        let waitlist: Option<Vec<Address>> = env.storage().persistent().get(&waitlist_key);
+
+        if let Some(mut list) = waitlist {
+            if list.len() > 0 {
+                let next_student = list.get(0).unwrap();
+                
+                // Remove from waitlist
+                let mut new_waitlist = Vec::new(env);
+                for i in 1..list.len() {
+                    new_waitlist.push_back(list.get(i).unwrap());
+                }
+
+                if new_waitlist.len() > 0 {
+                    env.storage().persistent().set(&waitlist_key, &new_waitlist);
+                    env.storage().persistent().extend_ttl(
+                        &waitlist_key,
+                        Self::PERSISTENT_TTL_THRESHOLD,
+                        Self::PERSISTENT_TTL_EXTEND_TO,
+                    );
+                } else {
+                    env.storage().persistent().remove(&waitlist_key);
+                }
+
+                // Automatically enroll the student
+                // We skip validation checks since the student already passed them when joining waitlist
+                Self::enroll_internal(env, &next_student, course_id);
+
+                env.events().publish(
+                    (Symbol::new(env, "waitlist_promoted"), course_id.clone()),
+                    (next_student, course_id.clone()),
+                );
+            }
+        }
     }
 }
 

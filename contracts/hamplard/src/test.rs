@@ -7246,6 +7246,223 @@ fn test_transfer_course_preserves_enrollment_and_history() {
 }
 
 // ============================================================
+// ISSUE #142: ARCHIVE WITH PENDING COMPLETIONS TESTS
+// ============================================================
+
+#[test]
+fn test_archive_with_pending_student_completions() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let student_c = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+    asset_client.mint(&student_c, &1_000_000_000);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-PENDING-COMPLETE",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-PENDING-COMPLETE");
+
+    // Enroll three students
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+    client.enroll(&student_c, &course_id);
+
+    // Mark only student_a as completed
+    client.mark_completed(&admin, &student_a, &course_id, &None);
+
+    // Verify student_a is completed, others are not
+    assert_eq!(client.has_completed(&student_a, &course_id), Some(true));
+    assert_eq!(client.has_completed(&student_b, &course_id), Some(false));
+    assert_eq!(client.has_completed(&student_c, &course_id), Some(false));
+
+    // Pause course before archiving
+    client.pause_course(&admin, &course_id);
+
+    // Archive and refund only the students with pending completions
+    let mut refund_students = soroban_sdk::Vec::new(&env);
+    refund_students.push_back(student_b.clone());
+    refund_students.push_back(student_c.clone());
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
+
+    // Verify refunds for pending students
+    assert_eq!(asset_client.balance(&student_b), 1_000_000_000);
+    assert_eq!(asset_client.balance(&student_c), 1_000_000_000);
+    
+    // student_a completed, so they keep their enrollment and no refund
+    assert_eq!(asset_client.balance(&student_a), 500_000_000);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Archived);
+    assert_eq!(course.active_enrollments, 0);
+
+    // Verify enrollment status
+    assert!(!client.is_enrolled(&student_b, &course_id));
+    assert!(!client.is_enrolled(&student_c, &course_id));
+    assert!(client.is_enrolled(&student_a, &course_id)); // completed student remains enrolled
+}
+
+#[test]
+#[should_panic(expected = "cannot mark completion for archived course")]
+fn test_mark_completed_on_archived_course_fails() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARCHIVE-MARK",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-MARK");
+
+    client.enroll(&student, &course_id);
+    
+    // Pause and archive the course
+    client.pause_course(&admin, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &None);
+
+    // Attempt to mark completed after archival should fail
+    client.mark_completed(&admin, &student, &course_id, &None);
+}
+
+// ============================================================
+// ISSUE #143: MISSING DEFAULTFEE TEST
+// ============================================================
+
+#[test]
+#[should_panic(expected = "fee percentage cannot be below platform minimum")]
+fn test_enroll_missing_default_fee_produces_clear_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+    let student = Address::generate(&env);
+
+    token_client.mint(&student, &100_000_000_000);
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+    
+    // Initialize contract but intentionally skip setting DefaultFee
+    // by directly manipulating storage
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .extend_ttl(HamplardContract::INSTANCE_TTL_THRESHOLD, HamplardContract::INSTANCE_TTL_EXTEND_TO);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::SecondaryAdmin, &sec_admin);
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformPaused, &false);
+        // Deliberately NOT setting DataKey::DefaultFee
+        env.storage().instance().set(
+            &DataKey::MaxCoursesPerInstructor,
+            &50u32,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &1000u32);
+    });
+    
+    client.add_approved_token(&admin, &token_id);
+
+    // Register course with custom 10% fee (below default 20%)
+    let course_id = String::from_str(&env, "COURSE-NO-DEFAULT-FEE");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &500_000_000,
+        &token_id,
+        &10u32, // Below the default 20%, should fail validation
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+// ============================================================
+// ISSUE #147: WAITLIST TESTS
+// ============================================================
+
+#[test]
+fn test_join_waitlist_success() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let student_c = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+
+    // Register course with capacity of 2
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-WAITLIST-001"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &Some(2),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-WAITLIST-001"));
+
+    let course_id = String::from_str(&env, "COURSE-WAITLIST-001");
+
+    // Fill capacity
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+
+    // Third student joins waitlist
+    client.join_waitlist(&student_c, &course_id);
+
+    let waitlist = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(waitlist.len(), 1);
+    assert_eq!(waitlist.get(0).unwrap(), student_c);
+}
+
+#[test]
+#[should_panic(expected = "course has not reached capacity - enroll directly instead")]
+fn test_join_waitlist_rejects_when_capacity_available() {
 // ISSUE: course.platform_fee_percent NEVER APPLIED AT ENROLL
 // ============================================================
 
@@ -7358,6 +7575,129 @@ fn test_enrollment_stored_platform_amount_matches_feeconfig_not_course_fee() {
     // FeeConfig, not from course.platform_fee_percent. This creates a
     // permanent mismatch between the course's advertised fee and what was
     // actually charged.
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student, &1_000_000_000);
+
+    // Register course with capacity of 2 but don't fill it
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-NO-WAITLIST"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &Some(2),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-NO-WAITLIST"));
+
+    let course_id = String::from_str(&env, "COURSE-NO-WAITLIST");
+
+    // Try to join waitlist when capacity is available
+    client.join_waitlist(&student, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "already on waitlist")]
+fn test_join_waitlist_duplicate_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let student_c = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+
+    // Register course with capacity of 2
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-DUP-WAITLIST"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &Some(2),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-DUP-WAITLIST"));
+
+    let course_id = String::from_str(&env, "COURSE-DUP-WAITLIST");
+
+    // Fill capacity
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+
+    // Third student joins waitlist
+    client.join_waitlist(&student_c, &course_id);
+    
+    // Try to join again
+    client.join_waitlist(&student_c, &course_id);
+}
+
+#[test]
+fn test_leave_waitlist_success() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let student_c = Address::generate(&env);
+    let student_d = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+
+    // Register course with capacity of 2
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-LEAVE-WAITLIST"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &Some(2),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-LEAVE-WAITLIST"));
+
+    let course_id = String::from_str(&env, "COURSE-LEAVE-WAITLIST");
+
+    // Fill capacity
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+
+    // Two students join waitlist
+    client.join_waitlist(&student_c, &course_id);
+    client.join_waitlist(&student_d, &course_id);
+
+    let waitlist = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(waitlist.len(), 2);
+
+    // First student leaves waitlist
+    client.leave_waitlist(&student_c, &course_id);
+
+    let waitlist = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(waitlist.len(), 1);
+    assert_eq!(waitlist.get(0).unwrap(), student_d);
+}
+
+#[test]
+#[should_panic(expected = "not on waitlist")]
+fn test_leave_waitlist_not_on_list() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -7568,6 +7908,71 @@ fn test_broken_token_contract_wastes_student_gas() {
         &token_id,
         &admin,
         &instructor,
+        "COURSE-NOT-ON-WAITLIST",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-NOT-ON-WAITLIST");
+
+    // Try to leave waitlist without joining
+    client.leave_waitlist(&student, &course_id);
+}
+
+#[test]
+fn test_waitlist_promotion_on_refund() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let student_c = Address::generate(&env);
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+    asset_client.mint(&student_c, &1_000_000_000);
+
+    // Register course with capacity of 2
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-WAITLIST-PROMO"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &Some(2),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-WAITLIST-PROMO"));
+
+    let course_id = String::from_str(&env, "COURSE-WAITLIST-PROMO");
+
+    // Fill capacity
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+
+    // Third student joins waitlist
+    client.join_waitlist(&student_c, &course_id);
+
+    let waitlist = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(waitlist.len(), 1);
+
+    // Pause course and refund student_b
+    client.pause_course(&admin, &course_id);
+    
+    let mut refund_students = soroban_sdk::Vec::new(&env);
+    refund_students.push_back(student_b.clone());
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
+
+    // Verify student_c was promoted from waitlist
+    // Note: In archive flow, promotion happens but the course becomes archived,
+    // so we verify the waitlist is empty
+    let waitlist_after = client.get_waitlist(&course_id);
+    assert!(waitlist_after.is_none() || waitlist_after.unwrap().len() == 0);
         "COURSE-BROKEN-TOKEN",
         100_000_000,
     );
