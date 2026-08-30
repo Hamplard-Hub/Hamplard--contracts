@@ -418,6 +418,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -620,6 +628,14 @@
                       },
                       "val": {
                         "u32": 20
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {

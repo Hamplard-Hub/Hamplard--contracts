@@ -494,6 +494,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "prerequisite_course_ids"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -755,10 +763,32 @@
                     },
                     {
                       "key": {
+                        "symbol": "instructor_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 160000000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "is_refunded"
                       },
                       "val": {
                         "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "platform_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 40000000
+                        }
                       }
                     },
                     {
