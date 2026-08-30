@@ -431,6 +431,8 @@ pub enum DataKey {
     /// Configurable time-lock (in ledger sequences) that must elapse
     /// between an upgrade proposal and its execution.
     UpgradeTimelock,
+    /// Global registry of all instructor addresses who have registered courses
+    InstructorRegistry,
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -634,7 +636,14 @@ impl HamplardContract {
 
         // Validate that the token address is a contract (not an EOA)
         let token_client = token::Client::new(&env, &token);
-        let _ = token_client.decimals();
+        let token_decimals = token_client.decimals();
+        
+        // Validate token decimal precision matches expected standard (7 for Stellar USDC)
+        // This ensures fee calculations are accurate
+        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
+        if token_decimals != EXPECTED_TOKEN_DECIMALS {
+            panic!("token decimal precision must be {} (found {})", EXPECTED_TOKEN_DECIMALS, token_decimals);
+        }
 
         if Self::is_instructor_frozen_internal(&env, &instructor) {
             panic!("instructor is frozen");
@@ -798,6 +807,34 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+
+        // Add instructor to global registry if first course
+        let mut registry: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InstructorRegistry)
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        // Check if instructor already exists in registry
+        let mut exists = false;
+        for i in 0..registry.len() {
+            if registry.get(i).unwrap() == instructor {
+                exists = true;
+                break;
+            }
+        }
+        
+        if !exists {
+            registry.push_back(instructor.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::InstructorRegistry, &registry);
+            env.storage().persistent().extend_ttl(
+                &DataKey::InstructorRegistry,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
 
         env.events().publish(
             (Symbol::new(&env, "course_registered"), course_id.clone()),
@@ -1627,6 +1664,14 @@ impl HamplardContract {
             panic!("course token is not approved");
         }
 
+        // Validate token decimal precision at enrollment time to ensure fee calculations are accurate
+        let token_client = token::Client::new(env, &course.token);
+        let token_decimals = token_client.decimals();
+        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
+        if token_decimals != EXPECTED_TOKEN_DECIMALS {
+            panic!("token decimal precision must be {} (found {})", EXPECTED_TOKEN_DECIMALS, token_decimals);
+        }
+
         // Every prerequisite course must have an issued, non-revoked
         // certificate on record for this student before enrollment proceeds.
         for i in 0..course.prerequisite_course_ids.len() {
@@ -1724,8 +1769,19 @@ impl HamplardContract {
         }
 
         // Transfer full price from student to contract, then distribute platform fee
-        if course.price > 0 {
+        let actual_amount_paid = if course.price > 0 {
+            // Verify actual transfer amount by checking balance before and after
+            let balance_before = token_client.balance(&env.current_contract_address());
             token_client.transfer(student, &env.current_contract_address(), &course.price);
+            let balance_after = token_client.balance(&env.current_contract_address());
+            
+            let actual_received = balance_after
+                .checked_sub(balance_before)
+                .unwrap_or_else(|| panic!("balance overflow during transfer verification"));
+            
+            if actual_received != course.price {
+                panic!("token transfer amount mismatch: expected {}, received {}", course.price, actual_received);
+            }
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
@@ -1758,13 +1814,17 @@ impl HamplardContract {
                     ),
                 );
             }
-        }
+            
+            actual_received
+        } else {
+            0
+        };
 
         // Record enrollment
         let enrollment = Enrollment {
             student: student.clone(),
             course_id: course_id.clone(),
-            amount_paid: course.price,
+            amount_paid: actual_amount_paid,
             enrolled_at_ledger: env.ledger().sequence(),
             completed: false,
             certificate_issued: false,
@@ -1964,7 +2024,18 @@ impl HamplardContract {
         }
 
         if course.price > 0 {
+            // Verify actual transfer amount by checking balance before and after
+            let balance_before = token_client.balance(&env.current_contract_address());
             token_client.transfer(&student, &env.current_contract_address(), &course.price);
+            let balance_after = token_client.balance(&env.current_contract_address());
+            
+            let actual_received = balance_after
+                .checked_sub(balance_before)
+                .unwrap_or_else(|| panic!("balance overflow during transfer verification"));
+            
+            if actual_received != course.price {
+                panic!("token transfer amount mismatch: expected {}, received {}", course.price, actual_received);
+            }
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
@@ -3148,6 +3219,36 @@ impl HamplardContract {
                 total_completions: 0,
                 total_certificates: 0,
             })
+    }
+
+    /// Get the global list of all instructors who have registered courses.
+    /// Admin-only to prevent potential privacy concerns with exposing the full
+    /// instructor list.
+    ///
+    /// Returns an empty list if no instructors have registered yet.
+    pub fn get_all_instructors(env: Env, admin: Address) -> Vec<Address> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "get_all_instructors");
+        
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstructorRegistry)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get the total number of registered instructors.
+    /// Admin-only query for platform analytics.
+    pub fn get_instructor_count(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "get_instructor_count");
+        
+        let registry: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InstructorRegistry)
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        registry.len()
     }
 
     // ----------------------------------------------------------
