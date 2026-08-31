@@ -1270,7 +1270,7 @@ impl HamplardContract {
             for student in students.iter() {
                 let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
                 if env.storage().persistent().has(&enrollment_key) {
-                    let mut enrollment: Enrollment =
+                    let enrollment: Enrollment =
                         env.storage().persistent().get(&enrollment_key).unwrap();
 
                     if !enrollment.completed && !enrollment.is_refunded {
