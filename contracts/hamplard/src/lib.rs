@@ -3899,9 +3899,18 @@ impl HamplardContract {
     // ----------------------------------------------------------
 
     fn get_course_internal(env: &Env, course_id: &String) -> Option<Course> {
+        if let Some(course) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+        {
+            return Some(course);
+        }
+        
+        // If not found in active courses, check archived courses
         env.storage()
             .persistent()
-            .get(&DataKey::Course(course_id.clone()))
+            .get::<DataKey, Course>(&DataKey::ArchivedCourse(course_id.clone()))
     }
 
     fn get_enrollment_internal(env: &Env, student: &Address, course_id: &String) -> Enrollment {
