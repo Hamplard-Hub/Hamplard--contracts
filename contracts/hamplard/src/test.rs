@@ -9,6 +9,129 @@ use soroban_sdk::{
 };
 
 // ============================================================
+// COURSE ACTIVITY AUDIT LOG TESTS
+// ============================================================
+
+#[test]
+fn test_get_course_activity_logs_lifecycle_operations() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-AUDIT-LIFECYCLE");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUDIT-LIFECYCLE",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.pause_course(&admin, &course_id);
+    client.unpause_course(&admin, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &String::from_str(&env, "CERT-AUDIT-LIFECYCLE"),
+        &course_id,
+        &String::from_str(&env, "Audit Lifecycle"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+
+    let activity = client.get_course_activity(&admin, &course_id, &0u32, &100u32);
+    let first_page = client.get_course_activity(&admin, &course_id, &0u32, &2u32);
+    assert_eq!(first_page.len(), 2);
+    let second_page = client.get_course_activity(&admin, &course_id, &1u32, &2u32);
+    assert_eq!(second_page.len(), 2);
+    assert!(
+        activity.len() >= 4,
+        "expected enrollment, pause, completion, and certificate issuance to be recorded"
+    );
+    assert!(
+        activity.len() >= 5,
+        "expected unpause to also be recorded as course activity"
+    );
+}
+
+#[test]
+fn test_get_course_activity_is_scoped_per_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_a = String::from_str(&env, "COURSE-AUDIT-A");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUDIT-A",
+        100_000_000,
+    );
+
+    let course_b = String::from_str(&env, "COURSE-AUDIT-B");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUDIT-B",
+        200_000_000,
+    );
+
+    let student_a = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &1_000_000_000);
+    client.enroll(&student_a, &course_a);
+
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &1_000_000_000);
+    client.enroll(&student_b, &course_b);
+
+    client.pause_course(&admin, &course_a);
+
+    let activity_a = client.get_course_activity(&admin, &course_a, &0u32, &100u32);
+    let activity_b = client.get_course_activity(&admin, &course_b, &0u32, &100u32);
+    assert!(
+        activity_a.len() > activity_b.len(),
+        "audit log for course A should include the pause operation"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: get_course_activity")]
+fn test_get_course_activity_requires_admin() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-AUDIT-UNAUTH");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUDIT-UNAUTH",
+        100_000_000,
+    );
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.get_course_activity(&instructor, &course_id, &0u32, &10u32);
+}
+
+// ============================================================
 // TEST HELPERS
 // ============================================================
 
