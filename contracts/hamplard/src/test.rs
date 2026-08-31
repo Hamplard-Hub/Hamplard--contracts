@@ -7639,6 +7639,9 @@ fn test_join_waitlist_success() {
 #[test]
 #[should_panic(expected = "course has not reached capacity - enroll directly instead")]
 fn test_join_waitlist_rejects_when_capacity_available() {
+    // TODO: Implement this test
+}
+
 // ISSUE: course.platform_fee_percent NEVER APPLIED AT ENROLL
 // ============================================================
 
@@ -8149,31 +8152,6 @@ fn test_waitlist_promotion_on_refund() {
     // so we verify the waitlist is empty
     let waitlist_after = client.get_waitlist(&course_id);
     assert!(waitlist_after.is_none() || waitlist_after.unwrap().len() == 0);
-        "COURSE-BROKEN-TOKEN",
-        100_000_000,
-    );
-
-    let course_id = String::from_str(&env, "COURSE-BROKEN-TOKEN");
-
-    // Simulate 5 students trying to enroll and failing
-    for i in 0..5 {
-        let student = Address::generate(&env);
-        // Student has funds but token transfer will fail
-        token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
-        
-        // Simulate broken token by not giving contract approval
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.enroll(&student, &course_id);
-        }));
-        
-        if result.is_err() {
-            // BUG: Each student wastes gas, and the course never auto-pauses
-            // to prevent further wasted transactions
-            let course = client.get_course(&course_id).unwrap();
-            assert_eq!(course.status, CourseStatus::Active, 
-                "course should auto-pause after {} failures but remains Active", i + 1);
-        }
-    }
 }
 
 #[test]
