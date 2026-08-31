@@ -1300,6 +1300,59 @@ fn test_issue_certificate_without_instructor_signature() {
     assert!(cert.instructor_signature.is_none());
 }
 
+#[test]
+#[should_panic(expected = "cannot issue certificate for refunded enrollment")]
+fn test_issue_certificate_rejects_refunded_enrollment() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REFUNDED-CERT-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-REFUNDED-CERT-001");
+    let cert_id = String::from_str(&env, "CERT-REFUNDED-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+
+    let mut enrollment = client
+        .get_enrollment(&admin, &student, &course_id)
+        .expect("enrollment should exist");
+    enrollment.is_refunded = true;
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::Enrollment(student.clone(), course_id.clone()),
+            &enrollment,
+        );
+    });
+
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &course_id,
+        &String::from_str(&env, "Refunded Course"),
+        &student.to_string(),
+        &None,
+        &None,
+    );
+}
+
 // ============================================================
 // PAUSE / UNPAUSE TESTS
 // ============================================================

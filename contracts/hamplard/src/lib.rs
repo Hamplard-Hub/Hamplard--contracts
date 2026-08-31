@@ -2391,8 +2391,11 @@ impl HamplardContract {
 
         let student = Address::from_string(&enrollment_reference);
 
-        // Student must have completed the course
+        // Student must have completed the course and not be refunded.
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
+        if enrollment.is_refunded {
+            panic!("cannot issue certificate for refunded enrollment");
+        }
         if !enrollment.completed {
             panic!("student has not completed this course");
         }
