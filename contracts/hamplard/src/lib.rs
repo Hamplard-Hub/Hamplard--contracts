@@ -225,6 +225,12 @@ pub struct Course {
     /// certificate) before a student may enroll in this course. Empty
     /// means no prerequisites. Configured via `set_prerequisite_courses`.
     pub prerequisite_course_ids: Vec<String>,
+    /// Ledger sequence when the course was archived. Used to enforce
+    /// a cooldown period before the same course ID can be re-registered.
+    /// This prevents confusion where a new course inherits the identity
+    /// of an archived one, potentially misleading students with historical
+    /// enrollment records.
+    pub archived_at_ledger: Option<u32>,
 }
 
 /// An enrollment record — one per student per course
@@ -435,6 +441,9 @@ pub enum DataKey {
     CourseWaitlist(String),
     /// Global registry of all instructor addresses who have registered courses
     InstructorRegistry,
+    /// Archived course records by course ID, stored to enforce cooldown
+    /// period before the same course ID can be re-registered.
+    ArchivedCourse(String),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -482,6 +491,12 @@ impl HamplardContract {
     /// sequences (~17,280 ledgers ≈ 1 day at 5s/ledger). Used when the
     /// admin has not configured a custom value via `set_upgrade_timelock`.
     const DEFAULT_UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+    /// Cooldown period in ledger sequences after a course is archived
+    /// before the same course ID can be re-registered. This prevents
+    /// confusion where a new course inherits the identity of an archived
+    /// one, potentially misleading students with historical enrollment
+    /// records. (~172,800 ledgers ≈ 10 days at 5s/ledger)
+    const ARCHIVE_COOLDOWN_LEDGERS: u32 = 172_800;
 
     // ----------------------------------------------------------
     // INIT
@@ -677,6 +692,22 @@ impl HamplardContract {
             panic!("course already registered");
         }
 
+        // Check if this course ID was previously used and is still within
+        // the archival cooldown period. This prevents confusion where a new
+        // course inherits the identity of an archived one.
+        if let Some(old_course) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::ArchivedCourse(course_id.clone()))
+        {
+            if let Some(archived_ledger) = old_course.archived_at_ledger {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger < archived_ledger + Self::ARCHIVE_COOLDOWN_LEDGERS {
+                    panic!("course ID is within archival cooldown period");
+                }
+            }
+        }
+
         let max_courses: u32 = env
             .storage()
             .instance()
@@ -747,6 +778,7 @@ impl HamplardContract {
             max_certificates: None,
             certificates_issued: 0,
             prerequisite_course_ids: Vec::new(&env),
+            archived_at_ledger: None,
         };
 
         env.storage()
@@ -1289,11 +1321,18 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Archived;
-
+        course.archived_at_ledger = Some(env.ledger().sequence());
         course.last_updated_ledger = env.ledger().sequence();
+
+        // Store archived course to enforce cooldown period on re-registration
         env.storage()
             .persistent()
-            .set(&DataKey::Course(course_id.clone()), &course);
+            .set(&DataKey::ArchivedCourse(course_id.clone()), &course);
+
+        // Remove the active course record
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Course(course_id.clone()));
 
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
