@@ -137,6 +137,18 @@ pub struct RiskFeeApplied {
     pub platform_fee: i128,
 }
 
+/// Emitted when an enrollment is rejected due to course status.
+/// Includes course_id, student address, course status, and ledger sequence
+/// so rejection reasons are auditable off-chain.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnrollmentRejected {
+    pub course_id: String,
+    pub student: Address,
+    pub status: CourseStatus,
+    pub ledger_sequence: u32,
+}
+
 // ============================================================
 // DATA TYPES
 // ============================================================
@@ -461,6 +473,9 @@ pub enum DataKey {
     EnrollmentRefCounter,
     /// Global registry of approver addresses with course approval authority
     Approver(Address),
+    /// Ledger sequence when init() was called — used to enforce
+    /// a governance window before approve_course() can be called.
+    InitLedger,
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -594,6 +609,9 @@ impl HamplardContract {
             &DataKey::RevocationChallengePeriod,
             &revocation_challenge_period,
         );
+        env.storage()
+            .instance()
+            .set(&DataKey::InitLedger, &env.ledger().sequence());
     }
 
     /// Instructor or admin configures an optional ledger sequence when enrollment opens.
@@ -693,6 +711,21 @@ impl HamplardContract {
 
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
+        }
+
+        // Validate course ID contains only allowed characters.
+        // Allowed: printable ASCII (0x20-0x7E) excluding backtick and tilde
+        // which can cause issues in some off-chain parsers.
+        // This prevents null bytes, control characters, and problematic
+        // Unicode that could break off-chain parsers or create unreproducible
+        // storage keys.
+        for i in 0..course_id.len() {
+            let byte = course_id.as_bytes().get(i).unwrap_or(&0u8);
+            // Allow printable ASCII: space (0x20) through tilde (0x7E)
+            // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
+            if *byte < 0x20 || *byte > 0x7E {
+                panic!("course_id contains invalid characters (must be printable ASCII)");
+            }
         }
 
         if price < 0 {
@@ -914,6 +947,30 @@ impl HamplardContract {
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        // Enforce governance window: approve_course cannot be called
+        // immediately after init(). This ensures there's a review period
+        // where the community can observe admin actions before the platform
+        // starts accepting courses.
+        if let Some(init_ledger) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::InitLedger)
+        {
+            let min_delay = env
+                .storage()
+                .instance()
+                .get::<DataKey, u32>(&DataKey::MinReviewDelay)
+                .unwrap_or(0);
+            let elapsed = env
+                .ledger()
+                .sequence()
+                .checked_sub(init_ledger)
+                .unwrap_or(0);
+            if elapsed < min_delay {
+                panic!("governance window has not elapsed");
+            }
+        }
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
@@ -1693,6 +1750,18 @@ impl HamplardContract {
         }
 
         if course.status != CourseStatus::Active {
+            // Emit rejection event with current status before panicking
+            // so off-chain systems can distinguish status-based rejections
+            // from other panic causes.
+            env.events().publish(
+                (Symbol::new(env, "enrollment_rejected"), course_id.clone()),
+                EnrollmentRejected {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    status: course.status.clone(),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("course is not available for enrollment");
         }
 
@@ -1803,6 +1872,18 @@ impl HamplardContract {
         // the status is still re-verified at the tightest possible point
         // rather than relying solely on the earlier check.
         if course.status != CourseStatus::Active {
+            // Emit rejection event with current status before panicking
+            // so off-chain systems can distinguish status-based rejections
+            // from other panic causes.
+            env.events().publish(
+                (Symbol::new(env, "enrollment_rejected"), course_id.clone()),
+                EnrollmentRejected {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    status: course.status.clone(),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("course is not available for enrollment");
         }
 
