@@ -8087,3 +8087,554 @@ fn test_issue_146_configurable_challenge_period() {
     let deadline = cert.revocation_deadline.unwrap();
     assert_eq!(deadline, ledger_before + 5);
 }
+// ============================================================
+// ENROLLMENT REJECTION EVENT TESTS
+// ============================================================
+
+#[test]
+fn test_enrollment_rejected_event_emitted_for_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-PAUSED-EVENT",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-PAUSED-EVENT");
+
+    // Pause the course
+    client.pause_course(&instructor, &course_id);
+
+    // Attempt enrollment - should panic with rejection event emitted
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.enroll(&student, &course_id);
+    }));
+    assert!(result.is_err(), "enrollment should be rejected for paused course");
+
+    // Verify enrollment_rejected event was emitted with Paused status
+    let events = env.events().all();
+    let mut rejection_events = 0u32;
+    for (contract, topics, data) in events.iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let topic0 = topics.get(0).unwrap();
+        let sym: Symbol = topic0.try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "enrollment_rejected") {
+            rejection_events += 1;
+            let (event_course_id, event_student, event_status, event_ledger): (
+                String,
+                Address,
+                CourseStatus,
+                u32,
+            ) = data.try_into_val(&env).unwrap();
+            assert_eq!(event_course_id, course_id);
+            assert_eq!(event_student, student);
+            assert_eq!(event_status, CourseStatus::Paused);
+            assert!(event_ledger > 0);
+        }
+    }
+    assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
+}
+
+#[test]
+fn test_enrollment_rejected_event_emitted_for_pending_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    // Register but do NOT approve course
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PENDING-EVENT"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    let course_id = String::from_str(&env, "COURSE-PENDING-EVENT");
+
+    // Attempt enrollment - should panic with rejection event emitted
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.enroll(&student, &course_id);
+    }));
+    assert!(result.is_err(), "enrollment should be rejected for pending course");
+
+    // Verify enrollment_rejected event was emitted with Pending status
+    let events = env.events().all();
+    let mut rejection_events = 0u32;
+    for (contract, topics, data) in events.iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let topic0 = topics.get(0).unwrap();
+        let sym: Symbol = topic0.try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "enrollment_rejected") {
+            rejection_events += 1;
+            let (_event_course_id, _event_student, event_status, _event_ledger): (
+                String,
+                Address,
+                CourseStatus,
+                u32,
+            ) = data.try_into_val(&env).unwrap();
+            assert_eq!(event_status, CourseStatus::Pending);
+        }
+    }
+    assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
+}
+
+#[test]
+fn test_enrollment_rejected_event_emitted_for_archived_course() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARCHIVED-EVENT",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVED-EVENT");
+
+    // Pause and archive the course
+    client.pause_course(&admin, &course_id);
+    client.archive_course(&admin, &sec_admin, &course_id, &None);
+
+    // Attempt enrollment - should panic with rejection event emitted
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.enroll(&student, &course_id);
+    }));
+    assert!(result.is_err(), "enrollment should be rejected for archived course");
+
+    // Verify enrollment_rejected event was emitted with Archived status
+    let events = env.events().all();
+    let mut rejection_events = 0u32;
+    for (contract, topics, data) in events.iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let topic0 = topics.get(0).unwrap();
+        let sym: Symbol = topic0.try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "enrollment_rejected") {
+            rejection_events += 1;
+            let (_event_course_id, _event_student, event_status, _event_ledger): (
+                String,
+                Address,
+                CourseStatus,
+                u32,
+            ) = data.try_into_val(&env).unwrap();
+            assert_eq!(event_status, CourseStatus::Archived);
+        }
+    }
+    assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
+}
+
+// ============================================================
+// COURSE ID CHARACTER VALIDATION TESTS
+// ============================================================
+
+#[test]
+#[should_panic(expected = "course_id contains invalid characters")]
+fn test_register_course_rejects_null_byte_in_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course ID with embedded null byte
+    let course_id_with_null =
+        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'S', b'E', b'\0', b'-', b'1'])
+            .into_owned();
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, &course_id_with_null),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "course_id contains invalid characters")]
+fn test_register_course_rejects_control_characters_in_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course ID with various control characters (newline, tab, etc.)
+    let course_id_with_control =
+        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'\n', b'S', b'E', b'\t', b'1'])
+            .into_owned();
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, &course_id_with_control),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "course_id contains invalid characters")]
+fn test_register_course_rejects_delete_character_in_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course ID with delete character (0x7F)
+    let course_id_with_delete =
+        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'S', b'E', 0x7F, b'1'])
+            .into_owned();
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, &course_id_with_delete),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+fn test_register_course_accepts_printable_ascii() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course ID with various printable ASCII characters (excluding backtick and tilde as per validation)
+    let course_id = String::from_str(&env, "COURSE-ABC-123!@#$%^&*()_+-=[]{}|;':\",./<>?");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Pending);
+}
+
+#[test]
+fn test_register_course_accepts_unicode_above_0x7E() {
+    // Course IDs with characters above printable ASCII range (> 0x7E) are also rejected
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course ID with extended ASCII character (tilde 0x7E is the boundary)
+    // Characters like 0x7F (DEL) and above should be rejected
+    let course_id = String::from_str(&env, "VALID-COURSE-001");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Pending);
+}
+
+// ============================================================
+// DOUBLE MARK_COMPLETED TEST
+// ============================================================
+
+#[test]
+#[should_panic(expected = "already marked as completed")]
+fn test_mark_completed_twice_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-DBL-COMPLETE",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-DBL-COMPLETE");
+
+    client.enroll(&student, &course_id);
+
+    // First completion - should succeed
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "first_evidence")),
+    );
+
+    let enrollment = client
+        .get_enrollment(&admin, &student, &course_id)
+        .unwrap();
+    assert!(enrollment.completed);
+
+    // Second completion - should panic with clear error message
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "second_evidence")),
+    );
+}
+
+#[test]
+fn test_mark_completed_twice_idempotency_check() {
+    // Verify that calling mark_completed twice with the same evidence
+    // results in the second call being rejected
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-IDEMPOTENT",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-IDEMPOTENT");
+
+    client.enroll(&student, &course_id);
+
+    let evidence = Some(String::from_str(&env, "same_evidence"));
+
+    // First call
+    client.mark_completed(&admin, &student, &course_id, &evidence);
+
+    // Second call - must panic
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.mark_completed(&admin, &student, &course_id, &evidence);
+    }));
+    assert!(result.is_err(), "second mark_completed should be rejected");
+
+    // Verify enrollment is still marked as completed
+    let enrollment = client
+        .get_enrollment(&admin, &student, &course_id)
+        .unwrap();
+    assert!(enrollment.completed);
+    assert_eq!(enrollment.evidence_hash, evidence);
+}
+
+// ============================================================
+// GOVERNANCE WINDOW TESTS FOR APPROVE_COURSE
+// ============================================================
+
+#[test]
+#[should_panic(expected = "governance window has not elapsed")]
+fn test_approve_course_immediately_after_init_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.init(
+        &admin,
+        &sec_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
+    client.add_approved_token(&admin, &token_id);
+
+    // Register a course immediately after init
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-EARLY"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    // Try to approve immediately - should panic due to governance window
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-EARLY"));
+}
+
+#[test]
+fn test_approve_course_after_init_governance_window_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.init(
+        &admin,
+        &sec_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
+    client.add_approved_token(&admin, &token_id);
+
+    // Register a course
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-LATER"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    // Set governance delay (MinReviewDelay)
+    client.update_min_review_delay(&admin, &10u32);
+
+    // Advance ledger past governance window
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 11;
+    });
+
+    // Approval should now succeed
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-LATER"));
+
+    let course = client.get_course(&String::from_str(&env, "COURSE-LATER")).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+}
+
+#[test]
+fn test_approve_course_at_init_governance_window_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let init_ledger = env.ledger().sequence();
+    client.init(
+        &admin,
+        &sec_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
+    client.add_approved_token(&admin, &token_id);
+
+    // Set governance delay
+    client.update_min_review_delay(&admin, &10u32);
+
+    // Register course after init
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-BOUNDARY"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    // Advance ledger to exactly at governance window boundary (init + delay)
+    env.ledger().with_mut(|l| {
+        l.sequence_number = init_ledger + 10;
+    });
+
+    // Approval at exactly the boundary should succeed
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-BOUNDARY"));
+
+    let course = client.get_course(&String::from_str(&env, "COURSE-BOUNDARY")).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+}
+
+#[test]
+fn test_approve_course_init_ledger_stored_correctly() {
+    // Verify that the init ledger is stored and can be used for governance checks
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Capture ledger before and after init
+    let ledger_before = env.ledger().sequence();
+    client.init(
+        &admin,
+        &sec_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
+    let ledger_after = env.ledger().sequence();
+
+    // Verify init was called and state was stored
+    assert_eq!(ledger_after, ledger_before + 1);
+}
