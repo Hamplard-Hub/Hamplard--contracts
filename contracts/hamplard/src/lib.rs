@@ -4,21 +4,22 @@
 //!
 //! | Role              | Who                    | Capabilities                                                          |
 //! |-------------------|------------------------|-----------------------------------------------------------------------|
-//! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform  |
+//! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform, block students  |
 //! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
 //! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings, transfer course (with admin co-approval) |
-//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll                   |
+//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll (unless blocked by admin)  |
 //! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
 //!
 //! ## Privileged Operations (single admin)
 //! - `approve_course` — moves a course from Pending to Active
 //! - `transfer_course` — co-approves an instructor-initiated course ownership transfer
-//! - `mark_completed` — marks a student enrollment as completed
-//! - `issue_certificate` — mints an on-chain certificate of completion
+//! - `mark_completed` — marks a student enrollment as completed (blocked students cannot proceed)
+//! - `issue_certificate` — mints an on-chain certificate of completion (blocked students cannot proceed)
 //! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `block_student` / `unblock_student` — bans or unbans a student from the platform
 //! - `get_platform_fee` — retrieves platform fee configuration (admin only)
 //! - `withdraw_tokens` — emergency sweep of contract-held tokens (admin only)
 //!
@@ -26,8 +27,31 @@
 //! - `archive_course` — permanent course removal; may trigger student refunds
 //! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
 //! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
+//! - `set_admin_expiry` — sets a ledger sequence when the admin role expires (blocks all admin operations)
 //! - `propose_upgrade` / `upgrade_contract` / `cancel_upgrade` — time-locked contract code
 //!   upgrade; see "Contract Upgrades" below
+//!
+//! ## Student Blocking Policy
+//! - `block_student()` called by the admin prevents a student from:
+//!   - Enrolling in new courses via `enroll()` / `batch_enroll()` / `re_enroll()`
+//!   - Marking an existing enrollment as completed via `mark_completed()`
+//!   - Receiving a certificate via `issue_certificate()`
+//!   - Requesting or receiving refunds via `request_refund()` / `process_refund()`
+//! - Blocking is global and applies indefinitely until `unblock_student()` is called
+//! - Blocking does not retroactively revoke already-issued certificates; only forward-looking actions are blocked
+//! - A blocked student's existing enrollments are frozen: they cannot transition to Completed status
+//!   and therefore cannot receive certificates for that work.
+//!
+//! ## Admin Expiry Policy
+//! - `set_admin_expiry()` called by both admins sets a ledger sequence at which the admin role expires
+//! - Once the current ledger sequence reaches or exceeds the expiry value:
+//!   - All single-admin operations (`approve_course`, `block_student`, `issue_certificate`, etc.)
+//!     automatically fail with "admin role has expired"
+//!   - All multi-admin operations (`archive_course`, `transfer_admin`, `set_admin_expiry`, etc.)
+//!     automatically fail with "admin role has expired"
+//!   - The only recovery is for the expired admins to call `transfer_admin()` to nominate a new pair,
+//!     and the new pair calls `accept_admin()` — this resets the admin expiry to None
+//! - Expiry may be cleared by calling `set_admin_expiry()` with `None` before it takes effect
 //!
 //! ## Payment Guarantees
 //! - On enrollment the full course price is transferred from the student atomically:
@@ -54,7 +78,9 @@
 //!   different nodes (Soroban consensus resolves ordering).
 //! - **Admin key compromise** — a compromised admin key can approve courses, issue
 //!   certificates, and withdraw contract tokens. Key rotation requires the two-step
-//!   `transfer_admin` / `accept_admin` flow with both current admins signing.
+//!   `transfer_admin` / `accept_admin` flow with both current admins signing. Admin expiry
+//!   enforces that both admins must cooperate for critical operations; a single compromised
+//!   key cannot bypass the expiry check once it takes effect.
 //! - **Treasury update delay** — `update_treasury` takes effect 100 ledgers after proposal;
 //!   enrollments submitted within that window still route fees to the old treasury.
 //!
@@ -1655,6 +1681,69 @@ impl HamplardContract {
         );
     }
 
+    /// Set or update the maximum number of certificates for a course.
+    ///
+    /// Enforces a hard limit on certificate issuance to prevent credential dilution.
+    /// Once the course reaches this limit, issue_certificate() will reject further
+    /// issuance attempts.
+    ///
+    /// Only the course instructor or the platform admin may call this.
+    /// The course must not be Archived.
+    ///
+    /// # Arguments
+    /// - `caller`       — instructor or admin address (must sign)
+    /// - `course_id`    — the course whose certificate limit is being set
+    /// - `max_certs`    — optional maximum number of certificates. Pass None to remove the limit
+    pub fn set_max_certificates(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        max_certs: Option<u32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update max_certificates of an archived course");
+        }
+
+        // Validate: if setting a limit, ensure it's at least as high as current issuance
+        if let Some(limit) = max_certs {
+            if limit < course.certificates_issued {
+                panic!("max_certificates cannot be less than current certificates_issued");
+            }
+        }
+
+        course.max_certificates = max_certs;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "max_certificates_set"), course_id.clone()),
+            (course_id, caller, max_certs),
+        );
+    }
+
     // ----------------------------------------------------------
     // ENROLLMENT & PAYMENT
     // ----------------------------------------------------------
@@ -2369,6 +2458,11 @@ impl HamplardContract {
             student.require_auth();
         }
 
+        // Check if student is blocked
+        if Self::is_student_blocked_internal(&env, &student) {
+            panic!("student is blocked and cannot proceed");
+        }
+
         let course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
 
@@ -2539,6 +2633,11 @@ impl HamplardContract {
         let (student, course_id) = enrollment_data.unwrap_or_else(|| {
             panic!("enrollment reference not found; use enrollment_ref() format")
         });
+
+        // Check if student is blocked
+        if Self::is_student_blocked_internal(&env, &student) {
+            panic!("student is blocked and cannot receive certificates");
+        }
 
         // Student must have completed the course — enrollment is looked up
         // from the authoritative enrollment record, not from caller input.
@@ -2903,6 +3002,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey::PendingSecondaryAdmin);
+        
+        // Clear the admin expiry when new admins take over
+        // This ensures the new admin pair starts fresh without inheriting
+        // the previous admin's expiry time
+        env.storage().instance().remove(&DataKey::AdminExpiresAt);
 
         let ledger_sequence = env.ledger().sequence();
 
@@ -3370,6 +3474,11 @@ impl HamplardContract {
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        // Check if student is blocked
+        if Self::is_student_blocked_internal(&env, &student) {
+            panic!("student is blocked and cannot request refunds");
+        }
 
         let enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
 
@@ -4084,6 +4193,17 @@ impl HamplardContract {
             // ok
         } else {
             panic!("unauthorized: requires both admin signatures");
+        }
+
+        // Check if admin role has expired
+        if let Some(expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::AdminExpiresAt)
+        {
+            if env.ledger().sequence() >= expires_at {
+                panic!("admin role has expired");
+            }
         }
     }
 
