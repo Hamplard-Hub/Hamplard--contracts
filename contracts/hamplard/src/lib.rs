@@ -1564,6 +1564,57 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor or admin sets or clears the course expiry ledger.
+    /// If set to a past ledger sequence, the course will be treated as expired
+    /// and new enrollments will be rejected via validate_enrollment() and re_enroll().
+    ///
+    /// # Arguments
+    /// - `caller`              — must be the course instructor or admin
+    /// - `course_id`           — the course to update
+    /// - `expires_at_ledger`   — optional ledger sequence when course expires (no further enrollments)
+    pub fn set_course_expiry(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        expires_at_ledger: Option<u32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        course.expires_at_ledger = expires_at_ledger;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_expiry_set"), course_id.clone()),
+            (course_id, expires_at_ledger),
+        );
+    }
+
     /// Instructor or admin configures the list of prerequisite course IDs
     /// that a student must have completed — with an issued, non-revoked
     /// certificate — before they may enroll in this course.
@@ -3168,12 +3219,49 @@ impl HamplardContract {
     }
 
     /// Admin freezes/blocks a specific instructor address.
+    /// Automatically pauses all of the instructor's currently Active courses
+    /// to prevent students from enrolling in or paying for frozen instructor courses.
     pub fn freeze_instructor(env: Env, admin: Address, instructor: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "freeze_instructor");
         env.storage()
             .instance()
             .set(&DataKey::InstructorBlocked(instructor.clone()), &true);
+
+        // Pause all of the instructor's currently Active courses
+        if let Some(course_ids) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<String>>(&DataKey::InstructorCourseList(instructor.clone()))
+        {
+            for i in 0..course_ids.len() {
+                let course_id = course_ids.get(i).unwrap();
+                if let Some(mut course) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+                {
+                    if course.status == CourseStatus::Active {
+                        course.status = CourseStatus::Paused;
+                        course.last_updated_ledger = env.ledger().sequence();
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::Course(course_id.clone()), &course);
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::Course(course_id.clone()),
+                            Self::PERSISTENT_TTL_THRESHOLD,
+                            Self::PERSISTENT_TTL_EXTEND_TO,
+                        );
+
+                        env.events().publish(
+                            (Symbol::new(&env, "course_paused"), course_id.clone()),
+                            (course_id.clone(), Symbol::new(&env, "instructor_frozen")),
+                        );
+                    }
+                }
+            }
+        }
+
         env.events().publish(
             (Symbol::new(&env, "instructor_frozen"), instructor.clone()),
             (instructor, admin),
@@ -4380,7 +4468,9 @@ impl HamplardContract {
                 .get(&DataKey::DefaultFee)
                 .unwrap_or(20u32);
             FeeConfig {
-                fee_bps: default_pct.checked_mul(100).unwrap_or(2000),
+                fee_bps: default_pct
+                    .checked_mul(100)
+                    .expect("DefaultFee out of expected range [0, 100]: overflow would indicate validation bug"),
             }
         }
     }
