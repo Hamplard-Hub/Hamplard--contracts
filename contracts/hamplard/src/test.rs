@@ -8870,3 +8870,488 @@ fn test_update_course_allows_unlimited_capacity_with_none() {
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.max_capacity, None);
 }
+
+// ============================================================
+// BULK COURSE CERTIFICATE REVOCATION TESTS (#173)
+// ============================================================
+
+/// Fund `student`, enroll them in `course_id`, complete the enrollment and
+/// issue `certificate_id` for it — i.e. leave the course with one valid
+/// certificate that a bulk revocation should be able to reach.
+fn enroll_and_certify(
+    env: &Env,
+    client: &HamplardContractClient,
+    token_id: &Address,
+    admin: &Address,
+    student: &Address,
+    course_id: &str,
+    certificate_id: &str,
+) {
+    token::StellarAssetClient::new(env, token_id).mint(student, &100_000_000_000);
+
+    let course = String::from_str(env, course_id);
+    client.enroll(student, &course);
+    client.mark_completed(
+        admin,
+        student,
+        &course,
+        &Some(String::from_str(env, "completion-evidence")),
+    );
+    client.issue_certificate(
+        admin,
+        &String::from_str(env, certificate_id),
+        &String::from_str(env, "Bulk Revocation Course"),
+        &get_enrollment_ref(env, client, student, course_id),
+        &None,
+        &None,
+    );
+}
+
+#[test]
+fn test_bulk_revoke_course_certificates_single_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-ONE",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-ONE");
+    let cert_id = String::from_str(&env, "CERT-BULK-ONE");
+    let student = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student,
+        "COURSE-BULK-ONE",
+        "CERT-BULK-ONE",
+    );
+
+    // The course now indexes its one issued certificate.
+    assert_eq!(client.get_course_certificates(&course_id).len(), 1);
+    assert_eq!(client.get_course_certificates(&course_id).get(0).unwrap(), cert_id);
+
+    let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
+    assert_eq!(revoked_count, 1);
+
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert!(cert.revoked);
+    assert_eq!(cert.revoked_by, Some(admin.clone()));
+    assert_eq!(
+        cert.revocation_reason,
+        Some(String::from_str(&env, "BULK_COURSE_REVOCATION"))
+    );
+    assert!(cert.revocation_ledger.is_some());
+    assert!(cert.revocation_deadline.is_some());
+
+    // A bulk revocation is a *pending* revocation, exactly like
+    // revoke_certificate: the certificate stays valid until the challenge
+    // period elapses.
+    assert!(client.verify_certificate(&cert_id));
+    let deadline = cert.revocation_deadline.unwrap();
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline;
+    });
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_bulk_revoke_course_certificates_revokes_five_certificates() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-FIVE",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-FIVE");
+    let cert_names = [
+        "CERT-BULK-FIVE-0",
+        "CERT-BULK-FIVE-1",
+        "CERT-BULK-FIVE-2",
+        "CERT-BULK-FIVE-3",
+        "CERT-BULK-FIVE-4",
+    ];
+
+    for cert_name in cert_names {
+        let student = Address::generate(&env);
+        enroll_and_certify(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &student,
+            "COURSE-BULK-FIVE",
+            cert_name,
+        );
+    }
+
+    assert_eq!(client.get_course_certificates(&course_id).len(), 5);
+
+    let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
+    assert_eq!(revoked_count, 5);
+
+    // Every certificate for the course is flagged for revocation...
+    let mut earliest_deadline = u32::MAX;
+    for cert_name in cert_names {
+        let cert_id = String::from_str(&env, cert_name);
+        let cert = client.get_certificate(&admin, &cert_id);
+        assert!(cert.revoked, "{} should be revoked", cert_name);
+        assert_eq!(cert.course_id, course_id);
+        assert_eq!(
+            cert.revocation_reason,
+            Some(String::from_str(&env, "BULK_COURSE_REVOCATION"))
+        );
+        let deadline = cert.revocation_deadline.unwrap();
+        if deadline < earliest_deadline {
+            earliest_deadline = deadline;
+        }
+    }
+
+    // ...and the index itself is append-only: bulk revocation never drops the
+    // certificate IDs, so a second call can still enumerate the cohort.
+    assert_eq!(client.get_course_certificates(&course_id).len(), 5);
+
+    // A retry is safe and reports zero newly-revoked certificates.
+    assert_eq!(client.bulk_revoke_course_certificates(&admin, &course_id), 0);
+
+    // The whole cohort is still verifiable during the challenge period and
+    // expires together once it passes.
+    let indexed = client.get_course_certificates(&course_id);
+    for i in 0..indexed.len() {
+        assert!(client.verify_certificate(&indexed.get(i).unwrap()));
+    }
+    env.ledger().with_mut(|l| {
+        l.sequence_number = earliest_deadline;
+    });
+    for i in 0..indexed.len() {
+        assert!(!client.verify_certificate(&indexed.get(i).unwrap()));
+    }
+}
+
+#[test]
+fn test_bulk_revoke_only_affects_target_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-TARGET",
+        100_000_000,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-UNTOUCHED",
+        100_000_000,
+    );
+
+    let target_course_id = String::from_str(&env, "COURSE-BULK-TARGET");
+    let other_course_id = String::from_str(&env, "COURSE-BULK-UNTOUCHED");
+
+    let student_a = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student_a,
+        "COURSE-BULK-TARGET",
+        "CERT-BULK-TARGET-A",
+    );
+    let student_b = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student_b,
+        "COURSE-BULK-TARGET",
+        "CERT-BULK-TARGET-B",
+    );
+    let student_c = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student_c,
+        "COURSE-BULK-UNTOUCHED",
+        "CERT-BULK-OTHER",
+    );
+
+    let revoked_count = client.bulk_revoke_course_certificates(&admin, &target_course_id);
+    assert_eq!(revoked_count, 2);
+
+    assert!(client
+        .get_certificate(&admin, &String::from_str(&env, "CERT-BULK-TARGET-A"))
+        .revoked);
+    assert!(client
+        .get_certificate(&admin, &String::from_str(&env, "CERT-BULK-TARGET-B"))
+        .revoked);
+
+    // A certificate from another course is untouched and still verifiable.
+    let other_cert = client.get_certificate(&admin, &String::from_str(&env, "CERT-BULK-OTHER"));
+    assert!(!other_cert.revoked);
+    assert_eq!(other_cert.revocation_reason, None);
+    assert!(client.verify_certificate(&String::from_str(&env, "CERT-BULK-OTHER")));
+    assert_eq!(client.get_course_certificates(&other_course_id).len(), 1);
+}
+
+#[test]
+fn test_bulk_revoke_skips_already_revoked_certificates() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-MIXED",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-MIXED");
+    let cert_names = ["CERT-BULK-MIXED-0", "CERT-BULK-MIXED-1", "CERT-BULK-MIXED-2"];
+    for cert_name in cert_names {
+        let student = Address::generate(&env);
+        enroll_and_certify(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &student,
+            "COURSE-BULK-MIXED",
+            cert_name,
+        );
+    }
+
+    // One certificate is revoked up front, with its own reason code.
+    let individually_revoked = String::from_str(&env, "CERT-BULK-MIXED-0");
+    client.revoke_certificate(
+        &admin,
+        &individually_revoked,
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
+    assert_eq!(revoked_count, 2);
+
+    // The pre-existing revocation keeps its original audit metadata...
+    let cert = client.get_certificate(&admin, &individually_revoked);
+    assert!(cert.revoked);
+    assert_eq!(
+        cert.revocation_reason,
+        Some(String::from_str(&env, "ISSUED_IN_ERROR"))
+    );
+
+    // ...while the remaining certificates get the bulk reason code.
+    for cert_name in ["CERT-BULK-MIXED-1", "CERT-BULK-MIXED-2"] {
+        let cert = client.get_certificate(&admin, &String::from_str(&env, cert_name));
+        assert!(cert.revoked);
+        assert_eq!(
+            cert.revocation_reason,
+            Some(String::from_str(&env, "BULK_COURSE_REVOCATION"))
+        );
+    }
+}
+
+#[test]
+fn test_bulk_revoke_emits_course_certificates_revoked_event() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-EVENT",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-EVENT");
+    for cert_name in ["CERT-BULK-EVENT-0", "CERT-BULK-EVENT-1"] {
+        let student = Address::generate(&env);
+        enroll_and_certify(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &student,
+            "COURSE-BULK-EVENT",
+            cert_name,
+        );
+    }
+
+    client.bulk_revoke_course_certificates(&admin, &course_id);
+
+    assert!(has_event(&env, &contract_id, "course_certificates_revoked"));
+    let (event_admin, event_course_id, event_count, event_ledger): (Address, String, u32, u32) =
+        last_event_val(&env, &contract_id, "course_certificates_revoked")
+            .try_into_val(&env)
+            .unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_count, 2);
+    assert_eq!(event_ledger, env.ledger().sequence());
+}
+
+#[test]
+fn test_bulk_revoked_certificate_can_still_be_challenged_and_re_revoked() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-CHALLENGE",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-CHALLENGE");
+    let cert_id = String::from_str(&env, "CERT-BULK-CHALLENGE");
+    let student = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student,
+        "COURSE-BULK-CHALLENGE",
+        "CERT-BULK-CHALLENGE",
+    );
+
+    client.bulk_revoke_course_certificates(&admin, &course_id);
+    assert!(client.get_certificate(&admin, &cert_id).revoked);
+
+    // The holder gets exactly the same dispute rights as a targeted
+    // revocation — the revocation is only pending, not immediate.
+    client.challenge_revocation(&student, &cert_id);
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert!(!cert.revoked);
+    assert_eq!(cert.revoked_by, None);
+    assert_eq!(cert.revocation_reason, None);
+    assert_eq!(cert.revocation_deadline, None);
+    assert!(client.verify_certificate(&cert_id));
+
+    // With the challenge accepted, the course can be bulk-revoked again.
+    assert_eq!(client.bulk_revoke_course_certificates(&admin, &course_id), 1);
+    assert!(client.get_certificate(&admin, &cert_id).revoked);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: bulk_revoke_course_certificates")]
+fn test_bulk_revoke_unauthorized_caller_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-AUTH",
+        100_000_000,
+    );
+
+    let student = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student,
+        "COURSE-BULK-AUTH",
+        "CERT-BULK-AUTH",
+    );
+
+    // The instructor owns the course but must not be able to revoke its
+    // certificates — bulk revocation is an admin-only power.
+    client.bulk_revoke_course_certificates(
+        &instructor,
+        &String::from_str(&env, "COURSE-BULK-AUTH"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "course not found")]
+fn test_bulk_revoke_unknown_course_rejected() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.bulk_revoke_course_certificates(
+        &admin,
+        &String::from_str(&env, "COURSE-DOES-NOT-EXIST"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "no certificates issued for this course")]
+fn test_bulk_revoke_course_without_certificates_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-EMPTY",
+        100_000_000,
+    );
+
+    client.bulk_revoke_course_certificates(&admin, &String::from_str(&env, "COURSE-BULK-EMPTY"));
+}
+
+#[test]
+fn test_get_course_certificates_empty_for_course_without_issuance() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-NONE",
+        100_000_000,
+    );
+
+    assert_eq!(
+        client
+            .get_course_certificates(&String::from_str(&env, "COURSE-BULK-NONE"))
+            .len(),
+        0
+    );
+}
