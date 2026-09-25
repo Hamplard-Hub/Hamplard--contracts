@@ -513,7 +513,7 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
 }
 
 #[test]
-fn test_enroll_fee_uses_live_default_fee() {
+fn test_enroll_fee_honors_registered_override_as_floor() {
     let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let token_client = token::Client::new(&env, &token_id);
@@ -535,7 +535,8 @@ fn test_enroll_fee_uses_live_default_fee() {
     );
     assert_eq!(client.get_platform_fee(&admin), 20);
 
-    // Update platform default fee to 10% - new enrollments now use live default
+    // Lower the platform default fee to 10% — the course's explicit 40%
+    // override remains the floor, so it is still what gets charged.
     client.update_default_fee(&admin, &10u32);
     assert_eq!(client.get_platform_fee(&admin), 10);
 
@@ -547,9 +548,9 @@ fn test_enroll_fee_uses_live_default_fee() {
     });
     client.enroll(&student, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
 
-    // Platform fee should be 10% (live default fee), not 40% (custom course fee)
-    // This ensures fee policy changes take immediate effect for all enrollments
-    let platform_share = price * 10 / 100;
+    // Platform fee should be 40% (registered override), not 10% (live
+    // default): the rate validated at register_course() is the rate charged.
+    let platform_share = price * 40 / 100;
     let instructor_share = price - platform_share;
 
     assert_eq!(token_client.balance(&treasury), platform_share);
@@ -8637,4 +8638,327 @@ fn test_approve_course_init_ledger_stored_correctly() {
 
     // Verify init was called and state was stored
     assert_eq!(ledger_after, ledger_before + 1);
+}
+
+// ============================================================
+// PLATFORM FEE & RISK SURCHARGE TESTS (#221, #222, #223, #224)
+// ============================================================
+
+/// Registers a course with an explicit `platform_fee_pct` and approves it.
+fn register_and_approve_course_with_fee(
+    env: &Env,
+    client: &HamplardContractClient,
+    token_id: &Address,
+    admin: &Address,
+    instructor: &Address,
+    course_id: &str,
+    price: i128,
+    platform_fee_pct: u32,
+) {
+    client.register_course(
+        instructor,
+        &String::from_str(env, course_id),
+        &price,
+        token_id,
+        &platform_fee_pct,
+        &None,
+        &BytesN::from_array(env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(admin, &String::from_str(env, course_id));
+}
+
+#[test]
+fn test_archive_refund_uses_persisted_fee_split_not_course_percent() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARCHIVE-FEECFG",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-FEECFG");
+    assert_eq!(
+        client.get_course(&course_id).unwrap().platform_fee_percent,
+        20
+    );
+
+    // Per-token FeeConfig (5%) diverges from course.platform_fee_percent (20%).
+    client.set_fee_config(&admin, &token_id, &500u32);
+    client.enroll(&student, &course_id);
+
+    let expected_platform = price * 5 / 100;
+    let expected_instructor = price - expected_platform;
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
+    assert_eq!(enrollment.platform_amount, expected_platform);
+    assert_eq!(enrollment.instructor_amount, expected_instructor);
+    assert_eq!(token_client.balance(&treasury), expected_platform);
+
+    // Drift the FeeConfig again before archiving — the refund must still
+    // follow what was actually collected at enrollment.
+    client.set_fee_config(&admin, &token_id, &3000u32);
+
+    client.pause_course(&admin, &course_id);
+    let mut refund_students = soroban_sdk::Vec::new(&env);
+    refund_students.push_back(student.clone());
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
+
+    assert_eq!(token_client.balance(&student), price);
+    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+    assert!(!client.is_enrolled(&student, &course_id));
+}
+
+#[test]
+fn test_register_course_fee_override_is_charged_at_enroll() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course_with_fee(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-OVERRIDE",
+        price,
+        35,
+    );
+    let course_id = String::from_str(&env, "COURSE-FEE-OVERRIDE");
+    assert_eq!(
+        client.get_course(&course_id).unwrap().platform_fee_percent,
+        35
+    );
+
+    client.enroll(&student, &course_id);
+
+    let expected_platform = price * 35 / 100;
+    assert_eq!(token_client.balance(&treasury), expected_platform);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        price - expected_platform,
+    );
+}
+
+#[test]
+fn test_register_course_fee_validated_against_token_fee_config() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    // Token fee (5%) is below DefaultFee (20%). A 10% override is valid
+    // against the token's real enrollment fee and must be charged exactly.
+    client.set_fee_config(&admin, &token_id, &500u32);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course_with_fee(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-TOKEN-FLOOR",
+        price,
+        10,
+    );
+    client.enroll(&student, &String::from_str(&env, "COURSE-FEE-TOKEN-FLOOR"));
+
+    assert_eq!(token_client.balance(&treasury), price * 10 / 100);
+}
+
+#[test]
+#[should_panic(expected = "fee percentage cannot be below platform minimum")]
+fn test_register_course_fee_below_token_fee_config_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Token fee (30%) is above DefaultFee (20%); a 25% override would
+    // never be charged at enrollment, so registration must reject it.
+    client.set_fee_config(&admin, &token_id, &3000u32);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-FEE-TOO-LOW"),
+        &1_000_000_000,
+        &token_id,
+        &25u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+fn test_new_customer_surcharge_applied_on_first_enrollment() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    client.set_risk_config_enabled(&admin, &true);
+    // new_customer_surcharge_bps = 500 (5%); others disabled
+    client.set_risk_fee_config(&admin, &0u32, &i128::MAX, &500u32, &0u32);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NEW-CUST",
+        price,
+    );
+
+    assert_eq!(client.get_student_enrollment_count(&student), 0);
+    client.enroll(&student, &String::from_str(&env, "COURSE-NEW-CUST"));
+
+    // 20% base + 5% new-customer surcharge
+    assert_eq!(token_client.balance(&treasury), price * 25 / 100);
+    assert_eq!(client.get_student_enrollment_count(&student), 1);
+}
+
+#[test]
+fn test_new_customer_surcharge_not_applied_to_returning_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    client.set_risk_config_enabled(&admin, &true);
+    client.set_risk_fee_config(&admin, &0u32, &i128::MAX, &500u32, &0u32);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &(price * 2));
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-RETURN-A",
+        price,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-RETURN-B",
+        price,
+    );
+
+    // First enrollment pays the surcharge.
+    client.enroll(&student, &String::from_str(&env, "COURSE-RETURN-A"));
+    let first_fee = price * 25 / 100;
+    assert_eq!(token_client.balance(&treasury), first_fee);
+
+    // Second enrollment is as a returning student — base 20% only.
+    client.enroll(&student, &String::from_str(&env, "COURSE-RETURN-B"));
+    assert_eq!(
+        token_client.balance(&treasury) - first_fee,
+        price * 20 / 100
+    );
+    assert_eq!(client.get_student_enrollment_count(&student), 2);
+}
+
+#[test]
+fn test_btc_eth_surcharge_applied_for_classified_token() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    client.set_risk_config_enabled(&admin, &true);
+    // btc_eth_surcharge_bps = 1000 (10%); others disabled
+    client.set_risk_fee_config(&admin, &0u32, &i128::MAX, &0u32, &1000u32);
+
+    assert!(!client.is_btc_eth_token(&token_id));
+    client.set_token_btc_eth(&admin, &token_id, &true);
+    assert!(client.is_btc_eth_token(&token_id));
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BTC-ETH",
+        price,
+    );
+    client.enroll(&student, &String::from_str(&env, "COURSE-BTC-ETH"));
+
+    // 20% base + 10% BTC/ETH volatility surcharge
+    let expected_platform = price * 30 / 100;
+    assert_eq!(token_client.balance(&treasury), expected_platform);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        price - expected_platform,
+    );
+}
+
+#[test]
+fn test_btc_eth_surcharge_not_applied_for_unclassified_token() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    client.set_risk_config_enabled(&admin, &true);
+    client.set_risk_fee_config(&admin, &0u32, &i128::MAX, &0u32, &1000u32);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NOT-BTC-ETH",
+        price,
+    );
+    client.enroll(&student, &String::from_str(&env, "COURSE-NOT-BTC-ETH"));
+
+    assert_eq!(token_client.balance(&treasury), price * 20 / 100);
+}
+
+#[test]
+#[should_panic(expected = "token is not approved")]
+fn test_set_token_btc_eth_requires_approved_token() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let unapproved = Address::generate(&env);
+    client.set_token_btc_eth(&admin, &unapproved, &true);
 }
