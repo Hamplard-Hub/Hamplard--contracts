@@ -8869,3 +8869,117 @@ fn test_update_course_allows_unlimited_capacity_with_none() {
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.max_capacity, None);
 }
+
+// ============================================================
+// COURSE STATUS CHANGES EXTEND COURSE PERSISTENT TTL
+// ============================================================
+
+/// Read the remaining persistent TTL of a Course entry.
+fn course_ttl(env: &Env, contract_id: &Address, course_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Course(course_id.clone()))
+    })
+}
+
+/// Advance far enough that the Course entry's TTL drops below
+/// PERSISTENT_TTL_THRESHOLD, so a subsequent extend_ttl() actually renews it.
+fn advance_below_course_ttl_threshold(env: &Env) {
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+}
+
+#[test]
+fn test_pause_course_extends_course_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-PAUSE",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-PAUSE");
+
+    advance_below_course_ttl_threshold(&env);
+    assert!(
+        course_ttl(&env, &contract_id, &course_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    client.pause_course(&instructor, &course_id);
+
+    assert_eq!(
+        course_ttl(&env, &contract_id, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+#[test]
+fn test_unpause_course_extends_course_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-UNPAUSE",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-UNPAUSE");
+    client.pause_course(&instructor, &course_id);
+
+    advance_below_course_ttl_threshold(&env);
+    assert!(
+        course_ttl(&env, &contract_id, &course_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    client.unpause_course(&instructor, &course_id);
+
+    assert_eq!(
+        course_ttl(&env, &contract_id, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+#[test]
+fn test_reject_course_extends_course_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-TTL-REJECT");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    advance_below_course_ttl_threshold(&env);
+    assert!(
+        course_ttl(&env, &contract_id, &course_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    client.reject_course(
+        &admin,
+        &course_id,
+        &String::from_str(&env, "CONTENT_POLICY_VIOLATION"),
+    );
+
+    assert_eq!(
+        course_ttl(&env, &contract_id, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}

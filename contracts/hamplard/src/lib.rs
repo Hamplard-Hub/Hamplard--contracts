@@ -1036,6 +1036,11 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         let pending_key = DataKey::InstructorPendingCourseCount(course.instructor.clone());
         let pending_count: u32 = env.storage().instance().get(&pending_key).unwrap_or(0);
@@ -1077,6 +1082,11 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (Symbol::new(&env, "course_rejected"), course_id.clone()),
@@ -1119,6 +1129,11 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (Symbol::new(&env, "course_paused"), course_id.clone()),
@@ -1164,6 +1179,11 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (Symbol::new(&env, "course_unpaused"), course_id.clone()),
