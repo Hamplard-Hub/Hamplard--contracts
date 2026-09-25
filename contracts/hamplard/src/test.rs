@@ -8264,12 +8264,13 @@ fn test_register_course_rejects_null_byte_in_id() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Course ID with embedded null byte
-    let course_id_with_null =
-        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'S', b'E', b'\0', b'-', b'1'])
-            .into_owned();
+    let course_id_with_null = String::from_bytes(
+        &env,
+        &[b'C', b'O', b'U', b'R', b'S', b'E', b'\0', b'-', b'1'],
+    );
     client.register_course(
         &instructor,
-        &String::from_str(&env, &course_id_with_null),
+        &course_id_with_null,
         &100_000_000,
         &token_id,
         &0u32,
@@ -8285,12 +8286,13 @@ fn test_register_course_rejects_control_characters_in_id() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Course ID with various control characters (newline, tab, etc.)
-    let course_id_with_control =
-        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'\n', b'S', b'E', b'\t', b'1'])
-            .into_owned();
+    let course_id_with_control = String::from_bytes(
+        &env,
+        &[b'C', b'O', b'U', b'R', b'\n', b'S', b'E', b'\t', b'1'],
+    );
     client.register_course(
         &instructor,
-        &String::from_str(&env, &course_id_with_control),
+        &course_id_with_control,
         &100_000_000,
         &token_id,
         &0u32,
@@ -8307,11 +8309,10 @@ fn test_register_course_rejects_delete_character_in_id() {
 
     // Course ID with delete character (0x7F)
     let course_id_with_delete =
-        String::from_utf8_lossy(&[b'C', b'O', b'U', b'R', b'S', b'E', 0x7F, b'1'])
-            .into_owned();
+        String::from_bytes(&env, &[b'C', b'O', b'U', b'R', b'S', b'E', 0x7F, b'1']);
     client.register_course(
         &instructor,
-        &String::from_str(&env, &course_id_with_delete),
+        &course_id_with_delete,
         &100_000_000,
         &token_id,
         &0u32,
