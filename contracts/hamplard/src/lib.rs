@@ -755,8 +755,14 @@ impl HamplardContract {
         // This prevents null bytes, control characters, and problematic
         // Unicode that could break off-chain parsers or create unreproducible
         // storage keys.
-        for i in 0..course_id.len() {
-            let byte = course_id.as_bytes().get(i).unwrap_or(&0u8);
+        // `String` only exposes its bytes through `copy_into_slice()`, which
+        // requires an exactly-sized buffer. The length was already bounded by
+        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
+        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
+        let id_bytes = &mut id_bytes[..course_id.len() as usize];
+        course_id.copy_into_slice(id_bytes);
+
+        for byte in id_bytes.iter() {
             // Allow printable ASCII: space (0x20) through tilde (0x7E)
             // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
             if *byte < 0x20 || *byte > 0x7E {
