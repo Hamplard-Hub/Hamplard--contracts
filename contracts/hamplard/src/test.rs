@@ -8870,3 +8870,240 @@ fn test_update_course_allows_unlimited_capacity_with_none() {
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.max_capacity, None);
 }
+
+/// Minimal stand-in for a Stellar asset contract whose issuer can pause
+/// (freeze) the asset. It implements only the surface the Hamplard contract
+/// touches — `decimals`, `balance` and `transfer` — plus test-only `mint`
+/// and `set_paused`. While paused, every `transfer` panics, which is exactly
+/// what a paused asset contract does to a token client.
+#[contract]
+struct PausableTokenContract;
+
+#[contracttype]
+pub enum PausableTokenKey {
+    Paused,
+    Balance(Address),
+}
+
+#[contractimpl]
+impl PausableTokenContract {
+    pub fn set_paused(env: Env, paused: bool) {
+        env.storage()
+            .instance()
+            .set(&PausableTokenKey::Paused, &paused);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&PausableTokenKey::Paused)
+            .unwrap_or(false)
+    }
+
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let key = PausableTokenKey::Balance(to);
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(current + amount));
+    }
+
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&PausableTokenKey::Balance(id))
+            .unwrap_or(0)
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&PausableTokenKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            panic!("token is paused: transfers are disabled");
+        }
+
+        let from_key = PausableTokenKey::Balance(from);
+        let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
+        if from_balance < amount {
+            panic!("insufficient token balance");
+        }
+
+        let to_key = PausableTokenKey::Balance(to);
+        let to_balance: i128 = env.storage().persistent().get(&to_key).unwrap_or(0);
+
+        env.storage()
+            .persistent()
+            .set(&from_key, &(from_balance - amount));
+        env.storage()
+            .persistent()
+            .set(&to_key, &(to_balance + amount));
+    }
+}
+
+// ============================================================
+// PAUSED-TOKEN ENROLLMENT TESTS (#174)
+// ============================================================
+
+#[test]
+fn test_enroll_with_paused_token_fails_cleanly_and_writes_no_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Course token whose transfers the issuer can pause mid-lifecycle.
+    let token_id = env.register(PausableTokenContract, ());
+    let token_client = PausableTokenContractClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+    let student = Address::generate(&env);
+
+    client.init(
+        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    );
+    client.add_approved_token(&admin, &token_id);
+
+    token_client.mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-PAUSED-TOKEN");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &course_id);
+
+    // Issuer pauses the asset: every transfer now reverts.
+    token_client.set_paused(&true);
+    assert!(token_client.is_paused());
+
+    let result = client.try_enroll(&student, &course_id);
+    assert!(
+        result.is_err(),
+        "enrollment must fail while the token contract rejects transfers"
+    );
+
+    // The failure must be clean: no enrollment record, no completion state,
+    // no course counters advanced, and no funds moved out of the student's
+    // account or into the contract/treasury.
+    assert!(!client.is_enrolled(&student, &course_id));
+    assert_eq!(client.has_completed(&student, &course_id), None);
+    assert!(client.get_enrollment(&admin, &student, &course_id).is_none());
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 0);
+    assert_eq!(course.active_enrollments, 0);
+    assert_eq!(course.total_earned, 0);
+
+    assert_eq!(token_client.balance(&student), 100_000_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+
+    // Unpausing restores normal enrollment — the rejection was caused purely
+    // by the paused token, not by any corrupted contract state.
+    token_client.set_paused(&false);
+    client.enroll(&student, &course_id);
+
+    assert!(client.is_enrolled(&student, &course_id));
+    assert_eq!(token_client.balance(&student), 99_500_000_000);
+    assert_eq!(token_client.balance(&treasury), 100_000_000);
+    assert_eq!(token_client.balance(&contract_id), 400_000_000);
+    assert_eq!(client.get_course(&course_id).unwrap().total_enrollments, 1);
+}
+
+#[test]
+fn test_batch_enroll_rolls_back_when_token_is_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let token_id = env.register(PausableTokenContract, ());
+    let token_client = PausableTokenContractClient::new(&env, &token_id);
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+    let student = Address::generate(&env);
+
+    client.init(
+        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    );
+    client.add_approved_token(&admin, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PAUSED-BATCH-A"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PAUSED-BATCH-B"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-PAUSED-BATCH-A"));
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-PAUSED-BATCH-B"));
+
+    token_client.set_paused(&true);
+
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    course_ids.push_back(String::from_str(&env, "COURSE-PAUSED-BATCH-A"));
+    course_ids.push_back(String::from_str(&env, "COURSE-PAUSED-BATCH-B"));
+
+    let result = client.try_batch_enroll(&student, &course_ids);
+    assert!(result.is_err(), "batch enrollment must fail as a whole");
+
+    // Batch enrollment is all-or-nothing: the first course must not be
+    // enrolled just because the token rejected the transfer.
+    assert!(!client.is_enrolled(&student, &String::from_str(&env, "COURSE-PAUSED-BATCH-A")));
+    assert!(!client.is_enrolled(&student, &String::from_str(&env, "COURSE-PAUSED-BATCH-B")));
+    assert_eq!(token_client.balance(&student), 100_000_000_000);
+    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(
+        client
+            .get_course(&String::from_str(&env, "COURSE-PAUSED-BATCH-A"))
+            .unwrap()
+            .total_enrollments,
+        0
+    );
+    assert_eq!(
+        client
+            .get_course(&String::from_str(&env, "COURSE-PAUSED-BATCH-B"))
+            .unwrap()
+            .total_enrollments,
+        0
+    );
+}
