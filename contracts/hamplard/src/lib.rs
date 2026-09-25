@@ -735,8 +735,18 @@ impl HamplardContract {
             panic!("instructor is frozen");
         }
 
+        if course_id.is_empty() {
+            panic!("course_id cannot be empty");
+        }
+
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
+        }
+
+        // `Some(0)` would make the course permanently unenrollable
+        // (`total_enrollments >= 0` is always true); use `None` for unlimited.
+        if max_capacity == Some(0) {
+            panic!("max_capacity must be greater than zero (use None for unlimited)");
         }
 
         // Validate course ID contains only allowed characters.
@@ -1135,6 +1145,12 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        // freeze_instructor() auto-pauses the instructor's courses; a frozen
+        // instructor must not be able to undo that by unpausing them.
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -1495,6 +1511,9 @@ impl HamplardContract {
         }
 
         if let Some(capacity) = new_max_capacity {
+            if capacity == Some(0) {
+                panic!("max_capacity must be greater than zero (use None for unlimited)");
+            }
             course.max_capacity = capacity;
             modified = true;
         }
@@ -1547,6 +1566,10 @@ impl HamplardContract {
 
         if !is_admin && !is_instructor {
             panic!("unauthorized");
+        }
+
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
         }
 
         course.enrollment_expiry_ledgers = expiry_ledgers;
@@ -1643,6 +1666,10 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
         if course.status == CourseStatus::Archived {
             panic!("cannot update archived course");
         }
@@ -1709,6 +1736,12 @@ impl HamplardContract {
 
         if !is_admin && !is_instructor {
             panic!("unauthorized");
+        }
+
+        // A frozen instructor may not alter the content commitment, but an
+        // admin may still update it as an administrative intervention.
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {

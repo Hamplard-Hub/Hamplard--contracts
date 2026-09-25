@@ -3355,20 +3355,27 @@ fn test_batch_enroll_respects_capacity() {
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-OK"));
 
-    // Course B: capacity 0 — already full before anyone enrols
+    // Course B: capacity 1 — filled by another student before the batch
     client.register_course(
         &instructor,
         &String::from_str(&env, "COURSE-BATCH-CAP-FULL"),
         &100_000_000,
         &token_id,
         &0u32,
-        &Some(0u32),
+        &Some(1u32),
         &BytesN::from_array(&env, &[0u8; 32]),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
     env.ledger().with_mut(|l| {
         l.sequence_number += 1;
     });
+
+    let first_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&first_student, &1_000_000_000);
+    client.enroll(
+        &first_student,
+        &String::from_str(&env, "COURSE-BATCH-CAP-FULL"),
+    );
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -8637,4 +8644,228 @@ fn test_approve_course_init_ledger_stored_correctly() {
 
     // Verify init was called and state was stored
     assert_eq!(ledger_after, ledger_before + 1);
+}
+
+// ============================================================
+// INSTRUCTOR FREEZE & REGISTRATION VALIDATION TESTS (#229, #230, #231, #232)
+// ============================================================
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_cannot_set_enrollment_expiry() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-EXPIRY",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor);
+
+    client.set_enrollment_expiry(
+        &instructor,
+        &String::from_str(&env, "COURSE-FROZEN-EXPIRY"),
+        &Some(100u32),
+    );
+}
+
+#[test]
+fn test_admin_can_set_enrollment_expiry_for_frozen_instructor() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-EXPIRY-ADMIN",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor);
+
+    let course_id = String::from_str(&env, "COURSE-FROZEN-EXPIRY-ADMIN");
+    client.set_enrollment_expiry(&admin, &course_id, &Some(100u32));
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.enrollment_expiry_ledgers, Some(100u32));
+}
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_cannot_update_content_hash() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-HASH",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor);
+
+    client.update_content_hash(
+        &instructor,
+        &String::from_str(&env, "COURSE-FROZEN-HASH"),
+        &BytesN::from_array(&env, &[7u8; 32]),
+    );
+}
+
+#[test]
+fn test_admin_can_update_content_hash_for_frozen_instructor() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-HASH-ADMIN",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor);
+
+    let course_id = String::from_str(&env, "COURSE-FROZEN-HASH-ADMIN");
+    let new_hash = BytesN::from_array(&env, &[9u8; 32]);
+    client.update_content_hash(&admin, &course_id, &new_hash);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.content_hash, new_hash);
+}
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_cannot_set_prerequisite_courses() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-PREREQ",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor);
+
+    client.set_prerequisite_courses(
+        &instructor,
+        &String::from_str(&env, "COURSE-FROZEN-PREREQ"),
+        &soroban_sdk::Vec::new(&env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "instructor is frozen")]
+fn test_frozen_instructor_cannot_unpause_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-UNPAUSE",
+        100_000_000,
+    );
+    // freeze_instructor() auto-pauses the instructor's Active courses.
+    client.freeze_instructor(&admin, &instructor);
+
+    client.unpause_course(&instructor, &String::from_str(&env, "COURSE-FROZEN-UNPAUSE"));
+}
+
+#[test]
+#[should_panic(expected = "course_id cannot be empty")]
+fn test_register_course_rejects_empty_course_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, ""),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_capacity must be greater than zero")]
+fn test_register_course_rejects_zero_max_capacity() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ZERO-CAP"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &Some(0u32),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_capacity must be greater than zero")]
+fn test_update_course_rejects_zero_max_capacity() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-ZERO-CAP",
+        100_000_000,
+    );
+
+    client.update_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-UPDATE-ZERO-CAP"),
+        &None,
+        &Some(Some(0u32)),
+    );
+}
+
+#[test]
+fn test_update_course_allows_unlimited_capacity_with_none() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-UNLIMITED-CAP"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &Some(5u32),
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+
+    let course_id = String::from_str(&env, "COURSE-UNLIMITED-CAP");
+    client.update_course(&admin, &course_id, &None, &Some(None));
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.max_capacity, None);
 }
