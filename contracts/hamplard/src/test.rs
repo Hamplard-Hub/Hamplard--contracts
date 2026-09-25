@@ -906,6 +906,8 @@ fn test_full_lifecycle_enroll_complete_certify() {
     // Issue certificate
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-TAILORING-001"),
         &cert_id,
         &course_title,
         &get_enrollment_ref(&env, &client, &student, "COURSE-TAILORING-001"),
@@ -958,6 +960,8 @@ fn test_certificate_issued_event_contains_full_issuance_details() {
 
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-CERT-EVENT-001"),
         &certificate_id,
         &String::from_str(&env, "Certificate Event Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-EVENT-001"),
@@ -1022,6 +1026,8 @@ fn test_certificate_requires_completion() {
     // Try to issue certificate without completing — should panic
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-NAILS-001"),
         &String::from_str(&env, "CERT-EARLY"),
         &String::from_str(&env, "Nail Technology"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-NAILS-001"),
@@ -1060,6 +1066,8 @@ fn test_revoke_certificate() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-MAKEUP-001"),
         &cert_id,
         &String::from_str(&env, "Makeup Artistry"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-MAKEUP-001"),
@@ -1121,6 +1129,8 @@ fn test_event_certificate_revoked() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-EVENT-REVOKE"),
         &cert_id,
         &String::from_str(&env, "Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-EVENT-REVOKE"),
@@ -1207,6 +1217,8 @@ fn test_revoke_certificate_metadata_persisted() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-AUDIT-001"),
         &cert_id,
         &String::from_str(&env, "Audit Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-AUDIT-001"),
@@ -1268,6 +1280,8 @@ fn test_issue_certificate_with_instructor_signature() {
     let signature = BytesN::from_array(&env, &[7u8; 64]);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-SIGNED-001"),
         &cert_id,
         &String::from_str(&env, "Signed Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-SIGNED-001"),
@@ -1310,6 +1324,8 @@ fn test_issue_certificate_without_instructor_signature() {
 
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-UNSIGNED-001"),
         &cert_id,
         &String::from_str(&env, "Unsigned Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-UNSIGNED-001"),
@@ -1846,6 +1862,8 @@ fn test_issue_certificate_title_too_long() {
     let long_title = String::from_str(&env, &"T".repeat(513));
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-TITLE-LEN"),
         &String::from_str(&env, "CERT-TITLE-LEN"),
         &long_title,
         &get_enrollment_ref(&env, &client, &student, "COURSE-TITLE-LEN"),
@@ -1883,6 +1901,8 @@ fn test_issue_certificate_id_too_long() {
     let long_cert_id = String::from_str(&env, &"C".repeat(257));
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-CERT-ID-LEN"),
         &long_cert_id,
         &String::from_str(&env, "Valid Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-ID-LEN"),
@@ -2085,6 +2105,8 @@ fn test_certificate_id_collision_across_courses() {
     );
     client.issue_certificate(
         &admin,
+        &student_a,
+        &String::from_str(&env, "COURSE-COLL-A"),
         &cert_id,
         &String::from_str(&env, "Course A"),
         &get_enrollment_ref(&env, &client, &student_a, "COURSE-COLL-A"),
@@ -2104,6 +2126,8 @@ fn test_certificate_id_collision_across_courses() {
     );
     client.issue_certificate(
         &admin,
+        &student_b,
+        &String::from_str(&env, "COURSE-COLL-B"),
         &cert_id,
         &String::from_str(&env, "Course B"),
         &get_enrollment_ref(&env, &client, &student_b, "COURSE-COLL-B"),
@@ -2247,6 +2271,8 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.issue_certificate(
             &admin,
+            &student,
+            &String::from_str(&env, "COURSE-OLD-ADMIN"),
             &cert_id,
             &String::from_str(&env, "Old Admin Course"),
             &get_enrollment_ref(&env, &client, &student, "COURSE-OLD-ADMIN"),
@@ -2261,6 +2287,8 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
 
     client.issue_certificate(
         &new_admin,
+        &student,
+        &String::from_str(&env, "COURSE-OLD-ADMIN"),
         &cert_id,
         &String::from_str(&env, "Old Admin Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-OLD-ADMIN"),
@@ -2775,6 +2803,8 @@ fn test_revoke_certificate_unauthorized_includes_operation() {
     let course_title = String::from_str(&env, "Revoke Test Course");
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-UNAUTH"),
         &cert_id,
         &course_title,
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-UNAUTH"),
@@ -3108,6 +3138,8 @@ fn test_verify_certificate_returns_true_for_valid_cert() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-VERIFY-001"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-001"),
@@ -3148,6 +3180,8 @@ fn test_verify_certificate_returns_false_for_revoked_cert() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-VERIFY-002"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-002"),
@@ -3214,6 +3248,8 @@ fn test_verify_certificate_false_does_not_mutate_state() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-VERIFY-003"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-003"),
@@ -3821,6 +3857,8 @@ fn test_course_certificate_id_collision_verification() {
     // Issue certificate with matching_id (same as course_id)
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "MATCHING-ID-123"),
         &matching_id, // matching_id used as cert_id
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "MATCHING-ID-123"),
@@ -3885,6 +3923,8 @@ fn test_certificate_expiry_behavior() {
     // Issue certificate with expiry at ledger 1000
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-EXPIRY"),
         &cert_id,
         &String::from_str(&env, "Expiry Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-EXPIRY"),
@@ -4234,6 +4274,8 @@ fn test_re_enroll_archives_original_completion_and_certificate() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REENROLL-002"),
         &cert_id,
         &String::from_str(&env, "Re-enroll Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REENROLL-002"),
@@ -4344,6 +4386,8 @@ fn test_events_emitted_for_admin_operations() {
     let cert_id = String::from_str(&env, "CERT-ATTR-001");
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-ATTR-001"),
         &cert_id,
         &String::from_str(&env, "Re-enroll Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-ATTR-001"),
@@ -4769,6 +4813,8 @@ fn test_get_certificate_authorized_roles() {
     let cert_id = String::from_str(&env, "CERT-123");
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-GET-CERT"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-GET-CERT"),
@@ -4790,7 +4836,7 @@ fn test_get_certificate_authorized_roles() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "unauthorized")]
 fn test_get_certificate_unauthorized_third_party_fails() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -4820,6 +4866,8 @@ fn test_get_certificate_unauthorized_third_party_fails() {
     let cert_id = String::from_str(&env, "CERT-123");
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-GET-CERT"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-GET-CERT"),
@@ -4829,8 +4877,8 @@ fn test_get_certificate_unauthorized_third_party_fails() {
 
     let third_party = Address::generate(&env);
 
-    // Mock auth only for third_party's own require_auth() call — cert.student
-    // is deliberately left unmocked, so its require_auth() call must fail.
+    // Mock auth only for third_party's own require_auth() call — a caller who
+    // is not the student, instructor, or admin is denied by default.
     client
         .mock_auths(&[MockAuth {
             address: &third_party,
@@ -4880,9 +4928,11 @@ fn test_certificate_student_b_without_enrollment_panics() {
     // Try to issue certificate using student_b's address — must panic (no enrollment)
     client.issue_certificate(
         &admin,
+        &student_b,
+        &String::from_str(&env, "COURSE-SECURE-B"),
         &cert_id,
         &String::from_str(&env, "Secure Course"),
-        &get_enrollment_ref(&env, &client, &student_b, "COURSE-SECURE-B"),
+        &String::from_str(&env, "backend-enrollment-student-b"),
         &None,
         &None,
     );
@@ -4923,6 +4973,8 @@ fn test_certificate_student_matches_enrollment() {
     // Issue certificate correctly using student_a's address
     client.issue_certificate(
         &admin,
+        &student_a,
+        &String::from_str(&env, "COURSE-SECURE"),
         &cert_id,
         &String::from_str(&env, "Secure Course"),
         &get_enrollment_ref(&env, &client, &student_a, "COURSE-SECURE"),
@@ -5196,6 +5248,8 @@ fn test_issue_certificate_empty_id_rejected() {
     // Empty certificate ID must be rejected
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-EMPTY-CERT"),
         &String::from_str(&env, ""),
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-EMPTY-CERT"),
@@ -5237,6 +5291,8 @@ fn test_revoke_certificate_double_revocation_rejected() {
     let cert_id = String::from_str(&env, "CERT-DBL-REVOKE");
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-DBL"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-DBL"),
@@ -5286,6 +5342,8 @@ fn test_revoke_certificate_metadata_unchanged_after_rejected_double_revoke() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-IMMUTABLE-001"),
         &cert_id,
         &String::from_str(&env, "Test Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-IMMUTABLE-001"),
@@ -5362,6 +5420,8 @@ fn test_revoke_certificate_id_cannot_be_reused_to_unrevoke() {
     );
     client.issue_certificate(
         &admin,
+        &student_a,
+        &String::from_str(&env, "COURSE-REUSE-A"),
         &cert_id,
         &String::from_str(&env, "Course A"),
         &get_enrollment_ref(&env, &client, &student_a, "COURSE-REUSE-A"),
@@ -5382,6 +5442,8 @@ fn test_revoke_certificate_id_cannot_be_reused_to_unrevoke() {
     );
     client.issue_certificate(
         &admin,
+        &student_b,
+        &String::from_str(&env, "COURSE-REUSE-B"),
         &cert_id,
         &String::from_str(&env, "Course B"),
         &get_enrollment_ref(&env, &client, &student_b, "COURSE-REUSE-B"),
@@ -5596,6 +5658,8 @@ fn test_certificate_issued_by_matches_contract_address() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-ISSUED-BY-001"),
         &cert_id,
         &String::from_str(&env, "Issued-By Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-ISSUED-BY-001"),
@@ -5640,6 +5704,8 @@ fn test_certificate_issued_by_is_not_admin_or_instructor() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-ISSUED-BY-002"),
         &cert_id,
         &String::from_str(&env, "Issued-By Course 2"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-ISSUED-BY-002"),
@@ -5695,6 +5761,8 @@ fn test_certificate_issued_by_persists_after_revocation() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-ISSUED-BY-003"),
         &cert_id,
         &String::from_str(&env, "Issued-By Course 3"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-ISSUED-BY-003"),
@@ -5754,6 +5822,8 @@ fn test_multiple_certificates_share_same_issued_by() {
     );
     client.issue_certificate(
         &admin,
+        &student_a,
+        &String::from_str(&env, "COURSE-MULTI-ISSUED-A"),
         &cert_a,
         &String::from_str(&env, "Course A"),
         &get_enrollment_ref(&env, &client, &student_a, "COURSE-MULTI-ISSUED-A"),
@@ -5770,6 +5840,8 @@ fn test_multiple_certificates_share_same_issued_by() {
     );
     client.issue_certificate(
         &admin,
+        &student_b,
+        &String::from_str(&env, "COURSE-MULTI-ISSUED-B"),
         &cert_b,
         &String::from_str(&env, "Course B"),
         &get_enrollment_ref(&env, &client, &student_b, "COURSE-MULTI-ISSUED-B"),
@@ -7175,6 +7247,8 @@ fn test_enroll_succeeds_with_completed_and_certified_prerequisite() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-PREREQ-A"),
         &String::from_str(&env, "CERT-PREREQ-A"),
         &String::from_str(&env, "Course A"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-PREREQ-A"),
@@ -7231,6 +7305,8 @@ fn test_enroll_blocked_when_prerequisite_certificate_revoked() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-PREREQ-A"),
         &cert_id,
         &String::from_str(&env, "Course A"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-PREREQ-A"),
@@ -7278,6 +7354,8 @@ fn test_issue_certificate_after_revoke_is_rejected() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-REISSUE"),
         &first_cert_id,
         &String::from_str(&env, "Course Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-REISSUE"),
@@ -7308,6 +7386,8 @@ fn test_issue_certificate_after_revoke_is_rejected() {
     // enrollment via `re_enroll`.
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-REISSUE"),
         &String::from_str(&env, "CERT-REPLACEMENT"),
         &String::from_str(&env, "Course Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-REISSUE"),
@@ -7347,6 +7427,8 @@ fn test_reissue_certificate_allowed_after_re_enroll() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-REENROLL"),
         &first_cert_id,
         &String::from_str(&env, "Course Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-REENROLL"),
@@ -7377,6 +7459,8 @@ fn test_reissue_certificate_allowed_after_re_enroll() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-REVOKE-REENROLL"),
         &second_cert_id,
         &String::from_str(&env, "Course Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-REVOKE-REENROLL"),
@@ -7560,6 +7644,8 @@ fn test_issue_141_certificate_course_id_matches_enrollment() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-141-TEST"),
         &cert_id,
         &String::from_str(&env, "Test Course Title"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-141-TEST"),
@@ -7573,19 +7659,31 @@ fn test_issue_141_certificate_course_id_matches_enrollment() {
 }
 
 #[test]
-#[should_panic(expected = "enrollment reference not found")]
-fn test_issue_141_invalid_enrollment_reference_rejected() {
-    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+#[should_panic(expected = "enrollment not found")]
+fn test_issue_141_certificate_requires_enrollment_in_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let cert_id = String::from_str(&env, "CERT-INVALID-REF");
-    let invalid_ref = String::from_str(&env, "99999"); // non-existent enrollment ref
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NOT-ENROLLED",
+        500_000_000,
+    );
 
+    // The student never enrolled in this course, so no certificate can be
+    // issued for it regardless of the enrollment_reference supplied.
+    let student = Address::generate(&env);
     client.issue_certificate(
         &admin,
-        &cert_id,
+        &student,
+        &String::from_str(&env, "COURSE-NOT-ENROLLED"),
+        &String::from_str(&env, "CERT-NOT-ENROLLED"),
         &String::from_str(&env, "Course Title"),
-        &invalid_ref,
+        &String::from_str(&env, "99999"),
         &None,
         &None,
     );
@@ -7624,6 +7722,8 @@ fn test_issue_141_enrollment_ref_is_unique_per_enrollment() {
     );
     client.issue_certificate(
         &admin,
+        &student,
+        &course_id,
         &String::from_str(&env, "CERT-FIRST"),
         &String::from_str(&env, "Course Title"),
         &ref1,
@@ -7668,6 +7768,8 @@ fn test_issue_146_revocation_starts_pending() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-PENDING-REV"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-PENDING-REV"),
@@ -7716,6 +7818,8 @@ fn test_issue_146_student_can_challenge_pending_revocation() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-CHALLENGE-OK"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-CHALLENGE-OK"),
@@ -7763,6 +7867,8 @@ fn test_issue_146_unauthorized_challenge_fails() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-UNAUTH-CHAL"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-UNAUTH-CHAL"),
@@ -7802,6 +7908,8 @@ fn test_issue_146_challenge_without_revocation_fails() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-NO-REV"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-NO-REV"),
@@ -7839,6 +7947,8 @@ fn test_issue_146_late_challenge_fails() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-LATE-CHAL"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-LATE-CHAL"),
@@ -7884,6 +7994,8 @@ fn test_issue_146_revocation_becomes_permanent_after_deadline() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-PERM-REV"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-PERM-REV"),
@@ -7933,6 +8045,8 @@ fn test_issue_146_double_revocation_rejected() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-DBL-REV"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-DBL-REV"),
@@ -7971,6 +8085,8 @@ fn test_issue_146_challenge_boundary_condition() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-BOUNDARY"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-BOUNDARY"),
@@ -8018,6 +8134,8 @@ fn test_issue_146_rerevocation_after_successful_challenge() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-RE-REV"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-RE-REV"),
@@ -8073,6 +8191,8 @@ fn test_issue_146_configurable_challenge_period() {
     client.mark_completed(&admin, &student, &course_id, &None);
     client.issue_certificate(
         &admin,
+        &student,
+        &String::from_str(&env, "COURSE-SHORT-PERIOD"),
         &cert_id,
         &String::from_str(&env, "Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-SHORT-PERIOD"),
@@ -8637,4 +8757,264 @@ fn test_approve_course_init_ledger_stored_correctly() {
 
     // Verify init was called and state was stored
     assert_eq!(ledger_after, ledger_before + 1);
+}
+
+// ============================================================
+// RISK PREVIEW, CERTIFICATE, EVIDENCE & READ AUTH TESTS (#225, #226, #227, #228)
+// ============================================================
+
+#[test]
+fn test_fee_preview_matches_actual_enroll_deduction() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    // Large-payment surcharge of 5% applies to payments above 50 USDC.
+    client.set_risk_config_enabled(&admin, &true);
+    client.set_risk_fee_config(&admin, &500u32, &500_000_000i128, &700u32, &900u32);
+
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-PREVIEW",
+        price,
+    );
+
+    // Quotes are derived from on-chain state for this student and token —
+    // callers can no longer pass their own risk flags.
+    let risk = client.calculate_risk_score(&student, &token_id, &price);
+    let preview = client.get_effective_fee_for_payment(&student, &token_id, &price);
+    assert_eq!(preview.risk_surcharge_bps, risk.surcharge_bps);
+    assert_eq!(
+        client.do_complete_payment(&student, &token_id, &price),
+        preview
+    );
+
+    client.enroll(&student, &String::from_str(&env, "COURSE-FEE-PREVIEW"));
+
+    // The preview must equal what enroll() actually deducted.
+    assert_eq!(token_client.balance(&treasury), preview.platform_fee);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        price - preview.platform_fee,
+    );
+    let enrollment = client
+        .get_enrollment(&student, &student, &String::from_str(&env, "COURSE-FEE-PREVIEW"))
+        .unwrap();
+    assert_eq!(enrollment.platform_amount, preview.platform_fee);
+}
+
+#[test]
+fn test_issue_certificate_with_uuid_enrollment_reference() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UUID-REF",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UUID-REF");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    // A backend UUID is not a Stellar address and is not the on-chain
+    // enrollment ref — it must be accepted as a free-form reference.
+    let backend_ref = String::from_str(&env, "550e8400-e29b-41d4-a716-446655440000");
+    let cert_id = String::from_str(&env, "CERT-UUID-REF");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "UUID Course"),
+        &backend_ref,
+        &None,
+        &None,
+    );
+
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert_eq!(cert.student, student);
+    assert_eq!(cert.course_id, course_id);
+    assert_eq!(cert.enrollment_reference, backend_ref);
+}
+
+#[test]
+#[should_panic(expected = "evidence_hash cannot be empty")]
+fn test_mark_completed_rejects_empty_evidence_hash() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EMPTY-EVIDENCE",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-EMPTY-EVIDENCE");
+    client.enroll(&student, &course_id);
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "")),
+    );
+}
+
+#[test]
+fn test_mark_completed_with_evidence_needs_no_student_signature() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EVIDENCE-ONLY",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-EVIDENCE-ONLY");
+    client.enroll(&student, &course_id);
+
+    // Only the admin signs; the student's auth is deliberately not mocked.
+    let evidence = Some(String::from_str(&env, "sha256:9f86d081884c7d65"));
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "mark_completed",
+                args: (
+                    admin.clone(),
+                    student.clone(),
+                    course_id.clone(),
+                    evidence.clone(),
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .mark_completed(&admin, &student, &course_id, &evidence);
+
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_get_certificate_denies_third_party_even_with_student_auth() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-DENY",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-DENY");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-DENY");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Deny Course"),
+        &String::from_str(&env, "backend-ref-deny"),
+        &None,
+        &None,
+    );
+
+    // All auths are mocked (including the student's), so the old fallback
+    // of `cert.student.require_auth()` would have let this through.
+    let third_party = Address::generate(&env);
+    client.get_certificate(&third_party, &cert_id);
+}
+
+#[test]
+fn test_get_certificate_allows_student_instructor_and_admin() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-ALLOW",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-ALLOW");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    let cert_id = String::from_str(&env, "CERT-ALLOW");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Allow Course"),
+        &String::from_str(&env, "backend-ref-allow"),
+        &None,
+        &None,
+    );
+
+    assert_eq!(client.get_certificate(&student, &cert_id).id, cert_id);
+    assert_eq!(client.get_certificate(&instructor, &cert_id).id, cert_id);
+    assert_eq!(client.get_certificate(&admin, &cert_id).id, cert_id);
 }
