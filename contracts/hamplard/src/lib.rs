@@ -502,6 +502,18 @@ pub enum DataKey {
     /// Ledger sequence when init() was called — used to enforce
     /// a governance window before approve_course() can be called.
     InitLedger,
+    /// Explicit platform fee override (in basis points) supplied by the
+    /// instructor at `register_course()` time. Only present when a non-zero
+    /// `platform_fee_pct` was passed; acts as a floor on the live per-token
+    /// fee at enrollment so the registered rate is actually charged.
+    CourseFeeOverrideBps(String),
+    /// Number of paid/free enrollments ever created for a student across the
+    /// whole platform (enroll, batch_enroll, waitlist promotion, re_enroll).
+    /// Zero means the student is a first-time customer for risk pricing.
+    StudentEnrollmentCount(Address),
+    /// Marks an approved token as BTC/ETH-denominated (higher volatility),
+    /// enabling `RiskFeeConfig.btc_eth_surcharge_bps` for its payments.
+    BtcEthToken(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -706,7 +718,10 @@ impl HamplardContract {
     /// - `course_id`        — unique ID matching the backend DB record
     /// - `price`            — enrollment price in USDC stroops
     /// - `token`            — USDC Stellar Asset Contract address
-    /// - `platform_fee_pct` — optional fee override; pass 0 to use platform default
+    /// - `platform_fee_pct` — optional fee override; pass 0 to follow the live
+    ///   per-token fee (`FeeConfig(token)` / `DefaultFee`). A non-zero value
+    ///   must be at least the token's current fee and is charged at enrollment
+    ///   as a floor on the live per-token fee.
     /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
     pub fn register_course(
         env: Env,
@@ -816,23 +831,44 @@ impl HamplardContract {
             panic!("instructor has reached the maximum number of pending course registrations");
         }
 
-        let default_fee = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::DefaultFee)
-            .unwrap_or(20);
+        // Validate against the same fee source-of-truth that deduct_fee()
+        // uses at enrollment: the per-token `FeeConfig(token)`, falling back
+        // to `DefaultFee`. Validating against `DefaultFee` alone would accept
+        // overrides below a higher per-token rate (or reject overrides above
+        // a lower one) that enrollment would never actually charge.
+        let token_fee_bps = Self::get_fee_config(env.clone(), token.clone()).fee_bps;
 
         let fee = if platform_fee_pct == 0 {
-            default_fee
+            // Snapshot of the live token rate, rounded up to whole percent.
+            // Informational only — with no override, enrollment always
+            // follows the live FeeConfig(token) / DefaultFee.
+            (token_fee_bps + 99) / 100
         } else {
             if platform_fee_pct > 100 {
                 panic!("fee percentage cannot exceed 100");
             }
-            if platform_fee_pct < default_fee {
+            if platform_fee_pct * 100 < token_fee_bps {
                 panic!("fee percentage cannot be below platform minimum");
             }
             platform_fee_pct
         };
+
+        // Persist the explicit override (or clear a stale one left by an
+        // archived course that previously used this ID) so enrollment
+        // charges the rate that was validated here.
+        let override_key = DataKey::CourseFeeOverrideBps(course_id.clone());
+        if platform_fee_pct == 0 {
+            env.storage().persistent().remove(&override_key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&override_key, &(platform_fee_pct * 100));
+            env.storage().persistent().extend_ttl(
+                &override_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
 
         let min_completion_ledgers: u32 = env
             .storage()
@@ -2031,12 +2067,15 @@ impl HamplardContract {
         // 1. Per-token fee configuration (map token → FeeConfig)
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
+        let is_new_customer = Self::get_student_enrollment_count_internal(env, student) == 0;
+        let is_btc_eth = Self::is_btc_eth_token_internal(env, &course.token);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
             course.price,
-            false, // is_new_customer — not tracked at enrollment; always false
-            false, // is_btc_eth — not tracked; always false
+            Self::course_fee_override_bps(env, course_id),
+            is_new_customer,
+            is_btc_eth,
         );
 
         // Fetch treasury, applying any pending treasury update if effective
@@ -2177,6 +2216,8 @@ impl HamplardContract {
                 .unwrap_or_else(|| panic!("instructor stats overflow"));
         });
 
+        Self::increment_student_enrollment_count(env, student);
+
         // Emit enrollment receipt event with complete payment breakdown
         env.events().publish(
             (Symbol::new(env, "student_enrolled"), course_id.clone()),
@@ -2289,12 +2330,16 @@ impl HamplardContract {
         // 1. Per-token fee configuration (map token → FeeConfig)
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
+        // A re-enrolling student has, by definition, a prior completed
+        // enrollment, so they are never a new customer.
+        let is_btc_eth = Self::is_btc_eth_token_internal(&env, &course.token);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             &env,
             &course.token,
             course.price,
-            false, // is_new_customer — not tracked at re-enrollment; always false
-            false, // is_btc_eth — not tracked; always false
+            Self::course_fee_override_bps(&env, &course_id),
+            false,
+            is_btc_eth,
         );
 
         let mut treasury: Address = env
@@ -2405,6 +2450,8 @@ impl HamplardContract {
                 .checked_add(1)
                 .unwrap_or_else(|| panic!("instructor stats overflow"));
         });
+
+        Self::increment_student_enrollment_count(&env, &student);
 
         env.events().publish(
             (Symbol::new(&env, "student_re_enrolled"), course_id.clone()),
@@ -3181,6 +3228,47 @@ impl HamplardContract {
         );
     }
 
+    /// Admin classifies an approved token as BTC/ETH-denominated (or not).
+    /// Payments in a BTC/ETH token incur `RiskFeeConfig.btc_eth_surcharge_bps`
+    /// at enroll()/re_enroll() when risk pricing is enabled.
+    pub fn set_token_btc_eth(env: Env, admin: Address, token: Address, is_btc_eth: bool) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_token_btc_eth");
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::ApprovedToken(token.clone()))
+        {
+            panic!("token is not approved");
+        }
+
+        if is_btc_eth {
+            env.storage()
+                .instance()
+                .set(&DataKey::BtcEthToken(token.clone()), &true);
+        } else {
+            env.storage()
+                .instance()
+                .remove(&DataKey::BtcEthToken(token.clone()));
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "token_btc_eth_updated"), admin.clone()),
+            (token, is_btc_eth),
+        );
+    }
+
+    /// Returns whether a token is classified as BTC/ETH-denominated.
+    pub fn is_btc_eth_token(env: Env, token: Address) -> bool {
+        Self::is_btc_eth_token_internal(&env, &token)
+    }
+
+    /// Returns the number of enrollments a student has ever created on the
+    /// platform. Zero means their next enrollment is as a new customer.
+    pub fn get_student_enrollment_count(env: Env, student: Address) -> u32 {
+        Self::get_student_enrollment_count_internal(&env, &student)
+    }
+
     /// Admin removes a token contract address from the enrollment whitelist.
     pub fn remove_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
@@ -3188,6 +3276,9 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey::ApprovedToken(token.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::BtcEthToken(token.clone()));
 
         env.events().publish(
             (
@@ -4212,6 +4303,39 @@ impl HamplardContract {
             .unwrap_or(false)
     }
 
+    fn course_fee_override_bps(env: &Env, course_id: &String) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CourseFeeOverrideBps(course_id.clone()))
+    }
+
+    fn get_student_enrollment_count_internal(env: &Env, student: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::StudentEnrollmentCount(student.clone()))
+            .unwrap_or(0)
+    }
+
+    fn increment_student_enrollment_count(env: &Env, student: &Address) {
+        let key = DataKey::StudentEnrollmentCount(student.clone());
+        let count = Self::get_student_enrollment_count_internal(env, student)
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("student enrollment count overflow"));
+        env.storage().persistent().set(&key, &count);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    fn is_btc_eth_token_internal(env: &Env, token: &Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::BtcEthToken(token.clone()))
+            .unwrap_or(false)
+    }
+
     fn is_admin(env: &Env, caller: &Address) -> bool {
         let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
         admin.map(|a| a == *caller).unwrap_or(false)
@@ -4699,6 +4823,8 @@ impl HamplardContract {
     /// - `env`        — the contract environment
     /// - `token`      — the payment token address
     /// - `amount`     — the total payment amount (in stroops)
+    /// - `course_fee_override_bps` — the course's explicit registration-time
+    ///   fee override, if any; used as a floor on the live per-token fee
     /// - `is_new_customer` — whether the student has no prior enrollments
     /// - `is_btc_eth` — whether the token is BTC/ETH (higher volatility)
     ///
@@ -4707,6 +4833,7 @@ impl HamplardContract {
         env: &Env,
         token: &Address,
         amount: i128,
+        course_fee_override_bps: Option<u32>,
         is_new_customer: bool,
         is_btc_eth: bool,
     ) -> (i128, i128) {
@@ -4714,8 +4841,12 @@ impl HamplardContract {
             return (0, 0);
         }
 
-        let fee_config = Self::get_fee_config(env.clone(), token.clone());
-        let mut effective_bps = fee_config.fee_bps;
+        let token_fee_bps = Self::get_fee_config(env.clone(), token.clone()).fee_bps;
+        let base_fee_bps = match course_fee_override_bps {
+            Some(override_bps) if override_bps > token_fee_bps => override_bps,
+            _ => token_fee_bps,
+        };
+        let mut effective_bps = base_fee_bps;
 
         // Apply risk surcharge when risk config is enabled
         let mut risk_surcharge_bps: u32 = 0;
@@ -4762,7 +4893,7 @@ impl HamplardContract {
                 (Symbol::new(env, "risk_fee_applied"),),
                 RiskFeeApplied {
                     payment_amount: amount,
-                    base_fee_bps: fee_config.fee_bps,
+                    base_fee_bps,
                     risk_surcharge_bps,
                     effective_fee_bps: effective_bps,
                     platform_fee,
