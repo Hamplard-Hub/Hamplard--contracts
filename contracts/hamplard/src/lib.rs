@@ -564,6 +564,12 @@ impl HamplardContract {
     /// Default revocation challenge period in ledger sequences
     /// (~17,280 ledgers ≈ 1 day at 5s/ledger).
     const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
+    /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
+    const MAX_BATCH_SIZE: u32 = 50;
+    /// Maximum number of students that may be refunded in a single
+    /// `archive_course()` call. Large courses must be refunded in multiple
+    /// transactions.
+    const MAX_STUDENTS_TO_REFUND: u32 = 100;
 
     // ----------------------------------------------------------
     // INIT
