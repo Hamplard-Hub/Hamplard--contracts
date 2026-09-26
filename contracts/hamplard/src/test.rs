@@ -1706,6 +1706,97 @@ fn test_archive_course_with_refunds() {
 }
 
 #[test]
+fn test_archive_course_incremental_refunds() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let students: Vec<Address> = (0..5)
+        .map(|_| {
+            let s = Address::generate(&env);
+            token::StellarAssetClient::new(&env, &token_id).mint(&s, &1_000_000_000);
+            s
+        })
+        .collect();
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-INCREMENTAL-REFUND",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-INCREMENTAL-REFUND");
+
+    for student in &students {
+        client.enroll(student, &course_id);
+    }
+
+    client.pause_course(&admin, &course_id);
+
+    // First refund batch: 2 of 5 students
+    let mut batch1 = soroban_sdk::Vec::new(&env);
+    batch1.push_back(students[0].clone());
+    batch1.push_back(students[1].clone());
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(batch1));
+
+    // Course should still be Paused because 3 active enrollments remain
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Paused);
+    assert_eq!(course.active_enrollments, 3);
+
+    // Second refund batch: remaining 3 students
+    let mut batch2 = soroban_sdk::Vec::new(&env);
+    for i in 2..5 {
+        batch2.push_back(students[i].clone());
+    }
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(batch2));
+
+    // Now the course should be Archived
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Archived);
+    assert_eq!(course.active_enrollments, 0);
+
+    for student in &students {
+        assert!(!client.is_enrolled(student, &course_id));
+    }
+}
+
+#[test]
+#[should_panic(expected = "exceeds maximum allowed")]
+fn test_archive_course_rejects_oversized_refund_list() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let price = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-OVERFLOW-REFUND",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-OVERFLOW-REFUND");
+
+    client.pause_course(&admin, &course_id);
+
+    let mut too_many = soroban_sdk::Vec::new(&env);
+    for _ in 0..(HamplardContract::MAX_STUDENTS_TO_REFUND + 1) {
+        let s = Address::generate(&env);
+        too_many.push_back(s);
+    }
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(too_many));
+}
+
+#[test]
 #[should_panic]
 fn test_enroll_insufficient_funds_rollback() {
     let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
@@ -3421,6 +3512,36 @@ fn test_batch_enroll_respects_capacity() {
     course_ids.push_back(String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
 
     // batch_enroll validates all courses before enrolling any — must panic
+    client.batch_enroll(&student, &course_ids);
+}
+
+#[test]
+#[should_panic(expected = "batch size")]
+fn test_batch_enroll_rejects_oversized_batch() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    for i in 0..60 {
+        let course_id = format!("COURSE-BATCH-OVERFLOW-{}", i);
+        register_and_approve_course(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &instructor,
+            &course_id,
+            100_000_000,
+        );
+    }
+
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    for i in 0..60 {
+        course_ids.push_back(String::from_str(&env, &format!("COURSE-BATCH-OVERFLOW-{}", i)));
+    }
+
     client.batch_enroll(&student, &course_ids);
 }
 
@@ -9783,4 +9904,153 @@ fn test_get_course_certificates_empty_for_course_without_issuance() {
             .len(),
         0
     );
+}
+
+// =============================================================================
+// ISSUE #233: register_course() rejects all-zero content_hash
+// =============================================================================
+
+#[test]
+#[should_panic(expected = "content_hash cannot be all zero bytes")]
+fn test_register_course_rejects_zero_content_hash() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-ZERO-HASH"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[0u8; 32]),
+    );
+}
+
+#[test]
+fn test_register_course_accepts_non_zero_content_hash() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let non_zero_hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-NONZERO-HASH"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &non_zero_hash,
+    );
+}
+
+// =============================================================================
+// ISSUE #235: withdraw_tokens requires multi-sig authorization
+// =============================================================================
+
+#[test]
+fn test_withdraw_tokens_requires_both_admins() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Fund the contract with tokens
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&contract_id, &1_000_000_000);
+
+    let destination = Address::generate(&env);
+    client.withdraw_tokens(
+        &admin,
+        &sec_admin,
+        &token_id,
+        &500_000_000,
+        &destination,
+    );
+
+    assert_eq!(token_client.balance(&destination), 500_000_000);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized: requires both admin signatures")]
+fn test_withdraw_tokens_rejects_single_admin() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let destination = Address::generate(&env);
+    // Only one admin signature — should panic
+    client.withdraw_tokens(
+        &admin,
+        &admin, // same address as admin1 — not the secondary admin
+        &token_id,
+        &500_000_000,
+        &destination,
+    );
+}
+
+// =============================================================================
+// ISSUE #248: mark_completed extends TTL for Enrollment and Course
+// =============================================================================
+
+#[test]
+fn test_mark_completed_extends_enrollment_and_course_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-TTL-TEST");
+    let student = Address::generate(&env);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "COURSE-TTL-TEST", 100_000_000);
+
+    // Enroll student
+    client.enroll(&student, &String::from_str(&env, "COURSE-TTL-TEST"), &None);
+
+    // Advance ledger past min_completion_ledgers
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 100;
+    });
+
+    // Mark completed
+    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-TTL-TEST"), &None);
+
+    // Verify enrollment is marked as completed
+    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-TTL-TEST"));
+    assert!(enrollment.completed);
+}
+
+// =============================================================================
+// ISSUE #249: issue_certificate extends TTL for Enrollment
+// =============================================================================
+
+#[test]
+fn test_issue_certificate_extends_enrollment_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-CERT-TTL");
+    let student = Address::generate(&env);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "COURSE-CERT-TTL", 100_000_000);
+
+    // Enroll student
+    client.enroll(&student, &String::from_str(&env, "COURSE-CERT-TTL"), &None);
+
+    // Mark completed first
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 100;
+    });
+    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-CERT-TTL"), &None);
+
+    // Issue certificate
+    let cert_id = String::from_str(&env, "CERT-001");
+    client.issue_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &String::from_str(&env, "enrollment_ref_1"),
+        &None,
+        &None,
+    );
+
+    // Verify certificate was issued
+    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-CERT-TTL"));
+    assert!(enrollment.certificate_issued);
 }
