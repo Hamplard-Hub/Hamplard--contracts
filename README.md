@@ -213,6 +213,10 @@ Initialises the contract. Called once by the deployer.
 | `mark_completed(admin, student, course_id, evidence_hash)` | Admin | Called after backend verifies all lessons done. A non-empty `evidence_hash` replaces the student co-signature. |
 | `issue_certificate(admin, student, course_id, cert_id, course_title, enrollment_reference, expires_at_ledger, instructor_signature)` | Admin | Issues on-chain certificate. Requires completion. `enrollment_reference` is a free-form backend ID (e.g. UUID). |
 | `revoke_certificate(admin, cert_id)` | Admin | Flags certificate as revoked |
+| `mark_completed(admin, student, course_id)` | Admin | Called after backend verifies all lessons done |
+| `issue_certificate(admin, cert_id, student, course_id, course_title)` | Admin | Issues on-chain certificate. Requires completion. |
+| `revoke_certificate(admin, cert_id, reason)` | Admin | Flags certificate as revoked |
+| `bulk_revoke_course_certificates(admin, course_id)` | Admin | Flags every certificate of a course as revoked in one transaction |
 
 ### Admin management
 
@@ -285,6 +289,7 @@ Returns `true` if the certificate exists and has not been revoked. The `get_cert
 | `course_completed` | `(course_id, student)` | Completion marked by admin |
 | `certificate_issued` | `(certificate_id, student, course_id)` | Certificate issued |
 | `certificate_revoked` | `certificate_id` | Certificate revoked |
+| `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred` | `new_admin` | Admin role transferred |
 
 The backend listens to these events and updates the database, sends notifications, and triggers email confirmations.

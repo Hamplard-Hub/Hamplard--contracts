@@ -16,6 +16,7 @@
 //! - `mark_completed` — marks a student enrollment as completed (blocked students cannot proceed)
 //! - `issue_certificate` — mints an on-chain certificate of completion (blocked students cannot proceed)
 //! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
+//! - `bulk_revoke_course_certificates` — flags every certificate of a course as revoked in one transaction
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
@@ -335,7 +336,8 @@ pub struct Certificate {
     pub issued_at_ledger: u32,
     /// Whether this certificate has been revoked (e.g. cheating).
     /// One-way and append-only: once `true`, no function may set this back
-    /// to `false`. See `revoke_certificate` for the sole write path.
+    /// to `false`. See `revoke_certificate` / `bulk_revoke_course_certificates`
+    /// for the write paths (both go through `apply_revocation`).
     pub revoked: bool,
     /// Admin address that performed the revocation, if revoked
     pub revoked_by: Option<Address>,
@@ -492,6 +494,10 @@ pub enum DataKey {
     /// Configurable challenge period (in ledger sequences) after which
     /// a pending certificate revocation becomes permanent.
     RevocationChallengePeriod,
+    /// Ordered (append-only) list of certificate IDs issued for a course.
+    /// Populated by `issue_certificate` and consumed by course-wide bulk
+    /// operations such as `bulk_revoke_course_certificates()`.
+    CourseCertificates(String),
     /// Mapping from enrollment_reference (unique ID) to (student, course_id)
     /// Used by issue_certificate to look up enrollments without a caller-supplied course_id.
     EnrollmentByRef(String),
@@ -735,8 +741,18 @@ impl HamplardContract {
             panic!("instructor is frozen");
         }
 
+        if course_id.is_empty() {
+            panic!("course_id cannot be empty");
+        }
+
         if course_id.len() > Self::MAX_COURSE_ID_LEN {
             panic!("course_id exceeds maximum length");
+        }
+
+        // `Some(0)` would make the course permanently unenrollable
+        // (`total_enrollments >= 0` is always true); use `None` for unlimited.
+        if max_capacity == Some(0) {
+            panic!("max_capacity must be greater than zero (use None for unlimited)");
         }
 
         // Validate course ID contains only allowed characters.
@@ -745,8 +761,14 @@ impl HamplardContract {
         // This prevents null bytes, control characters, and problematic
         // Unicode that could break off-chain parsers or create unreproducible
         // storage keys.
-        for i in 0..course_id.len() {
-            let byte = course_id.as_bytes().get(i).unwrap_or(&0u8);
+        // `String` only exposes its bytes through `copy_into_slice()`, which
+        // requires an exactly-sized buffer. The length was already bounded by
+        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
+        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
+        let id_bytes = &mut id_bytes[..course_id.len() as usize];
+        course_id.copy_into_slice(id_bytes);
+
+        for byte in id_bytes.iter() {
             // Allow printable ASCII: space (0x20) through tilde (0x7E)
             // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
             if *byte < 0x20 || *byte > 0x7E {
@@ -1135,6 +1157,12 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        // freeze_instructor() auto-pauses the instructor's courses; a frozen
+        // instructor must not be able to undo that by unpausing them.
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -1495,6 +1523,9 @@ impl HamplardContract {
         }
 
         if let Some(capacity) = new_max_capacity {
+            if capacity == Some(0) {
+                panic!("max_capacity must be greater than zero (use None for unlimited)");
+            }
             course.max_capacity = capacity;
             modified = true;
         }
@@ -1547,6 +1578,10 @@ impl HamplardContract {
 
         if !is_admin && !is_instructor {
             panic!("unauthorized");
+        }
+
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
         }
 
         course.enrollment_expiry_ledgers = expiry_ledgers;
@@ -1643,6 +1678,10 @@ impl HamplardContract {
             panic!("unauthorized");
         }
 
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
         if course.status == CourseStatus::Archived {
             panic!("cannot update archived course");
         }
@@ -1709,6 +1748,12 @@ impl HamplardContract {
 
         if !is_admin && !is_instructor {
             panic!("unauthorized");
+        }
+
+        // A frozen instructor may not alter the content commitment, but an
+        // admin may still update it as an administrative intervention.
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {
@@ -2759,6 +2804,25 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        // Index the certificate under its course so course-wide bulk
+        // operations (bulk_revoke_course_certificates) can enumerate every
+        // certificate ever issued for this course without off-chain data.
+        let course_certs_key = DataKey::CourseCertificates(course_id.clone());
+        let mut course_certs: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&course_certs_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        course_certs.push_back(certificate_id.clone());
+        env.storage()
+            .persistent()
+            .set(&course_certs_key, &course_certs);
+        env.storage().persistent().extend_ttl(
+            &course_certs_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         Self::update_instructor_stats(&env, &certificate.instructor, |s| {
             s.total_certificates = s
                 .total_certificates
@@ -2809,14 +2873,119 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let mut cert = env
+        // The certificate must exist and must not already be revoked (either
+        // pending or permanent). This check is kept here — rather than only in
+        // the shared helper — so a duplicate single revocation still fails
+        // loudly instead of silently succeeding.
+        let cert = env
             .storage()
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id.clone()))
             .unwrap_or_else(|| panic!("certificate not found"));
-
-        // Certificate must not already be revoked (either pending or permanent).
         assert!(!cert.revoked, "certificate is already revoked");
+
+        Self::apply_revocation(&env, &admin, &certificate_id, &reason);
+    }
+
+    /// Admin revokes every certificate issued for a single course in one
+    /// atomic transaction.
+    ///
+    /// Used when a course as a whole is found to be fraudulent or its content
+    /// invalid: instead of calling `revoke_certificate()` once per graduate —
+    /// operationally infeasible for courses with hundreds of students — the
+    /// admin revokes the entire cohort at once.
+    ///
+    /// Each certificate receives exactly the same pending-revocation semantics
+    /// as `revoke_certificate()`: the holder keeps the standard challenge
+    /// period and may call `challenge_revocation()` to dispute it. Certificates
+    /// that are already revoked are skipped, so the call is safe to retry and
+    /// a partially-revoked course can still be completed later.
+    ///
+    /// # Arguments
+    /// - `admin`     — must match stored admin
+    /// - `course_id` — the course whose certificates should all be revoked
+    ///
+    /// # Returns
+    /// The number of certificates newly marked for revocation.
+    pub fn bulk_revoke_course_certificates(
+        env: Env,
+        admin: Address,
+        course_id: String,
+    ) -> u32 {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "bulk_revoke_course_certificates");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if Self::get_course_internal(&env, &course_id).is_none() {
+            panic!("course not found");
+        }
+
+        let certificate_ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if certificate_ids.is_empty() {
+            panic!("no certificates issued for this course");
+        }
+
+        // One fixed reason code keeps the bulk path auditable and lets
+        // off-chain indexers tell bulk revocations apart from targeted ones.
+        let reason = String::from_str(&env, "BULK_COURSE_REVOCATION");
+        let mut revoked_count: u32 = 0;
+
+        for i in 0..certificate_ids.len() {
+            let certificate_id = certificate_ids.get(i).unwrap();
+            if Self::apply_revocation(&env, &admin, &certificate_id, &reason) {
+                revoked_count = revoked_count
+                    .checked_add(1)
+                    .unwrap_or_else(|| panic!("revoked certificate count overflow"));
+            }
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "course_certificates_revoked"),
+                course_id.clone(),
+            ),
+            (
+                admin,
+                course_id,
+                revoked_count,
+                env.ledger().sequence(),
+            ),
+        );
+
+        revoked_count
+    }
+
+    /// Apply a pending revocation to a single certificate.
+    ///
+    /// Returns `true` when the certificate was newly flagged as revoked and
+    /// `false` when it was already revoked (pending or permanent). Both
+    /// `revoke_certificate` and `bulk_revoke_course_certificates` route
+    /// through here so a certificate ends up in an identical state — same
+    /// metadata, same event, same challenge-period rules — regardless of which
+    /// path revoked it.
+    fn apply_revocation(
+        env: &Env,
+        admin: &Address,
+        certificate_id: &String,
+        reason: &String,
+    ) -> bool {
+        let certificate_key = DataKey::Certificate(certificate_id.clone());
+        let mut cert: Certificate = env
+            .storage()
+            .persistent()
+            .get(&certificate_key)
+            .unwrap_or_else(|| panic!("certificate not found"));
+
+        if cert.revoked {
+            return false;
+        }
 
         let challenge_period: u32 = env
             .storage()
@@ -2835,13 +3004,11 @@ impl HamplardContract {
         cert.revocation_reason = Some(reason.clone());
         cert.revocation_deadline = Some(deadline);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Certificate(certificate_id.clone()), &cert);
+        env.storage().persistent().set(&certificate_key, &cert);
 
         env.events().publish(
             (
-                Symbol::new(&env, "certificate_revoked"),
+                Symbol::new(env, "certificate_revoked"),
                 certificate_id.clone(),
             ),
             (
@@ -2854,6 +3021,8 @@ impl HamplardContract {
                 deadline,
             ),
         );
+
+        true
     }
 
     /// Student challenges a pending certificate revocation.
@@ -4052,6 +4221,18 @@ impl HamplardContract {
             panic!("unauthorized");
         }
         cert
+    }
+
+    /// List every certificate ID issued for a course, in issuance order.
+    ///
+    /// Populated by `issue_certificate` as an append-only index and consumed by
+    /// `bulk_revoke_course_certificates()`. Returns an empty list for a course
+    /// with no issued certificates.
+    pub fn get_course_certificates(env: Env, course_id: String) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Check whether a student is enrolled in a course
