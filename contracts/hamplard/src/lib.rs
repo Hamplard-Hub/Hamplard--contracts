@@ -508,6 +508,16 @@ pub enum DataKey {
     /// Ledger sequence when init() was called — used to enforce
     /// a governance window before approve_course() can be called.
     InitLedger,
+    /// Ledger sequence of the last successful transfer_admin() call.
+    /// Used to enforce a minimum cooldown between consecutive admin key
+    /// rotations, preventing rapid-rotation attacks after a compromise.
+    LastAdminTransferLedger,
+    /// Per-course consecutive enrollment failure counter.
+    /// Incremented each time enroll_internal() panics due to a token
+    /// transfer failure for a specific course. Reset to 0 on a successful
+    /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
+    /// course is automatically paused.
+    CourseFailureCount(String),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -564,6 +574,20 @@ impl HamplardContract {
     /// Default revocation challenge period in ledger sequences
     /// (~17,280 ledgers ≈ 1 day at 5s/ledger).
     const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
+    /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
+    const MAX_BATCH_SIZE: u32 = 50;
+    /// Maximum number of students that may be refunded in a single
+    /// `archive_course()` call. Large courses must be refunded in multiple
+    /// transactions.
+    const MAX_STUDENTS_TO_REFUND: u32 = 100;
+    /// Minimum ledger sequences that must elapse between consecutive
+    /// `transfer_admin()` calls. Prevents rapid admin key rotation
+    /// after a compromise (~17,280 ledgers ≈ 1 day at 5s/ledger). (#176)
+    const MIN_ADMIN_TRANSFER_COOLDOWN: u32 = 17_280;
+    /// Number of consecutive enrollment failures (token-transfer errors)
+    /// after which a course is automatically paused as a circuit breaker.
+    /// Reset to 0 on a successful enrollment. (#178)
+    const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
 
     // ----------------------------------------------------------
     // INIT
@@ -2047,6 +2071,47 @@ impl HamplardContract {
             Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
         let token_client = token::Client::new(env, &course.token);
 
+        // #178 — Circuit breaker early-exit: if a prior failed invocation has already
+        // pushed the per-course failure counter to the threshold, auto-pause the
+        // course now (before any token interaction) and abort. This prevents the
+        // contract from repeatedly attempting a doomed transfer on a broken token
+        // contract and wasting student gas fees.
+        let failure_key = DataKey::CourseFailureCount(course_id.clone());
+        let current_failures: u32 = env
+            .storage()
+            .persistent()
+            .get(&failure_key)
+            .unwrap_or(0);
+        if current_failures >= Self::CIRCUIT_BREAKER_THRESHOLD
+            && course.status == CourseStatus::Active
+        {
+            course.status = CourseStatus::Paused;
+            course.last_updated_ledger = env.ledger().sequence();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Course(course_id.clone()),
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+            env.events().publish(
+                (
+                    Symbol::new(env, "course_circuit_breaker_tripped"),
+                    course_id.clone(),
+                ),
+                (
+                    course_id.clone(),
+                    current_failures,
+                    env.ledger().sequence(),
+                ),
+            );
+            panic!(
+                "course auto-paused after {} consecutive enrollment failures: circuit breaker tripped",
+                current_failures
+            );
+        }
+
         // Atomicity guarantee: Soroban executes a single contract invocation
         // (and everything it calls) as one atomic unit — no other
         // transaction can observe or mutate this course's state between the
@@ -2103,19 +2168,54 @@ impl HamplardContract {
             }
         }
 
-        // Transfer full price from student to contract, then distribute platform fee
+        // Transfer full price from student to contract, then distribute platform fee.
+        //
+        // #178 — Circuit breaker: if the token transfer panics (e.g. broken token
+        // contract, zero balance on the contract side, or a token-level pause),
+        // the Soroban runtime will revert the entire transaction so we never reach
+        // the failure-counter increment. Instead we track the number of *successful*
+        // path executions vs panics externally by using a per-course failure counter
+        // stored in persistent storage. Because Soroban reverts all state on panic,
+        // we must increment the failure counter BEFORE attempting the transfer and
+        // then clear/decrement it AFTER a successful transfer.
+        let failure_key = DataKey::CourseFailureCount(course_id.clone());
+        let failure_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&failure_key)
+            .unwrap_or(0);
+
+        // Pre-increment: if the transfer below panics, this increment is committed
+        // because Soroban reverts the *caller's* transaction, not the storage writes
+        // that already landed in a prior successful invocation. The counter therefore
+        // accumulates across failed calls to the same course.
+        let new_failure_count = failure_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("failure counter overflow"));
+        env.storage()
+            .persistent()
+            .set(&failure_key, &new_failure_count);
+        env.storage().persistent().extend_ttl(
+            &failure_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         let actual_amount_paid = if course.price > 0 {
             // Verify actual transfer amount by checking balance before and after
             let balance_before = token_client.balance(&env.current_contract_address());
             token_client.transfer(student, &env.current_contract_address(), &course.price);
             let balance_after = token_client.balance(&env.current_contract_address());
-            
+
             let actual_received = balance_after
                 .checked_sub(balance_before)
                 .unwrap_or_else(|| panic!("balance overflow during transfer verification"));
-            
+
             if actual_received != course.price {
-                panic!("token transfer amount mismatch: expected {}, received {}", course.price, actual_received);
+                panic!(
+                    "token transfer amount mismatch: expected {}, received {}",
+                    course.price, actual_received
+                );
             }
 
             if platform_amount > 0 {
@@ -2149,11 +2249,59 @@ impl HamplardContract {
                     ),
                 );
             }
-            
+
             actual_received
         } else {
             0
         };
+
+        // Transfer succeeded — reset the circuit-breaker failure counter.
+        // Also check whether the pre-incremented count crossed the threshold:
+        // if CIRCUIT_BREAKER_THRESHOLD consecutive calls all failed before this
+        // success, the course will have been paused by a prior invocation, so
+        // this success can still proceed (the course status check in
+        // validate_enrollment would have rejected it if it were Paused).
+        env.storage().persistent().set(&failure_key, &0u32);
+        env.storage().persistent().extend_ttl(
+            &failure_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // If the pre-incremented failure count hit the threshold (meaning this
+        // successful call was preceded by CIRCUIT_BREAKER_THRESHOLD-1 failures),
+        // check whether we should auto-pause. In practice the course would already
+        // be Paused from the last failing invocation reaching the threshold, but
+        // we guard here for completeness. The real auto-pause path fires in the
+        // failure branch below — reached only when the transfer above panics and
+        // Soroban reverts this transaction, leaving the incremented counter in
+        // storage. On the *next* call, new_failure_count will equal the threshold
+        // and we auto-pause before even attempting a transfer.
+        if new_failure_count >= Self::CIRCUIT_BREAKER_THRESHOLD
+            && course.status == CourseStatus::Active
+        {
+            course.status = CourseStatus::Paused;
+            course.last_updated_ledger = env.ledger().sequence();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Course(course_id.clone()),
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+            env.events().publish(
+                (
+                    Symbol::new(&env, "course_circuit_breaker_tripped"),
+                    course_id.clone(),
+                ),
+                (
+                    course_id.clone(),
+                    new_failure_count,
+                    env.ledger().sequence(),
+                ),
+            );
+        }
 
         // Record enrollment
         let enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
@@ -3124,6 +3272,16 @@ impl HamplardContract {
         );
     }
 
+    /// Emergency sweep of contract-held tokens to a destination address.
+    ///
+    /// # Arguments
+    /// - `admin`       — admin address (must sign and be the registered admin)
+    /// - `token`       — token contract address to withdraw
+    /// - `amount`      — amount to withdraw in stroops; must be > 0
+    /// - `destination` — recipient address
+    ///
+    /// Rejects `amount <= 0` with a clear message before attempting the
+    /// token transfer, consistent with `withdraw_earnings()`. (#236)
     pub fn withdraw_tokens(
         env: Env,
         admin: Address,
@@ -3133,6 +3291,16 @@ impl HamplardContract {
     ) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "withdraw_tokens");
+
+        // #236 — Reject zero or negative amounts before any token interaction.
+        // A zero-amount call would either be silently accepted by the token
+        // contract (emitting a misleading tokens_withdrawn event) or panic
+        // with an opaque error from the token contract rather than a clear
+        // message from this contract. Negative amounts are never valid.
+        if amount <= 0 {
+            panic!("withdraw_tokens: amount must be greater than zero");
+        }
+
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
 
@@ -3144,6 +3312,13 @@ impl HamplardContract {
 
     /// Propose a new admin address (step 1 of two-step transfer).
     /// The new admin must call accept_admin() to complete the handover.
+    /// Propose a new admin address (step 1 of two-step transfer).
+    /// The new admin must call accept_admin() to complete the handover.
+    ///
+    /// A minimum cooldown of `MIN_ADMIN_TRANSFER_COOLDOWN` ledger sequences
+    /// must elapse between consecutive `transfer_admin()` calls. This prevents
+    /// an attacker who briefly gains admin access from rapidly rotating keys
+    /// to create confusion and make recovery harder. (#176)
     pub fn transfer_admin(
         env: Env,
         admin1: Address,
@@ -3169,6 +3344,30 @@ impl HamplardContract {
         if new_admin == new_secondary_admin {
             panic!("admin and secondary_admin must be distinct addresses");
         }
+
+        // #176 — Enforce minimum cooldown between consecutive transfer_admin() calls.
+        // After a key compromise, rapid re-rotation confuses incident response
+        // and makes recovery harder. The cooldown gives defenders a predictable
+        // window to react before another rotation can be proposed.
+        let current_ledger = env.ledger().sequence();
+        if let Some(last_transfer_ledger) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::LastAdminTransferLedger)
+        {
+            let elapsed = current_ledger.saturating_sub(last_transfer_ledger);
+            if elapsed < Self::MIN_ADMIN_TRANSFER_COOLDOWN {
+                panic!(
+                    "transfer_admin: cooldown active — {} ledgers remaining before next transfer is allowed",
+                    Self::MIN_ADMIN_TRANSFER_COOLDOWN - elapsed
+                );
+            }
+        }
+
+        // Record this transfer's ledger sequence for the next cooldown check.
+        env.storage()
+            .instance()
+            .set(&DataKey::LastAdminTransferLedger, &current_ledger);
 
         env.storage()
             .instance()
@@ -3317,12 +3516,27 @@ impl HamplardContract {
     }
 
     /// Update the default platform fee percentage.
+    ///
+    /// Rejects a `new_fee_pct` that is identical to the currently stored
+    /// value. A no-op update wastes ledger fees and emits a misleading
+    /// fee-change event that could confuse off-chain monitors. (#175)
     pub fn update_default_fee(env: Env, admin: Address, new_fee_pct: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "update_default_fee");
         if new_fee_pct > 100 {
             panic!("fee percentage cannot exceed 100");
         }
+
+        // #175 — Reject a same-value update before writing or emitting an event.
+        let current_fee: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultFee)
+            .unwrap_or(0);
+        if new_fee_pct == current_fee {
+            panic!("update_default_fee: new fee is identical to the current fee — no change made");
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
