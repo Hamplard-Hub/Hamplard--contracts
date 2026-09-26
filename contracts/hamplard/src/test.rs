@@ -9906,6 +9906,188 @@ fn test_get_course_certificates_empty_for_course_without_issuance() {
     );
 }
 
+// ============================================================
+// ISSUE #236 — withdraw_tokens must validate amount > 0
+// ============================================================
+
+#[test]
+#[should_panic(expected = "withdraw_tokens: amount must be greater than zero")]
+fn test_withdraw_tokens_rejects_zero_amount() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.withdraw_tokens(&admin, &token_id, &0i128, &Address::generate(&env));
+}
+
+#[test]
+#[should_panic(expected = "withdraw_tokens: amount must be greater than zero")]
+fn test_withdraw_tokens_rejects_negative_amount() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.withdraw_tokens(&admin, &token_id, &-1i128, &Address::generate(&env));
+}
+
+#[test]
+fn test_withdraw_tokens_accepts_positive_amount() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_mint = token::StellarAssetClient::new(&env, &token_id);
+    let destination = Address::generate(&env);
+    token_mint.mint(&contract_id, &500_000_000i128);
+    client.withdraw_tokens(&admin, &token_id, &500_000_000i128, &destination);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&destination),
+        500_000_000i128
+    );
+}
+
+// ============================================================
+// ISSUE #175 — update_default_fee must reject same-value updates
+// ============================================================
+
+#[test]
+#[should_panic(expected = "update_default_fee: new fee is identical to the current fee")]
+fn test_update_default_fee_rejects_same_value() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    // Platform was initialised with 20% — calling with 20 again must panic.
+    client.update_default_fee(&admin, &20u32);
+}
+
+#[test]
+fn test_update_default_fee_accepts_different_value() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.update_default_fee(&admin, &15u32);
+    client.update_default_fee(&admin, &25u32);
+}
+
+// ============================================================
+// ISSUE #176 — transfer_admin cooldown between consecutive calls
+// ============================================================
+
+#[test]
+#[should_panic(expected = "transfer_admin: cooldown active")]
+fn test_transfer_admin_cooldown_blocks_rapid_rotation() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let a1 = Address::generate(&env);
+    let s1 = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &a1, &s1);
+    // Immediate second call — cooldown not elapsed; must panic.
+    let a2 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &a2, &s2);
+}
+
+#[test]
+fn test_transfer_admin_succeeds_after_cooldown() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let a1 = Address::generate(&env);
+    let s1 = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &a1, &s1);
+    // Advance past MIN_ADMIN_TRANSFER_COOLDOWN (17_280 ledgers).
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 17_281;
+    });
+    let a2 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &a2, &s2);
+}
+
+#[test]
+fn test_transfer_admin_first_call_never_blocked() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let s = Address::generate(&env);
+    // First-ever call — no LastAdminTransferLedger stored; must succeed.
+    client.transfer_admin(&admin, &sec_admin, &a, &s);
+}
+
+// ============================================================
+// ISSUE #178 — Circuit breaker: auto-pause after threshold failures
+// ============================================================
+
+#[test]
+#[should_panic(expected = "course auto-paused after")]
+fn test_circuit_breaker_trips_after_threshold_failures() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "CB-TRIP", 100_000_000,
+    );
+    // Simulate 5 consecutive prior failures by writing the counter directly.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::CourseFailureCount(String::from_str(&env, "CB-TRIP")),
+            &5u32,
+        );
+    });
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &500_000_000i128);
+    // This call must trip the circuit breaker.
+    client.enroll(&student, &String::from_str(&env, "CB-TRIP"));
+}
+
+#[test]
+fn test_circuit_breaker_does_not_trip_below_threshold() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "CB-BELOW", 100_000_000,
+    );
+    // 4 failures — one below the threshold of 5.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::CourseFailureCount(String::from_str(&env, "CB-BELOW")),
+            &4u32,
+        );
+    });
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &500_000_000i128);
+    // Must succeed.
+    client.enroll(&student, &String::from_str(&env, "CB-BELOW"));
+    // After success the failure counter must be reset to 0.
+    env.as_contract(&contract_id, || {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseFailureCount(String::from_str(&env, "CB-BELOW")))
+            .unwrap_or(0);
+        assert_eq!(count, 0, "failure counter must reset to 0 after successful enrollment");
+    });
+}
+
+#[test]
+fn test_circuit_breaker_course_can_be_unpaused_by_instructor() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    register_and_approve_course(
+        &env, &client, &token_id, &admin, &instructor, "CB-UNPAUSE", 100_000_000,
+    );
+    // Simulate circuit breaker state: threshold failures + course paused.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::CourseFailureCount(String::from_str(&env, "CB-UNPAUSE")),
+            &5u32,
+        );
+        let mut course: Course = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Course(String::from_str(&env, "CB-UNPAUSE")))
+            .unwrap();
+        course.status = CourseStatus::Paused;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(String::from_str(&env, "CB-UNPAUSE")), &course);
+    });
+    // Instructor (owner) manually unpauses.
+    client.unpause_course(&instructor, &String::from_str(&env, "CB-UNPAUSE"));
+    let course = client
+        .get_course(&String::from_str(&env, "CB-UNPAUSE"))
+        .unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
 // =============================================================================
 // ISSUE #233: register_course() rejects all-zero content_hash
 // =============================================================================
