@@ -16,6 +16,7 @@
 //! - `mark_completed` — marks a student enrollment as completed (blocked students cannot proceed)
 //! - `issue_certificate` — mints an on-chain certificate of completion (blocked students cannot proceed)
 //! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
+//! - `bulk_revoke_course_certificates` — flags every certificate of a course as revoked in one transaction
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
@@ -335,7 +336,8 @@ pub struct Certificate {
     pub issued_at_ledger: u32,
     /// Whether this certificate has been revoked (e.g. cheating).
     /// One-way and append-only: once `true`, no function may set this back
-    /// to `false`. See `revoke_certificate` for the sole write path.
+    /// to `false`. See `revoke_certificate` / `bulk_revoke_course_certificates`
+    /// for the write paths (both go through `apply_revocation`).
     pub revoked: bool,
     /// Admin address that performed the revocation, if revoked
     pub revoked_by: Option<Address>,
@@ -492,6 +494,10 @@ pub enum DataKey {
     /// Configurable challenge period (in ledger sequences) after which
     /// a pending certificate revocation becomes permanent.
     RevocationChallengePeriod,
+    /// Ordered (append-only) list of certificate IDs issued for a course.
+    /// Populated by `issue_certificate` and consumed by course-wide bulk
+    /// operations such as `bulk_revoke_course_certificates()`.
+    CourseCertificates(String),
     /// Mapping from enrollment_reference (unique ID) to (student, course_id)
     /// Used by issue_certificate to look up enrollments without a caller-supplied course_id.
     EnrollmentByRef(String),
@@ -755,8 +761,14 @@ impl HamplardContract {
         // This prevents null bytes, control characters, and problematic
         // Unicode that could break off-chain parsers or create unreproducible
         // storage keys.
-        for i in 0..course_id.len() {
-            let byte = course_id.as_bytes().get(i).unwrap_or(&0u8);
+        // `String` only exposes its bytes through `copy_into_slice()`, which
+        // requires an exactly-sized buffer. The length was already bounded by
+        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
+        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
+        let id_bytes = &mut id_bytes[..course_id.len() as usize];
+        course_id.copy_into_slice(id_bytes);
+
+        for byte in id_bytes.iter() {
             // Allow printable ASCII: space (0x20) through tilde (0x7E)
             // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
             if *byte < 0x20 || *byte > 0x7E {
@@ -2084,12 +2096,15 @@ impl HamplardContract {
         // 1. Per-token fee configuration (map token → FeeConfig)
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
+        // Risk flags come from the same helper the fee previews use, so a
+        // quote from get_effective_fee_for_payment() matches this charge.
+        let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(env, student, &course.token);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
             course.price,
-            false, // is_new_customer — not tracked at enrollment; always false
-            false, // is_btc_eth — not tracked; always false
+            is_new_customer,
+            is_btc_eth,
         );
 
         // Fetch treasury, applying any pending treasury update if effective
@@ -2342,12 +2357,13 @@ impl HamplardContract {
         // 1. Per-token fee configuration (map token → FeeConfig)
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
+        let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &course.token);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             &env,
             &course.token,
             course.price,
-            false, // is_new_customer — not tracked at re-enrollment; always false
-            false, // is_btc_eth — not tracked; always false
+            is_new_customer,
+            is_btc_eth,
         );
 
         let mut treasury: Address = env
@@ -2542,9 +2558,11 @@ impl HamplardContract {
     /// has finished all lessons and passed all assignments.
     ///
     /// # Arguments
-    /// - `admin`     — must match stored admin
-    /// - `student`   — the student's address
-    /// - `course_id` — the course completed
+    /// - `admin`         — must match stored admin
+    /// - `student`       — the student's address
+    /// - `course_id`     — the course completed
+    /// - `evidence_hash` — non-empty proof of completion; when `None`, the
+    ///   student must co-sign instead
     pub fn mark_completed(
         env: Env,
         admin: Address,
@@ -2558,8 +2576,12 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        if evidence_hash.is_none() {
-            student.require_auth();
+        // Supplying evidence waives the student co-signature, so the evidence
+        // must be real — an empty string would bypass it with no evidence.
+        match &evidence_hash {
+            Some(hash) if hash.len() == 0 => panic!("evidence_hash cannot be empty"),
+            Some(_) => {}
+            None => student.require_auth(),
         }
 
         // Check if student is blocked
@@ -2665,21 +2687,27 @@ impl HamplardContract {
     /// Admin calls this after `mark_completed`. The certificate ID must be
     /// unique (e.g. generated by the backend as UUID or hash).
     ///
-    /// The `enrollment_reference` must encode both the student address and
-    /// course_id as `"student_address:course_id"`. The contract derives the
-    /// course_id from the authoritative enrollment record — callers cannot
-    /// supply an independent course_id.
+    /// The enrollment is looked up by the explicit `(student, course_id)`
+    /// pair — the same key it is stored under — so the certificate's
+    /// course_id is always the course the student actually enrolled in and
+    /// completed. `enrollment_reference` is a free-form backend identifier
+    /// (e.g. a UUID) stored on the certificate for off-chain reconciliation;
+    /// it is never parsed.
     ///
     /// # Arguments
-    /// - `admin`          — must match stored admin
-    /// - `certificate_id` — unique certificate identifier
-    /// - `course_title`   — short title stored on-chain for verifiability
-    /// - `enrollment_reference` — "student_address:course_id" encoding
+    /// - `admin`                — must match stored admin
+    /// - `student`              — the student receiving the certificate
+    /// - `course_id`            — the course the student completed
+    /// - `certificate_id`       — unique certificate identifier
+    /// - `course_title`         — short title stored on-chain for verifiability
+    /// - `enrollment_reference` — free-form backend enrollment ID (e.g. UUID)
     /// - `expires_at_ledger`    — optional expiry ledger
     /// - `instructor_signature` — optional Ed25519 signature
     pub fn issue_certificate(
         env: Env,
         admin: Address,
+        student: Address,
+        course_id: String,
         certificate_id: String,
         course_title: String,
         enrollment_reference: String,
@@ -2701,42 +2729,12 @@ impl HamplardContract {
         if course_title.len() > Self::MAX_COURSE_TITLE_LEN {
             panic!("course_title exceeds maximum length");
         }
-
-        // Parse enrollment_reference as "student_address:course_id"
-        // The enrollment_reference encodes the student's Stellar address and
-        // the course_id separated by ':'. We extract both parts.
-        //
-        // Strategy: read the entire string into a fixed buffer, find ':',
-        // and split. Stellar strkey addresses are at most 56 chars;
-        // course IDs at most 256 chars (MAX_COURSE_ID_LEN).
-        //
-        // NOTE: We cannot use copy_into_slice because it requires exact
-        // buffer size. Instead, we use the Env host API to read individual
-        // bytes, or we use an enrollment ID mapping (see below).
-        //
-        // For this implementation, we use an enrollment ID mapping approach:
-        // - enrollment_reference is a unique ID generated at enrollment time
-        // - The mapping is stored in DataKey::EnrollmentByRef
-        //
-        // However, for backwards compatibility with the current design where
-        // enrollment_reference encodes student+course_id, we also support
-        // direct lookup by enrollment_reference as a stored mapping key.
-        //
-        // Since we can't parse the string in no_std Soroban, we require
-        // that enrollment_reference was stored as a mapping key during enrollment.
-        //
-        // Fall back: try to use the stored enrollment reference mapping.
-        // If not found, panic with a clear error message.
-
-        // Try to find the enrollment by reference in the mapping
-        let enrollment_data: Option<(Address, String)> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::EnrollmentByRef(enrollment_reference.clone()));
-
-        let (student, course_id) = enrollment_data.unwrap_or_else(|| {
-            panic!("enrollment reference not found; use enrollment_ref() format")
-        });
+        if enrollment_reference.len() == 0 {
+            panic!("enrollment_reference cannot be empty");
+        }
+        if enrollment_reference.len() > Self::MAX_COURSE_ID_LEN {
+            panic!("enrollment_reference exceeds maximum length");
+        }
 
         // Check if student is blocked
         if Self::is_student_blocked_internal(&env, &student) {
@@ -2744,8 +2742,11 @@ impl HamplardContract {
         }
 
         // Student must have completed the course — enrollment is looked up
-        // from the authoritative enrollment record, not from caller input.
+        // from the authoritative enrollment record for (student, course_id).
         let mut enrollment = Self::get_enrollment_internal(&env, &student, &course_id);
+        if enrollment.course_id != course_id {
+            panic!("enrollment course_id mismatch");
+        }
         if enrollment.is_refunded {
             panic!("cannot issue certificate for refunded enrollment");
         }
@@ -2823,6 +2824,25 @@ impl HamplardContract {
             .persistent()
             .set(&DataKey::Course(course_id.clone()), &course);
 
+        // Index the certificate under its course so course-wide bulk
+        // operations (bulk_revoke_course_certificates) can enumerate every
+        // certificate ever issued for this course without off-chain data.
+        let course_certs_key = DataKey::CourseCertificates(course_id.clone());
+        let mut course_certs: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&course_certs_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        course_certs.push_back(certificate_id.clone());
+        env.storage()
+            .persistent()
+            .set(&course_certs_key, &course_certs);
+        env.storage().persistent().extend_ttl(
+            &course_certs_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         Self::update_instructor_stats(&env, &certificate.instructor, |s| {
             s.total_certificates = s
                 .total_certificates
@@ -2873,14 +2893,119 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let mut cert = env
+        // The certificate must exist and must not already be revoked (either
+        // pending or permanent). This check is kept here — rather than only in
+        // the shared helper — so a duplicate single revocation still fails
+        // loudly instead of silently succeeding.
+        let cert = env
             .storage()
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id.clone()))
             .unwrap_or_else(|| panic!("certificate not found"));
-
-        // Certificate must not already be revoked (either pending or permanent).
         assert!(!cert.revoked, "certificate is already revoked");
+
+        Self::apply_revocation(&env, &admin, &certificate_id, &reason);
+    }
+
+    /// Admin revokes every certificate issued for a single course in one
+    /// atomic transaction.
+    ///
+    /// Used when a course as a whole is found to be fraudulent or its content
+    /// invalid: instead of calling `revoke_certificate()` once per graduate —
+    /// operationally infeasible for courses with hundreds of students — the
+    /// admin revokes the entire cohort at once.
+    ///
+    /// Each certificate receives exactly the same pending-revocation semantics
+    /// as `revoke_certificate()`: the holder keeps the standard challenge
+    /// period and may call `challenge_revocation()` to dispute it. Certificates
+    /// that are already revoked are skipped, so the call is safe to retry and
+    /// a partially-revoked course can still be completed later.
+    ///
+    /// # Arguments
+    /// - `admin`     — must match stored admin
+    /// - `course_id` — the course whose certificates should all be revoked
+    ///
+    /// # Returns
+    /// The number of certificates newly marked for revocation.
+    pub fn bulk_revoke_course_certificates(
+        env: Env,
+        admin: Address,
+        course_id: String,
+    ) -> u32 {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "bulk_revoke_course_certificates");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if Self::get_course_internal(&env, &course_id).is_none() {
+            panic!("course not found");
+        }
+
+        let certificate_ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if certificate_ids.is_empty() {
+            panic!("no certificates issued for this course");
+        }
+
+        // One fixed reason code keeps the bulk path auditable and lets
+        // off-chain indexers tell bulk revocations apart from targeted ones.
+        let reason = String::from_str(&env, "BULK_COURSE_REVOCATION");
+        let mut revoked_count: u32 = 0;
+
+        for i in 0..certificate_ids.len() {
+            let certificate_id = certificate_ids.get(i).unwrap();
+            if Self::apply_revocation(&env, &admin, &certificate_id, &reason) {
+                revoked_count = revoked_count
+                    .checked_add(1)
+                    .unwrap_or_else(|| panic!("revoked certificate count overflow"));
+            }
+        }
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "course_certificates_revoked"),
+                course_id.clone(),
+            ),
+            (
+                admin,
+                course_id,
+                revoked_count,
+                env.ledger().sequence(),
+            ),
+        );
+
+        revoked_count
+    }
+
+    /// Apply a pending revocation to a single certificate.
+    ///
+    /// Returns `true` when the certificate was newly flagged as revoked and
+    /// `false` when it was already revoked (pending or permanent). Both
+    /// `revoke_certificate` and `bulk_revoke_course_certificates` route
+    /// through here so a certificate ends up in an identical state — same
+    /// metadata, same event, same challenge-period rules — regardless of which
+    /// path revoked it.
+    fn apply_revocation(
+        env: &Env,
+        admin: &Address,
+        certificate_id: &String,
+        reason: &String,
+    ) -> bool {
+        let certificate_key = DataKey::Certificate(certificate_id.clone());
+        let mut cert: Certificate = env
+            .storage()
+            .persistent()
+            .get(&certificate_key)
+            .unwrap_or_else(|| panic!("certificate not found"));
+
+        if cert.revoked {
+            return false;
+        }
 
         let challenge_period: u32 = env
             .storage()
@@ -2899,13 +3024,11 @@ impl HamplardContract {
         cert.revocation_reason = Some(reason.clone());
         cert.revocation_deadline = Some(deadline);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Certificate(certificate_id.clone()), &cert);
+        env.storage().persistent().set(&certificate_key, &cert);
 
         env.events().publish(
             (
-                Symbol::new(&env, "certificate_revoked"),
+                Symbol::new(env, "certificate_revoked"),
                 certificate_id.clone(),
             ),
             (
@@ -2918,6 +3041,8 @@ impl HamplardContract {
                 deadline,
             ),
         );
+
+        true
     }
 
     /// Student challenges a pending certificate revocation.
@@ -4095,7 +4220,11 @@ impl HamplardContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-    /// Get a certificate by ID
+    /// Get a certificate by ID.
+    ///
+    /// Only the certificate's student, the course instructor, or the admin
+    /// may read it; any other caller is rejected (same rules as
+    /// `get_enrollment`).
     pub fn get_certificate(env: Env, caller: Address, certificate_id: String) -> Certificate {
         caller.require_auth();
         let cert = env
@@ -4109,9 +4238,21 @@ impl HamplardContract {
         let is_student = caller == cert.student;
 
         if !is_student && !is_admin && !is_instructor {
-            cert.student.require_auth();
+            panic!("unauthorized");
         }
         cert
+    }
+
+    /// List every certificate ID issued for a course, in issuance order.
+    ///
+    /// Populated by `issue_certificate` as an append-only index and consumed by
+    /// `bulk_revoke_course_certificates()`. Returns an empty list for a course
+    /// with no issued certificates.
+    pub fn get_course_certificates(env: Env, course_id: String) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Check whether a student is enrolled in a course
@@ -4633,33 +4774,86 @@ impl HamplardContract {
             })
     }
 
-    /// Calculate a risk score and surcharge for a given payment.
+    /// Calculate a risk score and surcharge for a student's payment in `token`.
+    ///
+    /// The `is_new_customer` / `is_btc_eth` risk flags are derived from
+    /// on-chain state via `resolve_risk_flags()` — the same helper that
+    /// enroll()/re_enroll() use — rather than trusted from the caller, so
+    /// the preview always matches what enrollment actually charges.
     ///
     /// # Arguments
+    /// - `student` — the student who would make the payment
+    /// - `token` — the payment token address
     /// - `payment_amount` — the payment amount in stroops
-    /// - `is_new_customer` — whether the student has no prior enrollments
-    /// - `is_btc_eth` — whether the payment is in BTC/ETH (higher volatility)
     ///
     /// Returns a `RiskScore` with score (0-100) and surcharge_bps to add.
     pub fn calculate_risk_score(
         env: Env,
+        student: Address,
+        token: Address,
+        payment_amount: i128,
+    ) -> RiskScore {
+        let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &token);
+        Self::risk_score_internal(&env, payment_amount, is_new_customer, is_btc_eth)
+    }
+
+    /// Calculate the effective fee for a student's payment, applying
+    /// risk-based surcharges exactly as `deduct_fee()` does at enrollment.
+    ///
+    /// # Arguments
+    /// - `student` — the student who would make the payment
+    /// - `token` — the token address (for per-token fee config)
+    /// - `payment_amount` — the payment amount in stroops
+    ///
+    /// Returns a `RiskFeeApplied` struct with the full fee breakdown.
+    pub fn get_effective_fee_for_payment(
+        env: Env,
+        student: Address,
+        token: Address,
+        payment_amount: i128,
+    ) -> RiskFeeApplied {
+        let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &token);
+        Self::compute_fee_breakdown(&env, &token, payment_amount, is_new_customer, is_btc_eth)
+    }
+
+    /// Single source of truth for the `(is_new_customer, is_btc_eth)` risk
+    /// flags applied to a student's payment in `token`. Used by both the fee
+    /// previews and enroll()/re_enroll(), so a quote can never diverge from
+    /// the actual charge.
+    ///
+    /// The contract does not yet persist per-student enrollment history or a
+    /// BTC/ETH classification for tokens, so enrollment has always charged
+    /// both flags as `false`. When that state is added, it must be read here
+    /// so previews and enrollment pick it up together.
+    fn resolve_risk_flags(_env: &Env, _student: &Address, _token: &Address) -> (bool, bool) {
+        (false, false)
+    }
+
+    /// Computes the risk score and total surcharge (bps) for a payment.
+    /// Surcharges only apply when risk pricing is enabled and a
+    /// `RiskFeeConfig` has been stored.
+    fn risk_score_internal(
+        env: &Env,
         payment_amount: i128,
         is_new_customer: bool,
         is_btc_eth: bool,
     ) -> RiskScore {
-        let config: RiskFeeConfig = Self::get_risk_fee_config(&env);
-
-        if !env
+        let enabled: bool = env
             .storage()
             .instance()
             .get(&DataKey::RiskConfigEnabled)
-            .unwrap_or(false)
-        {
-            return RiskScore {
-                score: 0,
-                surcharge_bps: 0,
-            };
-        }
+            .unwrap_or(false);
+        let config: Option<RiskFeeConfig> = env.storage().instance().get(&DataKey::RiskFeeConfig);
+
+        let config = match config {
+            Some(config) if enabled => config,
+            _ => {
+                return RiskScore {
+                    score: 0,
+                    surcharge_bps: 0,
+                }
+            }
+        };
 
         let mut score: u32 = 0;
         let mut surcharge_bps: u32 = 0;
@@ -4688,51 +4882,40 @@ impl HamplardContract {
         }
     }
 
-    /// Calculate the effective fee for a payment, applying risk-based surcharges.
-    ///
-    /// # Arguments
-    /// - `token` — the token address (for per-token fee config)
-    /// - `payment_amount` — the payment amount in stroops
-    /// - `is_new_customer` — whether the student has no prior enrollments
-    /// - `is_btc_eth` — whether the payment is in BTC/ETH
-    ///
-    /// Returns a `RiskFeeApplied` struct with the full fee breakdown.
-    pub fn get_effective_fee_for_payment(
-        env: Env,
-        token: Address,
+    /// Computes the full fee breakdown for a payment: per-token base fee
+    /// (falling back to `DefaultFee`) plus any risk surcharge, capped at
+    /// 100%. Shared by `deduct_fee()` and `get_effective_fee_for_payment()`.
+    fn compute_fee_breakdown(
+        env: &Env,
+        token: &Address,
         payment_amount: i128,
         is_new_customer: bool,
         is_btc_eth: bool,
     ) -> RiskFeeApplied {
-        let fee_config = Self::get_fee_config(env.clone(), token);
-        let base_fee_bps = fee_config.fee_bps;
+        let base_fee_bps = Self::get_fee_config(env.clone(), token.clone()).fee_bps;
 
-        // Only apply risk surcharge if risk config is enabled
-        let risk_surcharge_bps = if Self::is_risk_config_enabled(env.clone()) {
-            let risk_score = Self::calculate_risk_score(
-                env.clone(),
+        if payment_amount <= 0 {
+            return RiskFeeApplied {
                 payment_amount,
-                is_new_customer,
-                is_btc_eth,
-            );
-            risk_score.surcharge_bps
-        } else {
-            0
-        };
+                base_fee_bps,
+                risk_surcharge_bps: 0,
+                effective_fee_bps: base_fee_bps,
+                platform_fee: 0,
+            };
+        }
 
-        let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps);
+        let risk_surcharge_bps =
+            Self::risk_score_internal(env, payment_amount, is_new_customer, is_btc_eth)
+                .surcharge_bps;
+
         // Cap at 100% (10000 bps)
-        let effective_fee_bps = if effective_fee_bps > 10000 {
-            10000
-        } else {
-            effective_fee_bps
-        };
+        let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps).min(10000);
 
-        // Compute fee: amount * bps / 10000
+        // Compute platform fee: amount * effective_bps / 10000
         let platform_fee = payment_amount
             .checked_mul(effective_fee_bps as i128)
             .map(|v| v / 10000)
-            .unwrap_or(0);
+            .unwrap_or_else(|| panic!("overflow computing platform fee"));
 
         RiskFeeApplied {
             payment_amount,
@@ -4767,60 +4950,13 @@ impl HamplardContract {
             return (0, 0);
         }
 
-        let fee_config = Self::get_fee_config(env.clone(), token.clone());
-        let mut effective_bps = fee_config.fee_bps;
-
-        // Apply risk surcharge when risk config is enabled
-        let mut risk_surcharge_bps: u32 = 0;
-        if Self::is_risk_config_enabled(env.clone()) {
-            if let Some(risk_config) = env
-                .storage()
-                .instance()
-                .get::<DataKey, RiskFeeConfig>(&DataKey::RiskFeeConfig)
-            {
-                // Large payment surcharge
-                if amount > risk_config.large_payment_threshold {
-                    risk_surcharge_bps =
-                        risk_surcharge_bps.saturating_add(risk_config.large_payment_surcharge_bps);
-                }
-                // New customer surcharge
-                if is_new_customer {
-                    risk_surcharge_bps =
-                        risk_surcharge_bps.saturating_add(risk_config.new_customer_surcharge_bps);
-                }
-                // BTC/ETH surcharge
-                if is_btc_eth {
-                    risk_surcharge_bps =
-                        risk_surcharge_bps.saturating_add(risk_config.btc_eth_surcharge_bps);
-                }
-
-                effective_bps = effective_bps.saturating_add(risk_surcharge_bps);
-                // Cap at 100% (10000 bps)
-                if effective_bps > 10000 {
-                    effective_bps = 10000;
-                }
-            }
-        }
-
-        // Compute platform fee: amount * effective_bps / 10000
-        let platform_fee = amount
-            .checked_mul(effective_bps as i128)
-            .map(|v| v / 10000)
-            .unwrap_or_else(|| panic!("overflow computing platform fee"));
+        let breakdown = Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
+        let platform_fee = breakdown.platform_fee;
         let net_amount = amount - platform_fee;
 
         // Publish RiskFeeApplied event when a risk surcharge was applied
-        if risk_surcharge_bps > 0 {
-            env.events().publish(
-                (Symbol::new(env, "risk_fee_applied"),),
-                RiskFeeApplied {
-                    payment_amount: amount,
-                    base_fee_bps: fee_config.fee_bps,
-                    risk_surcharge_bps,
-                    effective_fee_bps: effective_bps,
-                    platform_fee,
-                },
-            );
+        if breakdown.risk_surcharge_bps > 0 {
+            env.events().publish((Symbol::new(env, "risk_fee_applied"),), breakdown);
         }
 
         (net_amount, platform_fee)
@@ -4864,12 +5000,11 @@ impl HamplardContract {
     /// payment and returns the `RiskFeeApplied` result.
     pub fn do_complete_payment(
         env: Env,
+        student: Address,
         token: Address,
         payment_amount: i128,
-        is_new_customer: bool,
-        is_btc_eth: bool,
     ) -> RiskFeeApplied {
-        Self::get_effective_fee_for_payment(env, token, payment_amount, is_new_customer, is_btc_eth)
+        Self::get_effective_fee_for_payment(env, student, token, payment_amount)
     }
 
     // ----------------------------------------------------------
