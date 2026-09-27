@@ -513,7 +513,7 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
 }
 
 #[test]
-fn test_enroll_fee_uses_live_default_fee() {
+fn test_enroll_fee_honors_registered_override_as_floor() {
     let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let token_client = token::Client::new(&env, &token_id);
@@ -535,7 +535,8 @@ fn test_enroll_fee_uses_live_default_fee() {
     );
     assert_eq!(client.get_platform_fee(&admin), 20);
 
-    // Update platform default fee to 10% - new enrollments now use live default
+    // Lower the platform default fee to 10% — the course's explicit 40%
+    // override remains the floor, so it is still what gets charged.
     client.update_default_fee(&admin, &10u32);
     assert_eq!(client.get_platform_fee(&admin), 10);
 
@@ -547,9 +548,9 @@ fn test_enroll_fee_uses_live_default_fee() {
     });
     client.enroll(&student, &String::from_str(&env, "COURSE-CUSTOM-FEE"));
 
-    // Platform fee should be 10% (live default fee), not 40% (custom course fee)
-    // This ensures fee policy changes take immediate effect for all enrollments
-    let platform_share = price * 10 / 100;
+    // Platform fee should be 40% (registered override), not 10% (live
+    // default): the rate validated at register_course() is the rate charged.
+    let platform_share = price * 40 / 100;
     let instructor_share = price - platform_share;
 
     assert_eq!(token_client.balance(&treasury), platform_share);
