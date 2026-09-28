@@ -177,6 +177,32 @@ pub struct EnrollmentRejected {
     pub ledger_sequence: u32,
 }
 
+/// Emitted when an enrollment attempt is rejected before reaching payment.
+/// Provides the caller address, course ID, and a stable reason code so
+/// off-chain monitoring can detect fraud patterns (blocked students, frozen
+/// instructors, repeated capacity attempts, etc.) without parsing panic messages.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnrollmentFailed {
+    pub course_id: String,
+    pub student: Address,
+    /// Stable reason code string, e.g. "student_blocked", "instructor_frozen",
+    /// "capacity_exceeded", "already_enrolled", "prerequisite_not_met".
+    pub reason: String,
+    pub ledger_sequence: u32,
+}
+
+/// Emitted when the default platform fee is changed.
+/// Includes old and new fee values for full auditability.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefaultFeeUpdated {
+    pub admin: Address,
+    pub old_fee_pct: u32,
+    pub new_fee_pct: u32,
+    pub ledger_sequence: u32,
+}
+
 // ============================================================
 // DATA TYPES
 // ============================================================
@@ -195,6 +221,15 @@ pub enum CourseStatus {
     Archived,
     /// Rejected by admin — not approved for the platform
     Rejected,
+}
+
+/// Co-instructor entry: a collaborator address and their share of the instructor portion.
+/// `share_bps` is in basis points (0–10000); the sum across all co-instructors must be ≤ 10000.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoInstructor {
+    pub address: Address,
+    pub share_bps: u32,
 }
 
 /// A course listing stored on-chain
@@ -271,6 +306,12 @@ pub struct Course {
     /// of an archived one, potentially misleading students with historical
     /// enrollment records.
     pub archived_at_ledger: Option<u32>,
+    /// Optional co-instructors for collaborative courses. Each entry is an
+    /// (address, share_bps) pair where share_bps is the co-instructor's share
+    /// of the instructor portion (in basis points, 0–10000). The sum of all
+    /// co-instructor share_bps must be ≤ 10000; the remainder stays with the
+    /// primary instructor. Empty means single-instructor course.
+    pub co_instructors: Vec<CoInstructor>,
 }
 
 /// An enrollment record — one per student per course
@@ -519,6 +560,18 @@ pub enum DataKey {
     /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
     /// course is automatically paused.
     CourseFailureCount(String),
+}
+
+/// Overflow DataKey enum — Soroban SDK v22 limits #[contracttype] enums to 50 variants.
+/// Keys that didn't fit in DataKey live here.
+#[contracttype]
+pub enum DataKey2 {
+    /// Whether a token is classified as BTC/ETH-denominated for risk surcharge purposes.
+    BtcEthToken(Address),
+    /// Optional per-course platform fee override in basis points.
+    CourseFeeOverrideBps(String),
+    /// Number of times a student has enrolled on the platform (used for new-customer risk flag).
+    StudentEnrollmentCount(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -895,7 +948,7 @@ impl HamplardContract {
         // Persist the explicit override (or clear a stale one left by an
         // archived course that previously used this ID) so enrollment
         // charges the rate that was validated here.
-        let override_key = DataKey::CourseFeeOverrideBps(course_id.clone());
+        let override_key = DataKey2::CourseFeeOverrideBps(course_id.clone());
         if platform_fee_pct == 0 {
             env.storage().persistent().remove(&override_key);
         } else {
@@ -938,6 +991,7 @@ impl HamplardContract {
             certificates_issued: 0,
             prerequisite_course_ids: Vec::new(&env),
             archived_at_ledger: None,
+            co_instructors: Vec::new(&env),
         };
 
         env.storage()
@@ -1853,6 +1907,78 @@ impl HamplardContract {
         );
     }
 
+    /// Configure co-instructors and their revenue split for a course.
+    ///
+    /// Each entry in `co_instructors` is `(address, share_bps)` where `share_bps`
+    /// is the co-instructor's share of the **instructor portion** (basis points,
+    /// 0–10000). The sum of all co-instructor `share_bps` must not exceed 10000;
+    /// the remainder stays with the primary instructor. Pass an empty vec to remove
+    /// all co-instructors and restore single-instructor mode.
+    ///
+    /// Only the course instructor or the platform admin may call this.
+    /// The course must not be Archived.
+    ///
+    /// # Arguments
+    /// - `caller`         — instructor or admin address (must sign)
+    /// - `course_id`      — the course to configure
+    /// - `co_instructors` — list of CoInstructor entries (address + share_bps)
+    pub fn set_co_instructors(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        co_instructors: Vec<CoInstructor>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot set co-instructors on an archived course");
+        }
+
+        // Validate share_bps sum ≤ 10000 and each address is not the primary instructor
+        let mut total_bps: u32 = 0;
+        for i in 0..co_instructors.len() {
+            let ci = co_instructors.get(i).unwrap();
+            if ci.address == course.instructor {
+                panic!("primary instructor cannot be listed as co-instructor");
+            }
+            if ci.share_bps > 10000 {
+                panic!("co-instructor share_bps cannot exceed 10000");
+            }
+            total_bps = total_bps
+                .checked_add(ci.share_bps)
+                .unwrap_or_else(|| panic!("co-instructor share_bps sum overflow"));
+        }
+        if total_bps > 10000 {
+            panic!("sum of co-instructor share_bps cannot exceed 10000");
+        }
+
+        course.co_instructors = co_instructors.clone();
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "co_instructors_set"), course_id.clone()),
+            (course_id, caller, co_instructors),
+        );
+    }
+
     /// Set or update the maximum number of certificates for a course.
     ///
     /// Enforces a hard limit on certificate issuance to prevent credential dilution.
@@ -2001,14 +2127,41 @@ impl HamplardContract {
             Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
 
         if Self::is_student_blocked_internal(env, student) {
+            env.events().publish(
+                (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                EnrollmentFailed {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    reason: String::from_str(env, "student_blocked"),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("student is blocked");
         }
 
         if Self::is_instructor_frozen_internal(env, &course.instructor) {
+            env.events().publish(
+                (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                EnrollmentFailed {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    reason: String::from_str(env, "instructor_frozen"),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("instructor is frozen");
         }
 
         if Self::is_admin(env, student) {
+            env.events().publish(
+                (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                EnrollmentFailed {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    reason: String::from_str(env, "admin_cannot_enroll"),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("admin cannot enroll in courses");
         }
 
@@ -2023,6 +2176,15 @@ impl HamplardContract {
         }
 
         if *student == course.instructor {
+            env.events().publish(
+                (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                EnrollmentFailed {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    reason: String::from_str(env, "instructor_self_enroll"),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("instructor cannot enroll in own course");
         }
 
@@ -2057,16 +2219,43 @@ impl HamplardContract {
             .persistent()
             .has(&DataKey::Enrollment(student.clone(), course_id.clone()))
         {
+            env.events().publish(
+                (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                EnrollmentFailed {
+                    course_id: course_id.clone(),
+                    student: student.clone(),
+                    reason: String::from_str(env, "already_enrolled"),
+                    ledger_sequence: env.ledger().sequence(),
+                },
+            );
             panic!("already enrolled in this course");
         }
         if let Some(cap) = course.max_capacity {
             if course.total_enrollments >= cap {
+                env.events().publish(
+                    (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                    EnrollmentFailed {
+                        course_id: course_id.clone(),
+                        student: student.clone(),
+                        reason: String::from_str(env, "capacity_exceeded"),
+                        ledger_sequence: env.ledger().sequence(),
+                    },
+                );
                 panic!("course has reached maximum enrollment capacity");
             }
         }
 
         if let Some(expiry) = course.expires_at_ledger {
             if env.ledger().sequence() >= expiry {
+                env.events().publish(
+                    (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                    EnrollmentFailed {
+                        course_id: course_id.clone(),
+                        student: student.clone(),
+                        reason: String::from_str(env, "course_expired"),
+                        ledger_sequence: env.ledger().sequence(),
+                    },
+                );
                 panic!("course has expired");
             }
         }
@@ -2111,6 +2300,15 @@ impl HamplardContract {
             };
 
             if !has_valid_certificate {
+                env.events().publish(
+                    (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                    EnrollmentFailed {
+                        course_id: course_id.clone(),
+                        student: student.clone(),
+                        reason: String::from_str(env, "prerequisite_not_met"),
+                        ledger_sequence: env.ledger().sequence(),
+                    },
+                );
                 panic!("prerequisite course not completed");
             }
         }
@@ -2127,6 +2325,15 @@ impl HamplardContract {
                 .get(&DataKey::TotalActiveEnrollments)
                 .unwrap_or(0);
             if total_active >= platform_cap {
+                env.events().publish(
+                    (Symbol::new(env, "enrollment_failed"), course_id.clone()),
+                    EnrollmentFailed {
+                        course_id: course_id.clone(),
+                        student: student.clone(),
+                        reason: String::from_str(env, "platform_cap_exceeded"),
+                        ledger_sequence: env.ledger().sequence(),
+                    },
+                );
                 panic!("platform has reached maximum total enrollment capacity");
             }
         }
@@ -2216,6 +2423,7 @@ impl HamplardContract {
             env,
             &course.token,
             course.price,
+            None,
             is_new_customer,
             is_btc_eth,
         );
@@ -2300,25 +2508,62 @@ impl HamplardContract {
                 );
             }
 
-            // Credit instructor earnings — pull-based withdrawal model
+            // Credit instructor earnings — pull-based withdrawal model.
+            // If co-instructors are configured, distribute proportionally.
             if instructor_amount > 0 {
-                Self::credit_instructor_earnings(
-                    env,
-                    &course.instructor,
-                    &course.token,
-                    instructor_amount,
-                );
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "instructor_payment_transferred"),
-                        course_id.clone(),
-                    ),
-                    (
-                        course.instructor.clone(),
-                        instructor_amount,
-                        env.ledger().sequence(),
-                    ),
-                );
+                let mut remaining = instructor_amount;
+
+                for i in 0..course.co_instructors.len() {
+                    let ci = course.co_instructors.get(i).unwrap();
+                    let co_addr = ci.address.clone();
+                    let co_bps = ci.share_bps;
+                    if co_bps == 0 {
+                        continue;
+                    }
+                    let co_share = (instructor_amount as i128)
+                        .checked_mul(co_bps as i128)
+                        .unwrap_or(0)
+                        / 10000;
+                    if co_share > 0 {
+                        Self::credit_instructor_earnings(
+                            env,
+                            &co_addr,
+                            &course.token,
+                            co_share,
+                        );
+                        remaining = remaining
+                            .checked_sub(co_share)
+                            .unwrap_or_else(|| panic!("co-instructor payment overflow"));
+                        env.events().publish(
+                            (
+                                Symbol::new(&env, "co_instructor_payment"),
+                                course_id.clone(),
+                            ),
+                            (co_addr.clone(), co_share, env.ledger().sequence()),
+                        );
+                    }
+                }
+
+                // Primary instructor receives the remainder
+                if remaining > 0 {
+                    Self::credit_instructor_earnings(
+                        env,
+                        &course.instructor,
+                        &course.token,
+                        remaining,
+                    );
+                    env.events().publish(
+                        (
+                            Symbol::new(&env, "instructor_payment_transferred"),
+                            course_id.clone(),
+                        ),
+                        (
+                            course.instructor.clone(),
+                            remaining,
+                            env.ledger().sequence(),
+                        ),
+                    );
+                }
             }
 
             actual_received
@@ -2490,6 +2735,7 @@ impl HamplardContract {
             env,
             &course.token,
             course.price,
+            None,
             false,
             false,
         );
@@ -2739,6 +2985,7 @@ impl HamplardContract {
             &env,
             &course.token,
             course.price,
+            None,
             is_new_customer,
             is_btc_eth,
         );
@@ -3540,8 +3787,9 @@ impl HamplardContract {
         amount: i128,
         destination: Address,
     ) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin, "withdraw_tokens");
+        admin1.require_auth();
+        admin2.require_auth();
+        Self::require_multi_admin(&env, &admin1, &admin2);
 
         // #236 — Reject zero or negative amounts before any token interaction.
         // A zero-amount call would either be silently accepted by the token
@@ -3551,10 +3799,6 @@ impl HamplardContract {
         if amount <= 0 {
             panic!("withdraw_tokens: amount must be greater than zero");
         }
-
-        admin1.require_auth();
-        admin2.require_auth();
-        Self::require_multi_admin(&env, &admin1, &admin2);
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
 
@@ -3800,7 +4044,12 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "default_fee_updated"), admin.clone()),
-            (admin, new_fee_pct),
+            DefaultFeeUpdated {
+                admin: admin.clone(),
+                old_fee_pct: current_fee,
+                new_fee_pct,
+                ledger_sequence: env.ledger().sequence(),
+            },
         );
     }
 
@@ -3835,11 +4084,11 @@ impl HamplardContract {
         if is_btc_eth {
             env.storage()
                 .instance()
-                .set(&DataKey::BtcEthToken(token.clone()), &true);
+                .set(&DataKey2::BtcEthToken(token.clone()), &true);
         } else {
             env.storage()
                 .instance()
-                .remove(&DataKey::BtcEthToken(token.clone()));
+                .remove(&DataKey2::BtcEthToken(token.clone()));
         }
 
         env.events().publish(
@@ -3868,7 +4117,7 @@ impl HamplardContract {
             .remove(&DataKey::ApprovedToken(token.clone()));
         env.storage()
             .instance()
-            .remove(&DataKey::BtcEthToken(token.clone()));
+            .remove(&DataKey2::BtcEthToken(token.clone()));
 
         env.events().publish(
             (
@@ -4912,18 +5161,18 @@ impl HamplardContract {
     fn course_fee_override_bps(env: &Env, course_id: &String) -> Option<u32> {
         env.storage()
             .persistent()
-            .get(&DataKey::CourseFeeOverrideBps(course_id.clone()))
+            .get(&DataKey2::CourseFeeOverrideBps(course_id.clone()))
     }
 
     fn get_student_enrollment_count_internal(env: &Env, student: &Address) -> u32 {
         env.storage()
             .persistent()
-            .get(&DataKey::StudentEnrollmentCount(student.clone()))
+            .get(&DataKey2::StudentEnrollmentCount(student.clone()))
             .unwrap_or(0)
     }
 
     fn increment_student_enrollment_count(env: &Env, student: &Address) {
-        let key = DataKey::StudentEnrollmentCount(student.clone());
+        let key = DataKey2::StudentEnrollmentCount(student.clone());
         let count = Self::get_student_enrollment_count_internal(env, student)
             .checked_add(1)
             .unwrap_or_else(|| panic!("student enrollment count overflow"));
@@ -4938,7 +5187,7 @@ impl HamplardContract {
     fn is_btc_eth_token_internal(env: &Env, token: &Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::BtcEthToken(token.clone()))
+            .get(&DataKey2::BtcEthToken(token.clone()))
             .unwrap_or(false)
     }
 
