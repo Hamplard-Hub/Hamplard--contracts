@@ -2738,6 +2738,72 @@ fn test_batch_enroll_rejects_duplicates() {
 }
 
 #[test]
+fn test_batch_enroll_large_unique_batch_succeeds() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    client.update_max_courses_limit(&admin, &100u32);
+
+    let batch_size = HamplardContract::MAX_BATCH_SIZE;
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    for i in 0..batch_size {
+        let course_id = format!("COURSE-BATCH-LINEAR-{}", i);
+        register_and_approve_course(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &instructor,
+            &course_id,
+            100_000_000,
+        );
+        course_ids.push_back(String::from_str(&env, &course_id));
+    }
+
+    client.batch_enroll(&student, &course_ids);
+
+    for i in 0..batch_size {
+        let course_id = format!("COURSE-BATCH-LINEAR-{}", i);
+        assert!(client.is_enrolled(&student, &String::from_str(&env, &course_id)));
+    }
+}
+
+#[test]
+#[should_panic(expected = "duplicate course in batch")]
+fn test_batch_enroll_rejects_duplicate_in_large_batch() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    client.update_max_courses_limit(&admin, &100u32);
+
+    let unique_count = HamplardContract::MAX_BATCH_SIZE - 1;
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    for i in 0..unique_count {
+        let course_id = format!("COURSE-BATCH-DUP-LARGE-{}", i);
+        register_and_approve_course(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &instructor,
+            &course_id,
+            100_000_000,
+        );
+        course_ids.push_back(String::from_str(&env, &course_id));
+    }
+    // Duplicate the first ID at the end of an otherwise-max-sized batch.
+    course_ids.push_back(String::from_str(&env, "COURSE-BATCH-DUP-LARGE-0"));
+
+    client.batch_enroll(&student, &course_ids);
+}
+
+#[test]
 fn test_batch_enroll_emits_event_for_each_enrollment() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
