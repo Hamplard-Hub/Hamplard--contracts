@@ -10456,3 +10456,59 @@ fn test_list_courses_u32_max_limit_does_not_overflow() {
     let empty = client.list_courses(&10u32, &2u32);
     assert_eq!(empty.len(), 0);
 }
+
+// =============================================================================
+// ISSUE #238: list_courses() clamps limit to MAX_PAGE_SIZE
+// =============================================================================
+
+#[test]
+fn test_list_courses_clamps_limit_to_max_page_size() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let catalog_len = HamplardContract::MAX_PAGE_SIZE + 10;
+    client.update_max_courses_limit(&admin, &catalog_len);
+
+    for i in 0..catalog_len {
+        let course_id = format!("COURSE-PAGE-{:03}", i);
+        client.register_course(
+            &instructor,
+            &String::from_str(&env, &course_id),
+            &100_000_000,
+            &token_id,
+            &0u32,
+            &None,
+            &BytesN::from_array(&env, &[1u8; 32]),
+        );
+    }
+
+    // A limit above the cap is silently clamped rather than copying the
+    // entire remaining catalog in one call.
+    let page = client.list_courses(&0u32, &(HamplardContract::MAX_PAGE_SIZE + 100));
+    assert_eq!(page.len(), HamplardContract::MAX_PAGE_SIZE);
+    assert_eq!(
+        page.get(0).unwrap(),
+        String::from_str(&env, "COURSE-PAGE-000")
+    );
+    assert_eq!(
+        page.get(HamplardContract::MAX_PAGE_SIZE - 1).unwrap(),
+        String::from_str(
+            &env,
+            &format!("COURSE-PAGE-{:03}", HamplardContract::MAX_PAGE_SIZE - 1)
+        )
+    );
+
+    let rest = client.list_courses(&HamplardContract::MAX_PAGE_SIZE, &u32::MAX);
+    assert_eq!(rest.len(), 10);
+    assert_eq!(
+        rest.get(0).unwrap(),
+        String::from_str(
+            &env,
+            &format!("COURSE-PAGE-{:03}", HamplardContract::MAX_PAGE_SIZE)
+        )
+    );
+
+    // A limit at or below the cap is unchanged.
+    let small = client.list_courses(&0u32, &10u32);
+    assert_eq!(small.len(), 10);
+}
