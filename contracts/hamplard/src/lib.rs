@@ -581,6 +581,10 @@ impl HamplardContract {
     const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
     /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
     const MAX_BATCH_SIZE: u32 = 50;
+    /// Maximum number of course IDs returned by a single `list_courses()` call.
+    /// Larger catalogs must be walked with successive `offset` values so one
+    /// invocation cannot exceed the transaction CPU/instruction budget.
+    pub(crate) const MAX_PAGE_SIZE: u32 = 50;
     /// Maximum number of students that may be refunded in a single
     /// `archive_course()` call. Large courses must be refunded in multiple
     /// transactions.
@@ -4827,9 +4831,13 @@ impl HamplardContract {
 
     /// Return a page of registered course IDs from the on-chain catalog.
     ///
+    /// `limit` is silently clamped to `MAX_PAGE_SIZE` so every call has a
+    /// predictable, safe upper bound on work performed. Clients should page
+    /// through larger catalogs with successive `offset` values.
+    ///
     /// # Arguments
     /// - `offset` — zero-based index of the first course to return
-    /// - `limit`  — maximum number of course IDs to return in one call
+    /// - `limit`  — requested page size; values above `MAX_PAGE_SIZE` are clamped
     ///
     /// Returns an empty list when `offset` is beyond the end of the catalog.
     pub fn list_courses(env: Env, offset: u32, limit: u32) -> Vec<String> {
@@ -4841,6 +4849,7 @@ impl HamplardContract {
 
         let total = catalog.len();
         let start = offset.min(total);
+        let limit = limit.min(Self::MAX_PAGE_SIZE);
         // Saturating add: an oversized caller `limit` (e.g. u32::MAX) must
         // clamp to the catalog end rather than trap on arithmetic overflow.
         let end = start.saturating_add(limit).min(total);
