@@ -401,6 +401,38 @@ pub struct InstructorStats {
 }
 
 // ============================================================
+// ARBITRATION DATA TYPES
+// ============================================================
+
+/// Status of an on-chain arbitration case.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArbitrationStatus {
+    Open,
+    ResolvedRefund,
+    ResolvedPayout,
+}
+
+/// An on-chain arbitration case record created when a dispute is escalated.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArbitrationCase {
+    pub student: Address,
+    pub course_id: String,
+    pub fee_paid: i128,
+    pub status: ArbitrationStatus,
+    pub created_at_ledger: u32,
+}
+
+/// Separate storage key enum for arbitration records.
+/// Using a dedicated enum avoids hitting the DataKey variant size limit
+/// imposed by the `#[contracttype]` proc macro.
+#[contracttype]
+pub enum ArbitrationKey {
+    Case(Address, String),
+}
+
+// ============================================================
 // STORAGE KEYS
 // ============================================================
 
@@ -1496,6 +1528,22 @@ impl HamplardContract {
                             );
                         }
 
+                        // Archive the enrollment to EnrollmentHistory before removing it
+                        let mut arc_enrollment = enrollment.clone();
+                        arc_enrollment.is_refunded = true;
+                        let arc_history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
+                        let mut arc_history: Vec<Enrollment> = env
+                            .storage()
+                            .persistent()
+                            .get(&arc_history_key)
+                            .unwrap_or_else(|| Vec::new(&env));
+                        arc_history.push_back(arc_enrollment);
+                        env.storage().persistent().set(&arc_history_key, &arc_history);
+                        env.storage().persistent().extend_ttl(
+                            &arc_history_key,
+                            Self::PERSISTENT_TTL_THRESHOLD,
+                            Self::PERSISTENT_TTL_EXTEND_TO,
+                        );
                         env.storage().persistent().remove(&enrollment_key);
 
                         refund_count = refund_count
@@ -4363,9 +4411,23 @@ impl HamplardContract {
                 );
             }
 
-            // Mark enrollment as refunded and remove the active record so
-            // `is_enrolled` reflects that the student is no longer enrolled.
+            // Mark enrollment as refunded, archive to EnrollmentHistory,
+            // then remove the active record so `is_enrolled` reflects that
+            // the student is no longer enrolled.
             enrollment.is_refunded = true;
+            let history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
+            let mut history: Vec<Enrollment> = env
+                .storage()
+                .persistent()
+                .get(&history_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            history.push_back(enrollment.clone());
+            env.storage().persistent().set(&history_key, &history);
+            env.storage().persistent().extend_ttl(
+                &history_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
             env.storage().persistent().remove(&enrollment_key);
 
             // Decrement active enrollments
@@ -5532,6 +5594,18 @@ impl HamplardContract {
     pub fn escalate_to_arbitration(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
+        // Issue 257: Prevent duplicate escalation for the same dispute
+        let arb_key = ArbitrationKey::Case(caller.clone(), course_id.clone());
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<ArbitrationKey, ArbitrationCase>(&arb_key)
+        {
+            if existing.status == ArbitrationStatus::Open {
+                panic!("escalate_to_arbitration: case already open for this dispute");
+            }
+        }
+
         let config: ArbitrationFeeConfig = env
             .storage()
             .instance()
@@ -5552,9 +5626,113 @@ impl HamplardContract {
             &config.fee_per_case,
         );
 
+        // Issue 255: Persist the arbitration case record
+        let case = ArbitrationCase {
+            student: caller.clone(),
+            course_id: course_id.clone(),
+            fee_paid: config.fee_per_case,
+            status: ArbitrationStatus::Open,
+            created_at_ledger: env.ledger().sequence(),
+        };
+        env.storage().persistent().set(&arb_key, &case);
+        env.storage().persistent().extend_ttl(
+            &arb_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.events().publish(
             (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
             (caller, course_id, config.fee_per_case),
+        );
+    }
+
+    /// Get an arbitration case by student and course ID.
+    pub fn get_arbitration_case(
+        env: Env,
+        student: Address,
+        course_id: String,
+    ) -> Option<ArbitrationCase> {
+        env.storage()
+            .persistent()
+            .get(&ArbitrationKey::Case(student, course_id))
+    }
+
+    /// Resolve an open arbitration case.
+    ///
+    /// # Arguments
+    /// - `admin`     — platform admin (must sign)
+    /// - `student`   — the student who escalated the dispute
+    /// - `course_id` — the course the dispute is about
+    /// - `outcome`   — `ResolvedRefund` sends fee back to student; `ResolvedPayout` sends fee to instructor
+    pub fn resolve_arbitration(
+        env: Env,
+        admin: Address,
+        student: Address,
+        course_id: String,
+        outcome: ArbitrationStatus,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "resolve_arbitration");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let arb_key = ArbitrationKey::Case(student.clone(), course_id.clone());
+        let mut case = env
+            .storage()
+            .persistent()
+            .get::<ArbitrationKey, ArbitrationCase>(&arb_key)
+            .unwrap_or_else(|| panic!("arbitration case not found"));
+
+        if case.status != ArbitrationStatus::Open {
+            panic!("arbitration case is already resolved");
+        }
+
+        if outcome == ArbitrationStatus::Open {
+            panic!("outcome must be ResolvedRefund or ResolvedPayout");
+        }
+
+        let course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let token_client = token::Client::new(&env, &course.token);
+
+        match outcome {
+            ArbitrationStatus::ResolvedRefund => {
+                // Return fee to student
+                if case.fee_paid > 0 {
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &student,
+                        &case.fee_paid,
+                    );
+                }
+            }
+            ArbitrationStatus::ResolvedPayout => {
+                // Send fee to instructor
+                if case.fee_paid > 0 {
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &course.instructor,
+                        &case.fee_paid,
+                    );
+                }
+            }
+            ArbitrationStatus::Open => {}
+        }
+
+        case.status = outcome;
+        env.storage().persistent().set(&arb_key, &case);
+        env.storage().persistent().extend_ttl(
+            &arb_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "arbitration_resolved"), course_id.clone()),
+            (student, course_id, admin),
         );
     }
 
