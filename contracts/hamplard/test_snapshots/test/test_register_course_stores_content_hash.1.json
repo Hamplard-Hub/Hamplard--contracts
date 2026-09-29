@@ -138,6 +138,9 @@
                 "void",
                 {
                   "bytes": "abababababababababababababababababababababababababababababababab"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -269,6 +272,14 @@
                         "symbol": "archived_at_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
                     },
                     {
                       "key": {
@@ -679,6 +690,18 @@
                         },
                         "val": {
                           "u32": 20
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "InitLedger"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
                         }
                       },
                       {

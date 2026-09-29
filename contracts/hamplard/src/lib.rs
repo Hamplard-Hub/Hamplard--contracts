@@ -271,6 +271,8 @@ pub struct Course {
     /// of an archived one, potentially misleading students with historical
     /// enrollment records.
     pub archived_at_ledger: Option<u32>,
+    /// Category tags for the course (e.g. "programming", "design") (#165)
+    pub categories: Vec<String>,
 }
 
 /// An enrollment record — one per student per course
@@ -309,6 +311,8 @@ pub struct Enrollment {
     /// Unique enrollment reference ID, used by issue_certificate to look up
     /// the enrollment and derive the course_id without caller-supplied course_id.
     pub enrollment_ref: String,
+    /// Ledger sequence when the enrollment was marked completed, if any (#166)
+    pub completed_at_ledger: Option<u32>,
 }
 
 /// An on-chain certificate of completion
@@ -519,6 +523,22 @@ pub enum DataKey {
     /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
     /// course is automatically paused.
     CourseFailureCount(String),
+    /// Threshold price (in stroops) above which a course is "high-value"
+    /// and requires co-signature from two different admins to approve
+    HighValueCourseThreshold,
+    /// Stores the first approver's address for a high-value course pending co-signature
+    HighValueCourseApproval(String),
+}
+
+/// Overflow keys split out to avoid the #[contracttype] variant-count limit.
+#[contracttype]
+pub enum DataKey2 {
+    /// Per-course fee override in basis points
+    CourseFeeOverrideBps(String),
+    /// Whether a token is classified as BTC/ETH-denominated
+    BtcEthToken(Address),
+    /// Number of enrollments a student has ever created
+    StudentEnrollmentCount(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -589,6 +609,10 @@ impl HamplardContract {
     /// after which a course is automatically paused as a circuit breaker.
     /// Reset to 0 on a successful enrollment. (#178)
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+    /// Maximum number of categories a course can have (#165)
+    const MAX_CATEGORIES: u32 = 10;
+    /// Maximum length of a category name in characters (#165)
+    const MAX_CATEGORY_LEN: u32 = 64;
 
     // ----------------------------------------------------------
     // INIT
@@ -751,6 +775,7 @@ impl HamplardContract {
         platform_fee_pct: u32,
         max_capacity: Option<u32>,
         content_hash: BytesN<32>,
+        categories: Vec<String>,
     ) -> String {
         instructor.require_auth();
 
@@ -801,6 +826,16 @@ impl HamplardContract {
             // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
             if *byte < 0x20 || *byte > 0x7E {
                 panic!("course_id contains invalid characters (must be printable ASCII)");
+            }
+        }
+
+        // Validate categories (#165)
+        if categories.len() > Self::MAX_CATEGORIES {
+            panic!("register_course: too many categories");
+        }
+        for cat in categories.iter() {
+            if cat.len() > Self::MAX_CATEGORY_LEN {
+                panic!("register_course: category name too long");
             }
         }
 
@@ -895,7 +930,7 @@ impl HamplardContract {
         // Persist the explicit override (or clear a stale one left by an
         // archived course that previously used this ID) so enrollment
         // charges the rate that was validated here.
-        let override_key = DataKey::CourseFeeOverrideBps(course_id.clone());
+        let override_key = DataKey2::CourseFeeOverrideBps(course_id.clone());
         if platform_fee_pct == 0 {
             env.storage().persistent().remove(&override_key);
         } else {
@@ -938,6 +973,7 @@ impl HamplardContract {
             certificates_issued: 0,
             prerequisite_course_ids: Vec::new(&env),
             archived_at_ledger: None,
+            categories,
         };
 
         env.storage()
@@ -1096,6 +1132,33 @@ impl HamplardContract {
             panic!("course is not pending approval");
         }
 
+        // Issue 167: High-value course co-signature
+        let threshold: Option<i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey::HighValueCourseThreshold);
+        if let Some(threshold_val) = threshold {
+            if course.price >= threshold_val {
+                let approval_key = DataKey::HighValueCourseApproval(course_id.clone());
+                let prior_approver: Option<Address> =
+                    env.storage().instance().get(&approval_key);
+                match prior_approver {
+                    None => {
+                        // Record first approval and return — need a second admin
+                        env.storage().instance().set(&approval_key, &caller);
+                        return;
+                    }
+                    Some(ref prior) if *prior == caller => {
+                        panic!("high_value_course_approval: same admin cannot double-sign");
+                    }
+                    Some(_) => {
+                        // Different admin — proceed and clear the approval key
+                        env.storage().instance().remove(&approval_key);
+                    }
+                }
+            }
+        }
+
         course.status = CourseStatus::Active;
         course.last_updated_ledger = env.ledger().sequence();
         env.storage()
@@ -1128,6 +1191,23 @@ impl HamplardContract {
     /// - `caller`    — must be admin or an approved approver
     /// - `course_id` — the course to reject
     /// - `reason`    — rejection reason (e.g., "CONTENT_POLICY_VIOLATION", "DUPLICATE_COURSE")
+    /// Sets the price threshold above which a course requires two different admins
+    /// to approve (co-signature). Issue #167.
+    pub fn set_high_value_course_threshold(env: Env, admin: Address, threshold: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_high_value_course_threshold");
+        env.storage()
+            .instance()
+            .set(&DataKey::HighValueCourseThreshold, &threshold);
+    }
+
+    /// Returns the high-value course threshold, if set. Issue #167.
+    pub fn get_high_value_course_threshold(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&DataKey::HighValueCourseThreshold)
+    }
+
     pub fn reject_course(env: Env, caller: Address, course_id: String, reason: String) {
         caller.require_auth();
         Self::require_admin_or_approver(&env, &caller, "reject_course");
@@ -1531,6 +1611,10 @@ impl HamplardContract {
         // If students remain enrolled, the call refunded the requested
         // subset and the course stays Paused for follow-up calls.
         if course.active_enrollments > 0 {
+            // Persist the updated active_enrollments count for this partial-refund call.
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
             return;
         }
 
@@ -1626,6 +1710,46 @@ impl HamplardContract {
         );
 
         course.version
+    }
+
+    /// Remove the capacity cap on a course, making it unlimited.
+    /// Can be called by the course instructor or an admin.
+    pub fn clear_course_max_capacity(env: Env, caller: Address, course_id: String) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        course.max_capacity = None;
+        course.version = course
+            .version
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("course version overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_updated"), course_id.clone()),
+            (course_id, course.version, caller),
+        );
     }
 
     /// Instructor configures an optional enrollment expiry for a course.
@@ -2012,6 +2136,11 @@ impl HamplardContract {
             panic!("admin cannot enroll in courses");
         }
 
+        // Issue 168: Self-enrollment guard
+        if *student == env.current_contract_address() {
+            panic!("enroll: student cannot be the contract itself");
+        }
+
         let registered_instructor: Address = env
             .storage()
             .persistent()
@@ -2212,10 +2341,12 @@ impl HamplardContract {
         // Risk flags come from the same helper the fee previews use, so a
         // quote from get_effective_fee_for_payment() matches this charge.
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(env, student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
             course.price,
+            course_fee_override_bps,
             is_new_customer,
             is_btc_eth,
         );
@@ -2390,6 +2521,7 @@ impl HamplardContract {
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
+            completed_at_ledger: None,
         };
 
         env.storage().persistent().set(
@@ -2486,10 +2618,12 @@ impl HamplardContract {
             panic!("course is not available for enrollment");
         }
 
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
             course.price,
+            course_fee_override_bps,
             false,
             false,
         );
@@ -2576,6 +2710,7 @@ impl HamplardContract {
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
+            completed_at_ledger: None,
         };
 
         env.storage().persistent().set(
@@ -2735,10 +2870,12 @@ impl HamplardContract {
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(&env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             &env,
             &course.token,
             course.price,
+            course_fee_override_bps,
             is_new_customer,
             is_btc_eth,
         );
@@ -2804,6 +2941,7 @@ impl HamplardContract {
             platform_amount,
             instructor_amount,
             enrollment_ref: new_enrollment_ref,
+            completed_at_ledger: None,
         };
 
         env.storage()
@@ -3012,6 +3150,7 @@ impl HamplardContract {
 
         enrollment.completed = true;
         enrollment.evidence_hash = evidence_hash;
+        enrollment.completed_at_ledger = Some(env.ledger().sequence()); // Issue 166
 
         env.storage().persistent().set(
             &DataKey::Enrollment(student.clone(), course_id.clone()),
@@ -3540,9 +3679,6 @@ impl HamplardContract {
         amount: i128,
         destination: Address,
     ) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin, "withdraw_tokens");
-
         // #236 — Reject zero or negative amounts before any token interaction.
         // A zero-amount call would either be silently accepted by the token
         // contract (emitting a misleading tokens_withdrawn event) or panic
@@ -3550,6 +3686,10 @@ impl HamplardContract {
         // message from this contract. Negative amounts are never valid.
         if amount <= 0 {
             panic!("withdraw_tokens: amount must be greater than zero");
+        }
+
+        if admin1 == admin2 {
+            panic!("unauthorized: requires both admin signatures");
         }
 
         admin1.require_auth();
@@ -3835,11 +3975,11 @@ impl HamplardContract {
         if is_btc_eth {
             env.storage()
                 .instance()
-                .set(&DataKey::BtcEthToken(token.clone()), &true);
+                .set(&DataKey2::BtcEthToken(token.clone()), &true);
         } else {
             env.storage()
                 .instance()
-                .remove(&DataKey::BtcEthToken(token.clone()));
+                .remove(&DataKey2::BtcEthToken(token.clone()));
         }
 
         env.events().publish(
@@ -3868,7 +4008,7 @@ impl HamplardContract {
             .remove(&DataKey::ApprovedToken(token.clone()));
         env.storage()
             .instance()
-            .remove(&DataKey::BtcEthToken(token.clone()));
+            .remove(&DataKey2::BtcEthToken(token.clone()));
 
         env.events().publish(
             (
@@ -4912,18 +5052,18 @@ impl HamplardContract {
     fn course_fee_override_bps(env: &Env, course_id: &String) -> Option<u32> {
         env.storage()
             .persistent()
-            .get(&DataKey::CourseFeeOverrideBps(course_id.clone()))
+            .get(&DataKey2::CourseFeeOverrideBps(course_id.clone()))
     }
 
     fn get_student_enrollment_count_internal(env: &Env, student: &Address) -> u32 {
         env.storage()
             .persistent()
-            .get(&DataKey::StudentEnrollmentCount(student.clone()))
+            .get(&DataKey2::StudentEnrollmentCount(student.clone()))
             .unwrap_or(0)
     }
 
     fn increment_student_enrollment_count(env: &Env, student: &Address) {
-        let key = DataKey::StudentEnrollmentCount(student.clone());
+        let key = DataKey2::StudentEnrollmentCount(student.clone());
         let count = Self::get_student_enrollment_count_internal(env, student)
             .checked_add(1)
             .unwrap_or_else(|| panic!("student enrollment count overflow"));
@@ -4938,7 +5078,7 @@ impl HamplardContract {
     fn is_btc_eth_token_internal(env: &Env, token: &Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::BtcEthToken(token.clone()))
+            .get(&DataKey2::BtcEthToken(token.clone()))
             .unwrap_or(false)
     }
 
@@ -5004,6 +5144,10 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::SecondaryAdmin)
             .unwrap();
+
+        if caller1 == caller2 {
+            panic!("unauthorized: requires both admin signatures");
+        }
 
         if (*caller1 == admin && *caller2 == secondary_admin)
             || (*caller1 == secondary_admin && *caller2 == admin)
@@ -5489,7 +5633,21 @@ impl HamplardContract {
             return (0, 0);
         }
 
-        let breakdown = Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
+        let mut breakdown = Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
+
+        // Apply the course's registration-time fee override as a floor.
+        // If the live effective fee is lower than the override, use the override.
+        if let Some(override_bps) = course_fee_override_bps {
+            if override_bps > breakdown.effective_fee_bps {
+                let override_fee = amount
+                    .checked_mul(override_bps as i128)
+                    .map(|v| v / 10000)
+                    .unwrap_or_else(|| panic!("overflow computing override platform fee"));
+                breakdown.effective_fee_bps = override_bps;
+                breakdown.platform_fee = override_fee;
+            }
+        }
+
         let platform_fee = breakdown.platform_fee;
         let net_amount = amount - platform_fee;
 

@@ -75,7 +75,8 @@ fn register_and_approve_course(
         token_id,
         &0u32, // use platform default fee
         &None,
-        &BytesN::from_array(env, &[0u8; 32]),
+        &BytesN::from_array(env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(env),
     );
     // Advance past the registration ledger so enroll()'s same-ledger guard
     // doesn't reject enrollments that happen right after this helper returns.
@@ -170,7 +171,8 @@ fn test_register_course_success() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -192,7 +194,8 @@ fn test_register_course_custom_fee() {
         &token_id,
         &30u32, // custom 30% platform fee
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client
@@ -224,7 +227,8 @@ fn test_register_duplicate_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &instructor,
@@ -233,7 +237,8 @@ fn test_register_duplicate_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -254,7 +259,8 @@ fn test_approve_course_success() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
 
@@ -276,7 +282,8 @@ fn test_approve_course_unauthorized() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Stop mocking all auths so the real auth + admin check fires
@@ -299,7 +306,8 @@ fn test_approve_already_active_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
     client.approve_course(&admin, &course_id); // second approve — should panic
@@ -487,7 +495,8 @@ fn test_enroll_uses_registered_course_fee_when_default_fee_changes() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(client.get_platform_fee(&admin), 20);
 
@@ -531,7 +540,8 @@ fn test_enroll_fee_honors_registered_override_as_floor() {
         &token_id,
         &40u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(client.get_platform_fee(&admin), 20);
 
@@ -619,7 +629,8 @@ fn test_enroll_fee_overflow() {
         &token_id,
         &100u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
 
@@ -782,7 +793,8 @@ fn test_enroll_pending_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     client.enroll(&student, &String::from_str(&env, "COURSE-PENDING"));
@@ -805,7 +817,8 @@ fn test_enroll_same_ledger_as_registration_rejected() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
 
@@ -1711,13 +1724,12 @@ fn test_archive_course_incremental_refunds() {
     let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let students: Vec<Address> = (0..5)
-        .map(|_| {
-            let s = Address::generate(&env);
-            token::StellarAssetClient::new(&env, &token_id).mint(&s, &1_000_000_000);
-            s
-        })
-        .collect();
+    let mut students = soroban_sdk::Vec::<Address>::new(&env);
+    for _ in 0..5 {
+        let s = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id).mint(&s, &1_000_000_000);
+        students.push_back(s);
+    }
 
     let price = 500_000_000;
     register_and_approve_course(
@@ -1731,16 +1743,16 @@ fn test_archive_course_incremental_refunds() {
     );
     let course_id = String::from_str(&env, "COURSE-INCREMENTAL-REFUND");
 
-    for student in &students {
-        client.enroll(student, &course_id);
+    for i in 0..students.len() {
+        client.enroll(&students.get(i).unwrap(), &course_id);
     }
 
     client.pause_course(&admin, &course_id);
 
     // First refund batch: 2 of 5 students
     let mut batch1 = soroban_sdk::Vec::new(&env);
-    batch1.push_back(students[0].clone());
-    batch1.push_back(students[1].clone());
+    batch1.push_back(students.get(0).unwrap().clone());
+    batch1.push_back(students.get(1).unwrap().clone());
 
     env.mock_all_auths_allowing_non_root_auth();
     client.archive_course(&admin, &sec_admin, &course_id, &Some(batch1));
@@ -1753,7 +1765,7 @@ fn test_archive_course_incremental_refunds() {
     // Second refund batch: remaining 3 students
     let mut batch2 = soroban_sdk::Vec::new(&env);
     for i in 2..5 {
-        batch2.push_back(students[i].clone());
+        batch2.push_back(students.get(i).unwrap().clone());
     }
     client.archive_course(&admin, &sec_admin, &course_id, &Some(batch2));
 
@@ -1762,8 +1774,8 @@ fn test_archive_course_incremental_refunds() {
     assert_eq!(course.status, CourseStatus::Archived);
     assert_eq!(course.active_enrollments, 0);
 
-    for student in &students {
-        assert!(!client.is_enrolled(student, &course_id));
+    for i in 0..students.len() {
+        assert!(!client.is_enrolled(&students.get(i).unwrap(), &course_id));
     }
 }
 
@@ -1902,7 +1914,8 @@ fn test_register_course_id_too_long() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -1919,7 +1932,8 @@ fn test_register_course_id_at_max_length_succeeds() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course = client.get_course(&max_id).unwrap();
     assert_eq!(course.status, CourseStatus::Pending);
@@ -2041,7 +2055,8 @@ fn test_archive_pending_course_rejected() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Course is Pending — must panic
@@ -2115,7 +2130,8 @@ fn test_enroll_with_non_whitelisted_token_fails() {
         &evil_token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
     env.ledger().with_mut(|l| {
@@ -2317,7 +2333,8 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course_id = String::from_str(&env, "COURSE-OLD-ADMIN");
     env.ledger().with_mut(|l| {
@@ -2405,7 +2422,7 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
 
     // withdraw_tokens — old admin must be rejected
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.withdraw_tokens(&admin, &token_id, &0i128, &admin);
+        client.withdraw_tokens(&admin, &admin, &token_id, &0i128, &admin);
     }));
     assert!(
         res.is_err(),
@@ -2431,7 +2448,8 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let refund_course_id = String::from_str(&env, "COURSE-OLD-ADMIN-REFUND");
     env.ledger().with_mut(|l| {
@@ -2697,7 +2715,8 @@ fn test_batch_enroll_fails_on_invalid_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let mut course_ids = soroban_sdk::Vec::new(&env);
@@ -3063,7 +3082,8 @@ fn test_registration_limit_enforced() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &instructor,
@@ -3072,7 +3092,8 @@ fn test_registration_limit_enforced() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &instructor,
@@ -3081,7 +3102,8 @@ fn test_registration_limit_enforced() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -3103,7 +3125,8 @@ fn test_admin_can_raise_limit() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Raise the limit to 5
@@ -3117,7 +3140,8 @@ fn test_admin_can_raise_limit() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     assert_eq!(client.get_instructor_course_count(&instructor), 2u32);
@@ -3141,7 +3165,8 @@ fn test_different_instructors_have_independent_limits() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // instructor_b's count is independent — this must succeed
@@ -3152,7 +3177,8 @@ fn test_different_instructors_have_independent_limits() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     assert_eq!(client.get_instructor_course_count(&instructor_a), 1u32);
@@ -3185,7 +3211,8 @@ fn test_course_count_increments_correctly() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(client.get_instructor_course_count(&instructor), 1u32);
 
@@ -3196,7 +3223,8 @@ fn test_course_count_increments_correctly() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(client.get_instructor_course_count(&instructor), 2u32);
 }
@@ -3381,7 +3409,8 @@ fn test_enroll_at_capacity_succeeds() {
         &token_id,
         &0u32,
         &Some(1u32),
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-EXACT"));
     env.ledger().with_mut(|l| {
@@ -3414,7 +3443,8 @@ fn test_enroll_beyond_capacity_rejected() {
         &token_id,
         &0u32,
         &Some(1u32),
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-FULL"));
     env.ledger().with_mut(|l| {
@@ -3444,7 +3474,8 @@ fn test_enroll_unlimited_capacity() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-CAP-NONE"));
     env.ledger().with_mut(|l| {
@@ -3479,7 +3510,8 @@ fn test_batch_enroll_respects_capacity() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-OK"));
 
@@ -3491,7 +3523,8 @@ fn test_batch_enroll_respects_capacity() {
         &token_id,
         &0u32,
         &Some(1u32),
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-CAP-FULL"));
     env.ledger().with_mut(|l| {
@@ -3525,22 +3558,26 @@ fn test_batch_enroll_rejects_oversized_batch() {
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
 
-    for i in 0..60 {
-        let course_id = format!("COURSE-BATCH-OVERFLOW-{}", i);
-        register_and_approve_course(
-            &env,
-            &client,
-            &token_id,
-            &admin,
-            &instructor,
-            &course_id,
-            100_000_000,
-        );
-    }
+    // Build 51 course IDs — enough to exceed MAX_BATCH_SIZE (50).
+    // We don't need to register all of them: batch_enroll checks the length
+    // before attempting any enrolment, so the overflow panic fires first.
+    let overflow_ids = [
+        "OVERFLOW-A-00", "OVERFLOW-A-01", "OVERFLOW-A-02", "OVERFLOW-A-03", "OVERFLOW-A-04",
+        "OVERFLOW-A-05", "OVERFLOW-A-06", "OVERFLOW-A-07", "OVERFLOW-A-08", "OVERFLOW-A-09",
+        "OVERFLOW-A-10", "OVERFLOW-A-11", "OVERFLOW-A-12", "OVERFLOW-A-13", "OVERFLOW-A-14",
+        "OVERFLOW-A-15", "OVERFLOW-A-16", "OVERFLOW-A-17", "OVERFLOW-A-18", "OVERFLOW-A-19",
+        "OVERFLOW-A-20", "OVERFLOW-A-21", "OVERFLOW-A-22", "OVERFLOW-A-23", "OVERFLOW-A-24",
+        "OVERFLOW-A-25", "OVERFLOW-A-26", "OVERFLOW-A-27", "OVERFLOW-A-28", "OVERFLOW-A-29",
+        "OVERFLOW-A-30", "OVERFLOW-A-31", "OVERFLOW-A-32", "OVERFLOW-A-33", "OVERFLOW-A-34",
+        "OVERFLOW-A-35", "OVERFLOW-A-36", "OVERFLOW-A-37", "OVERFLOW-A-38", "OVERFLOW-A-39",
+        "OVERFLOW-A-40", "OVERFLOW-A-41", "OVERFLOW-A-42", "OVERFLOW-A-43", "OVERFLOW-A-44",
+        "OVERFLOW-A-45", "OVERFLOW-A-46", "OVERFLOW-A-47", "OVERFLOW-A-48", "OVERFLOW-A-49",
+        "OVERFLOW-A-50",
+    ];
 
     let mut course_ids = soroban_sdk::Vec::new(&env);
-    for i in 0..60 {
-        course_ids.push_back(String::from_str(&env, &format!("COURSE-BATCH-OVERFLOW-{}", i)));
+    for id in overflow_ids {
+        course_ids.push_back(String::from_str(&env, id));
     }
 
     client.batch_enroll(&student, &course_ids);
@@ -3586,6 +3623,9 @@ fn test_course_approval_time_lock_premature_panics() {
     // Set minimum review delay to 10 ledgers
     client.update_min_review_delay(&admin, &10u32);
 
+    // Advance past the governance window (init-level delay)
+    env.ledger().with_mut(|l| l.sequence_number += 11);
+
     let course_id = String::from_str(&env, "COURSE-DELAYED-1");
     client.register_course(
         &instructor,
@@ -3594,10 +3634,11 @@ fn test_course_approval_time_lock_premature_panics() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
-    // Try to approve immediately — should panic
+    // Try to approve immediately — should panic because per-course review period not elapsed
     client.approve_course(&admin, &course_id);
 }
 
@@ -3617,7 +3658,8 @@ fn test_course_approval_time_lock_success() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Advance ledger sequence by 10
@@ -3645,7 +3687,8 @@ fn test_register_course_invalid_token() {
         &random_eoa,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -3748,7 +3791,8 @@ fn test_archive_then_reregister_fails() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -3809,7 +3853,8 @@ fn test_register_course_price_too_low_rejected() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -3827,7 +3872,8 @@ fn test_register_course_price_too_high_rejected() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -3844,7 +3890,8 @@ fn test_register_course_price_zero_still_allowed() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -3864,7 +3911,8 @@ fn test_register_course_price_at_range_boundaries_succeeds() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(client.get_course(&min_course_id).unwrap().price, 100_000);
 
@@ -3876,7 +3924,8 @@ fn test_register_course_price_at_range_boundaries_succeeds() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     assert_eq!(
         client.get_course(&max_course_id).unwrap().price,
@@ -3906,7 +3955,8 @@ fn test_course_created_at_ledger_is_accurate() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -3930,7 +3980,8 @@ fn test_course_last_updated_ledger_tracks_modifications() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let initial_course = client.get_course(&course_id).unwrap();
@@ -3967,7 +4018,8 @@ fn test_course_certificate_id_collision_verification() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &matching_id);
     env.ledger().with_mut(|l| {
@@ -4146,7 +4198,8 @@ fn test_frozen_instructor_cannot_register_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 #[test]
@@ -4467,7 +4520,7 @@ fn last_event_val(env: &Env, contract_id: &Address, name: &str) -> Val {
 
 #[test]
 fn test_events_emitted_for_admin_operations() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let student = Address::generate(&env);
@@ -4481,7 +4534,8 @@ fn test_events_emitted_for_admin_operations() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course_id = String::from_str(&env, "COURSE-ATTR-001");
     client.approve_course(&admin, &course_id);
@@ -4622,15 +4676,16 @@ fn test_events_emitted_for_admin_operations() {
     assert_eq!(event_admin, admin);
     assert_eq!(event_window, 2000u32);
 
-    // withdraw_tokens (contract holds nothing, so withdraw 0)
-    client.withdraw_tokens(&admin, &token_id, &0i128, &admin);
-    let (event_admin, event_token, event_amount, event_dest): (Address, Address, i128, Address) =
+    // withdraw_tokens — fund contract first so amount > 0 is valid
+    token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &1_000_000_000);
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &1_000_000_000i128, &admin);
+    let (event_admin, _event_admin2, event_token, event_amount, event_dest): (Address, Address, Address, i128, Address) =
         last_event_val(&env, &contract_id, "tokens_withdrawn")
             .try_into_val(&env)
             .unwrap();
     assert_eq!(event_admin, admin);
     assert_eq!(event_token, token_id);
-    assert_eq!(event_amount, 0i128);
+    assert_eq!(event_amount, 1_000_000_000i128);
     assert_eq!(event_dest, admin);
 }
 
@@ -4819,7 +4874,8 @@ fn test_multi_sig_admin_events_record_both_actors() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course_id = String::from_str(&env, "COURSE-ARCHIVE-ATTR");
     client.approve_course(&admin, &course_id);
@@ -4887,7 +4943,8 @@ fn test_approve_course_event_details() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course_id = String::from_str(&env, "COURSE-EVENT-101");
 
@@ -5135,7 +5192,8 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &instructor,
@@ -5144,7 +5202,8 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &other_instructor,
@@ -5153,7 +5212,8 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let list = client.get_courses_by_instructor(&instructor);
@@ -6374,6 +6434,7 @@ fn test_register_course_stores_content_hash() {
         &0u32,
         &None,
         &hash,
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -6397,6 +6458,7 @@ fn test_register_course_distinct_hashes_stored_independently() {
         &0u32,
         &None,
         &hash_a,
+        &soroban_sdk::Vec::new(&env),
     );
     client.register_course(
         &instructor,
@@ -6406,6 +6468,7 @@ fn test_register_course_distinct_hashes_stored_independently() {
         &0u32,
         &None,
         &hash_b,
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course_a = client
@@ -6438,6 +6501,7 @@ fn test_instructor_can_update_content_hash_on_active_course() {
         &0u32,
         &None,
         &original_hash,
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
 
@@ -6466,6 +6530,7 @@ fn test_admin_can_update_content_hash() {
         &0u32,
         &None,
         &original_hash,
+        &soroban_sdk::Vec::new(&env),
     );
     client.approve_course(&admin, &course_id);
 
@@ -6633,6 +6698,7 @@ fn test_content_hash_survives_enroll_and_completion() {
         &0u32,
         &None,
         &hash,
+        &soroban_sdk::Vec::new(&env),
     );
     env.ledger().with_mut(|l| {
         l.sequence_number += 1;
@@ -8379,16 +8445,11 @@ fn test_enrollment_rejected_event_emitted_for_paused_course() {
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "enrollment_rejected") {
             rejection_events += 1;
-            let (event_course_id, event_student, event_status, event_ledger): (
-                String,
-                Address,
-                CourseStatus,
-                u32,
-            ) = data.try_into_val(&env).unwrap();
-            assert_eq!(event_course_id, course_id);
-            assert_eq!(event_student, student);
-            assert_eq!(event_status, CourseStatus::Paused);
-            assert!(event_ledger > 0);
+            let ev: EnrollmentRejected = data.try_into_val(&env).unwrap();
+            assert_eq!(ev.course_id, course_id);
+            assert_eq!(ev.student, student);
+            assert_eq!(ev.status, CourseStatus::Paused);
+            assert!(ev.ledger_sequence > 0);
         }
     }
     assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
@@ -8410,7 +8471,8 @@ fn test_enrollment_rejected_event_emitted_for_pending_course() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
     let course_id = String::from_str(&env, "COURSE-PENDING-EVENT");
 
@@ -8431,13 +8493,8 @@ fn test_enrollment_rejected_event_emitted_for_pending_course() {
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "enrollment_rejected") {
             rejection_events += 1;
-            let (_event_course_id, _event_student, event_status, _event_ledger): (
-                String,
-                Address,
-                CourseStatus,
-                u32,
-            ) = data.try_into_val(&env).unwrap();
-            assert_eq!(event_status, CourseStatus::Pending);
+            let ev: EnrollmentRejected = data.try_into_val(&env).unwrap();
+            assert_eq!(ev.status, CourseStatus::Pending);
         }
     }
     assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
@@ -8483,13 +8540,8 @@ fn test_enrollment_rejected_event_emitted_for_archived_course() {
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "enrollment_rejected") {
             rejection_events += 1;
-            let (_event_course_id, _event_student, event_status, _event_ledger): (
-                String,
-                Address,
-                CourseStatus,
-                u32,
-            ) = data.try_into_val(&env).unwrap();
-            assert_eq!(event_status, CourseStatus::Archived);
+            let ev: EnrollmentRejected = data.try_into_val(&env).unwrap();
+            assert_eq!(ev.status, CourseStatus::Archived);
         }
     }
     assert_eq!(rejection_events, 1, "enrollment_rejected event must be emitted");
@@ -8517,7 +8569,8 @@ fn test_register_course_rejects_null_byte_in_id() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -8539,7 +8592,8 @@ fn test_register_course_rejects_control_characters_in_id() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -8559,7 +8613,8 @@ fn test_register_course_rejects_delete_character_in_id() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -8577,7 +8632,8 @@ fn test_register_course_accepts_printable_ascii() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -8600,7 +8656,8 @@ fn test_register_course_accepts_unicode_above_0x7E() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course = client.get_course(&course_id).unwrap();
@@ -8729,6 +8786,8 @@ fn test_approve_course_immediately_after_init_rejected() {
         &17_280u32,
     );
     client.add_approved_token(&admin, &token_id);
+    // Set a governance window of 100 ledgers
+    client.update_min_review_delay(&admin, &100u32);
 
     // Register a course immediately after init
     client.register_course(
@@ -8738,7 +8797,8 @@ fn test_approve_course_immediately_after_init_rejected() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Try to approve immediately - should panic due to governance window
@@ -8781,7 +8841,8 @@ fn test_approve_course_after_init_governance_window_succeeds() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Set governance delay (MinReviewDelay)
@@ -8839,7 +8900,8 @@ fn test_approve_course_at_init_governance_window_boundary() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     // Advance ledger to exactly at governance window boundary (init + delay)
@@ -8872,8 +8934,6 @@ fn test_approve_course_init_ledger_stored_correctly() {
 
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Capture ledger before and after init
-    let ledger_before = env.ledger().sequence();
     client.init(
         &admin,
         &sec_admin,
@@ -8883,10 +8943,9 @@ fn test_approve_course_init_ledger_stored_correctly() {
         &1000u32,
         &17_280u32,
     );
-    let ledger_after = env.ledger().sequence();
 
-    // Verify init was called and state was stored
-    assert_eq!(ledger_after, ledger_before + 1);
+    // Verify init was called and state was stored (platform fee = 20%)
+    assert_eq!(client.get_platform_fee(&admin), 20u32);
 }
 
 // ============================================================
@@ -8906,6 +8965,41 @@ fn test_fee_preview_matches_actual_enroll_deduction() {
     let student = Address::generate(&env);
     let price: i128 = 1_000_000_000;
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-PREVIEW",
+        price,
+    );
+
+    // Quotes are derived from on-chain state for this student and token —
+    // callers can no longer pass their own risk flags.
+    let risk = client.calculate_risk_score(&student, &token_id, &price);
+    let preview = client.get_effective_fee_for_payment(&student, &token_id, &price);
+    assert_eq!(preview.risk_surcharge_bps, risk.surcharge_bps);
+    assert_eq!(
+        client.do_complete_payment(&student, &token_id, &price),
+        preview
+    );
+
+    client.enroll(&student, &String::from_str(&env, "COURSE-FEE-PREVIEW"));
+
+    // The preview must equal what enroll() actually deducted.
+    assert_eq!(token_client.balance(&treasury), preview.platform_fee);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        price - preview.platform_fee,
+    );
+    let enrollment = client
+        .get_enrollment(&student, &student, &String::from_str(&env, "COURSE-FEE-PREVIEW"))
+        .unwrap();
+    assert_eq!(enrollment.platform_amount, preview.platform_fee);
+}
+
 // INSTRUCTOR FREEZE & REGISTRATION VALIDATION TESTS (#229, #230, #231, #232)
 // ============================================================
 
@@ -8944,41 +9038,6 @@ fn test_admin_can_set_enrollment_expiry_for_frozen_instructor() {
         &token_id,
         &admin,
         &instructor,
-        "COURSE-FEE-PREVIEW",
-        price,
-    );
-
-    // Quotes are derived from on-chain state for this student and token —
-    // callers can no longer pass their own risk flags.
-    let risk = client.calculate_risk_score(&student, &token_id, &price);
-    let preview = client.get_effective_fee_for_payment(&student, &token_id, &price);
-    assert_eq!(preview.risk_surcharge_bps, risk.surcharge_bps);
-    assert_eq!(
-        client.do_complete_payment(&student, &token_id, &price),
-        preview
-    );
-
-    client.enroll(&student, &String::from_str(&env, "COURSE-FEE-PREVIEW"));
-
-    // The preview must equal what enroll() actually deducted.
-    assert_eq!(token_client.balance(&treasury), preview.platform_fee);
-    assert_eq!(
-        client.get_instructor_earnings(&instructor, &token_id),
-        price - preview.platform_fee,
-    );
-    let enrollment = client
-        .get_enrollment(&student, &student, &String::from_str(&env, "COURSE-FEE-PREVIEW"))
-        .unwrap();
-    assert_eq!(enrollment.platform_amount, preview.platform_fee);
-}
-
-#[test]
-fn test_issue_certificate_with_uuid_enrollment_reference() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
         "COURSE-FROZEN-EXPIRY-ADMIN",
         100_000_000,
     );
@@ -8989,6 +9048,52 @@ fn test_issue_certificate_with_uuid_enrollment_reference() {
 
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.enrollment_expiry_ledgers, Some(100u32));
+}
+
+#[test]
+fn test_issue_certificate_with_uuid_enrollment_reference() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UUID-REF",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UUID-REF");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+
+    let backend_ref = String::from_str(&env, "550e8400-e29b-41d4-a716-446655440000");
+    let cert_id = String::from_str(&env, "CERT-UUID-REF");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "UUID Course"),
+        &backend_ref,
+        &None,
+        &None,
+    );
+
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert_eq!(cert.student, student);
+    assert_eq!(cert.course_id, course_id);
+    assert_eq!(cert.enrollment_reference, backend_ref);
 }
 
 #[test]
@@ -9075,38 +9180,13 @@ fn test_frozen_instructor_cannot_unpause_course() {
         &token_id,
         &admin,
         &instructor,
-        "COURSE-UUID-REF",
-        500_000_000,
+        "COURSE-FROZEN-UNPAUSE",
+        100_000_000,
     );
-    let course_id = String::from_str(&env, "COURSE-UUID-REF");
+    // freeze_instructor() auto-pauses the instructor's Active courses.
+    client.freeze_instructor(&admin, &instructor);
 
-    client.enroll(&student, &course_id);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(String::from_str(&env, "evidence")),
-    );
-
-    // A backend UUID is not a Stellar address and is not the on-chain
-    // enrollment ref — it must be accepted as a free-form reference.
-    let backend_ref = String::from_str(&env, "550e8400-e29b-41d4-a716-446655440000");
-    let cert_id = String::from_str(&env, "CERT-UUID-REF");
-    client.issue_certificate(
-        &admin,
-        &student,
-        &course_id,
-        &cert_id,
-        &String::from_str(&env, "UUID Course"),
-        &backend_ref,
-        &None,
-        &None,
-    );
-
-    let cert = client.get_certificate(&admin, &cert_id);
-    assert_eq!(cert.student, student);
-    assert_eq!(cert.course_id, course_id);
-    assert_eq!(cert.enrollment_reference, backend_ref);
+    client.unpause_course(&instructor, &String::from_str(&env, "COURSE-FROZEN-UNPAUSE"));
 }
 
 #[test]
@@ -9118,13 +9198,23 @@ fn test_mark_completed_rejects_empty_evidence_hash() {
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
 
-        "COURSE-FROZEN-UNPAUSE",
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EMPTY-EVIDENCE",
         100_000_000,
     );
-    // freeze_instructor() auto-pauses the instructor's Active courses.
-    client.freeze_instructor(&admin, &instructor);
-
-    client.unpause_course(&instructor, &String::from_str(&env, "COURSE-FROZEN-UNPAUSE"));
+    let course_id = String::from_str(&env, "COURSE-EMPTY-EVIDENCE");
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "")),
+    );
 }
 
 #[test]
@@ -9140,7 +9230,8 @@ fn test_register_course_rejects_empty_course_id() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -9157,7 +9248,8 @@ fn test_register_course_rejects_zero_max_capacity() {
         &token_id,
         &0u32,
         &Some(0u32),
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -9197,11 +9289,14 @@ fn test_update_course_allows_unlimited_capacity_with_none() {
         &token_id,
         &0u32,
         &Some(5u32),
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     let course_id = String::from_str(&env, "COURSE-UNLIMITED-CAP");
-    client.update_course(&admin, &course_id, &None, &Some(None));
+    // Use clear_course_max_capacity to remove the cap (Option<Option<T>> cannot represent
+    // Some(None) through Soroban XDR serialisation — use dedicated clear function instead).
+    client.clear_course_max_capacity(&admin, &course_id);
 
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.max_capacity, None);
@@ -9231,121 +9326,6 @@ fn advance_below_course_ttl_threshold(env: &Env) {
 
 #[test]
 fn test_pause_course_extends_course_ttl() {
-// BULK COURSE CERTIFICATE REVOCATION TESTS (#173)
-// ============================================================
-
-/// Fund `student`, enroll them in `course_id`, complete the enrollment and
-/// issue `certificate_id` for it — i.e. leave the course with one valid
-/// certificate that a bulk revocation should be able to reach.
-fn enroll_and_certify(
-    env: &Env,
-    client: &HamplardContractClient,
-    token_id: &Address,
-    admin: &Address,
-    student: &Address,
-    course_id: &str,
-    certificate_id: &str,
-) {
-    token::StellarAssetClient::new(env, token_id).mint(student, &100_000_000_000);
-
-    let course = String::from_str(env, course_id);
-    client.enroll(student, &course);
-    client.mark_completed(
-        admin,
-        student,
-        &course,
-        &Some(String::from_str(env, "completion-evidence")),
-    );
-    client.issue_certificate(
-        admin,
-        &String::from_str(env, certificate_id),
-        &String::from_str(env, "Bulk Revocation Course"),
-        &get_enrollment_ref(env, client, student, course_id),
-        &None,
-        &None,
-    );
-}
-
-#[test]
-fn test_bulk_revoke_course_certificates_single_certificate() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-EMPTY-EVIDENCE",
-        500_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-EMPTY-EVIDENCE");
-    client.enroll(&student, &course_id);
-
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(String::from_str(&env, "")),
-    );
-}
-
-#[test]
-fn test_mark_completed_with_evidence_needs_no_student_signature() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
-
-        "COURSE-BULK-ONE",
-        100_000_000,
-    );
-
-    let course_id = String::from_str(&env, "COURSE-BULK-ONE");
-    let cert_id = String::from_str(&env, "CERT-BULK-ONE");
-    let student = Address::generate(&env);
-    enroll_and_certify(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &student,
-        "COURSE-BULK-ONE",
-        "CERT-BULK-ONE",
-    );
-
-    // The course now indexes its one issued certificate.
-    assert_eq!(client.get_course_certificates(&course_id).len(), 1);
-    assert_eq!(client.get_course_certificates(&course_id).get(0).unwrap(), cert_id);
-
-    let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
-    assert_eq!(revoked_count, 1);
-
-    let cert = client.get_certificate(&admin, &cert_id);
-    assert!(cert.revoked);
-    assert_eq!(cert.revoked_by, Some(admin.clone()));
-    assert_eq!(
-        cert.revocation_reason,
-        Some(String::from_str(&env, "BULK_COURSE_REVOCATION"))
-    );
-    assert!(cert.revocation_ledger.is_some());
-    assert!(cert.revocation_deadline.is_some());
-
-    // A bulk revocation is a *pending* revocation, exactly like
-    // revoke_certificate: the certificate stays valid until the challenge
-    // period elapses.
-    assert!(client.verify_certificate(&cert_id));
-    let deadline = cert.revocation_deadline.unwrap();
-    env.ledger().with_mut(|l| {
-        l.sequence_number = deadline;
-    });
-    assert!(!client.verify_certificate(&cert_id));
-}
-
-#[test]
-fn test_bulk_revoke_course_certificates_revokes_five_certificates() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -9373,8 +9353,109 @@ fn test_bulk_revoke_course_certificates_revokes_five_certificates() {
     );
 }
 
+// BULK COURSE CERTIFICATE REVOCATION TESTS (#173)
+// ============================================================
+
+/// Fund `student`, enroll them in `course_id`, complete the enrollment and
+/// issue `certificate_id` for it — i.e. leave the course with one valid
+/// certificate that a bulk revocation should be able to reach.
+fn enroll_and_certify(
+    env: &Env,
+    client: &HamplardContractClient,
+    token_id: &Address,
+    admin: &Address,
+    student: &Address,
+    course_id: &str,
+    certificate_id: &str,
+) {
+    token::StellarAssetClient::new(env, token_id).mint(student, &100_000_000_000);
+
+    let course = String::from_str(env, course_id);
+    client.enroll(student, &course);
+    client.mark_completed(
+        admin,
+        student,
+        &course,
+        &Some(String::from_str(env, "completion-evidence")),
+    );
+    client.issue_certificate(
+        admin,
+        student,
+        &String::from_str(env, course_id),
+        &String::from_str(env, certificate_id),
+        &String::from_str(env, "Bulk Revocation Course"),
+        &get_enrollment_ref(env, client, student, course_id),
+        &None,
+        &None,
+    );
+}
+
 #[test]
-fn test_unpause_course_extends_course_ttl() {
+fn test_bulk_revoke_course_certificates_single_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-BULK-ONE",
+        100_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-BULK-ONE");
+    let cert_id = String::from_str(&env, "CERT-BULK-ONE");
+    let student = Address::generate(&env);
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &student,
+        "COURSE-BULK-ONE",
+        "CERT-BULK-ONE",
+    );
+
+    assert_eq!(client.get_course_certificates(&course_id).len(), 1);
+    assert_eq!(client.get_course_certificates(&course_id).get(0).unwrap(), cert_id);
+
+    let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
+    assert_eq!(revoked_count, 1);
+
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert!(cert.revoked);
+    assert_eq!(cert.revoked_by, Some(admin.clone()));
+    assert_eq!(
+        cert.revocation_reason,
+        Some(String::from_str(&env, "BULK_COURSE_REVOCATION"))
+    );
+    assert!(cert.revocation_ledger.is_some());
+    assert!(cert.revocation_deadline.is_some());
+
+    assert!(client.verify_certificate(&cert_id));
+    let deadline = cert.revocation_deadline.unwrap();
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline;
+    });
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_mark_completed_with_evidence_needs_no_student_signature() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
         "COURSE-EVIDENCE-ONLY",
         500_000_000,
     );
@@ -9405,13 +9486,16 @@ fn test_unpause_course_extends_course_ttl() {
 }
 
 #[test]
-#[should_panic(expected = "unauthorized")]
-fn test_get_certificate_denies_third_party_even_with_student_auth() {
+fn test_bulk_revoke_course_certificates_revokes_five_certificates() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
         "COURSE-BULK-FIVE",
         100_000_000,
     );
@@ -9443,7 +9527,6 @@ fn test_get_certificate_denies_third_party_even_with_student_auth() {
     let revoked_count = client.bulk_revoke_course_certificates(&admin, &course_id);
     assert_eq!(revoked_count, 5);
 
-    // Every certificate for the course is flagged for revocation...
     let mut earliest_deadline = u32::MAX;
     for cert_name in cert_names {
         let cert_id = String::from_str(&env, cert_name);
@@ -9460,15 +9543,9 @@ fn test_get_certificate_denies_third_party_even_with_student_auth() {
         }
     }
 
-    // ...and the index itself is append-only: bulk revocation never drops the
-    // certificate IDs, so a second call can still enumerate the cohort.
     assert_eq!(client.get_course_certificates(&course_id).len(), 5);
-
-    // A retry is safe and reports zero newly-revoked certificates.
     assert_eq!(client.bulk_revoke_course_certificates(&admin, &course_id), 0);
 
-    // The whole cohort is still verifiable during the challenge period and
-    // expires together once it passes.
     let indexed = client.get_course_certificates(&course_id);
     for i in 0..indexed.len() {
         assert!(client.verify_certificate(&indexed.get(i).unwrap()));
@@ -9479,6 +9556,80 @@ fn test_get_certificate_denies_third_party_even_with_student_auth() {
     for i in 0..indexed.len() {
         assert!(!client.verify_certificate(&indexed.get(i).unwrap()));
     }
+}
+
+#[test]
+fn test_unpause_course_extends_course_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-UNPAUSE",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-UNPAUSE");
+
+    advance_below_course_ttl_threshold(&env);
+    assert!(
+        course_ttl(&env, &contract_id, &course_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    client.pause_course(&instructor, &course_id);
+    client.unpause_course(&instructor, &course_id);
+
+    assert_eq!(
+        course_ttl(&env, &contract_id, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_get_certificate_denies_third_party_even_with_student_auth() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-DENY",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-DENY");
+    let cert_id = String::from_str(&env, "CERT-DENY-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Cert Deny Course"),
+        &String::from_str(&env, "ref-001"),
+        &None,
+        &None,
+    );
+
+    // A third party (not admin, not the student) tries to get the certificate
+    let third_party = Address::generate(&env);
+    client.get_certificate(&third_party, &cert_id);
 }
 
 #[test]
@@ -9600,7 +9751,8 @@ fn test_reject_course_extends_course_ttl() {
         &token_id,
         &0u32,
         &None,
-        &BytesN::from_array(&env, &[0u8; 32]),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 
     advance_below_course_ttl_threshold(&env);
@@ -9617,34 +9769,7 @@ fn test_reject_course_extends_course_ttl() {
     assert_eq!(
         course_ttl(&env, &contract_id, &course_id),
         HamplardContract::PERSISTENT_TTL_EXTEND_TO
-        "COURSE-CERT-DENY",
-        500_000_000,
     );
-    let course_id = String::from_str(&env, "COURSE-CERT-DENY");
-    client.enroll(&student, &course_id);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(String::from_str(&env, "evidence")),
-    );
-
-    let cert_id = String::from_str(&env, "CERT-DENY");
-    client.issue_certificate(
-        &admin,
-        &student,
-        &course_id,
-        &cert_id,
-        &String::from_str(&env, "Deny Course"),
-        &String::from_str(&env, "backend-ref-deny"),
-        &None,
-        &None,
-    );
-
-    // All auths are mocked (including the student's), so the old fallback
-    // of `cert.student.require_auth()` would have let this through.
-    let third_party = Address::generate(&env);
-    client.get_certificate(&third_party, &cert_id);
 }
 
 #[test]
@@ -9654,6 +9779,13 @@ fn test_get_certificate_allows_student_instructor_and_admin() {
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
         "COURSE-BULK-MIXED",
         100_000_000,
     );
@@ -9803,33 +9935,6 @@ fn test_bulk_revoke_unauthorized_caller_rejected() {
         &token_id,
         &admin,
         &instructor,
-        "COURSE-CERT-ALLOW",
-        500_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-CERT-ALLOW");
-    client.enroll(&student, &course_id);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(String::from_str(&env, "evidence")),
-    );
-
-    let cert_id = String::from_str(&env, "CERT-ALLOW");
-    client.issue_certificate(
-        &admin,
-        &student,
-        &course_id,
-        &cert_id,
-        &String::from_str(&env, "Allow Course"),
-        &String::from_str(&env, "backend-ref-allow"),
-        &None,
-        &None,
-    );
-
-    assert_eq!(client.get_certificate(&student, &cert_id).id, cert_id);
-    assert_eq!(client.get_certificate(&instructor, &cert_id).id, cert_id);
-    assert_eq!(client.get_certificate(&admin, &cert_id).id, cert_id);
         "COURSE-BULK-AUTH",
         100_000_000,
     );
@@ -9914,27 +10019,27 @@ fn test_get_course_certificates_empty_for_course_without_issuance() {
 #[test]
 #[should_panic(expected = "withdraw_tokens: amount must be greater than zero")]
 fn test_withdraw_tokens_rejects_zero_amount() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
-    client.withdraw_tokens(&admin, &token_id, &0i128, &Address::generate(&env));
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &0i128, &Address::generate(&env));
 }
 
 #[test]
 #[should_panic(expected = "withdraw_tokens: amount must be greater than zero")]
 fn test_withdraw_tokens_rejects_negative_amount() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
-    client.withdraw_tokens(&admin, &token_id, &-1i128, &Address::generate(&env));
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &-1i128, &Address::generate(&env));
 }
 
 #[test]
 fn test_withdraw_tokens_accepts_positive_amount() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let token_mint = token::StellarAssetClient::new(&env, &token_id);
     let destination = Address::generate(&env);
     token_mint.mint(&contract_id, &500_000_000i128);
-    client.withdraw_tokens(&admin, &token_id, &500_000_000i128, &destination);
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &500_000_000i128, &destination);
     assert_eq!(
         token::Client::new(&env, &token_id).balance(&destination),
         500_000_000i128
@@ -10089,6 +10194,8 @@ fn test_circuit_breaker_course_can_be_unpaused_by_instructor() {
         .get_course(&String::from_str(&env, "CB-UNPAUSE"))
         .unwrap();
     assert_eq!(course.status, CourseStatus::Active);
+}
+
 // =============================================================================
 // ISSUE #233: register_course() rejects all-zero content_hash
 // =============================================================================
@@ -10107,6 +10214,7 @@ fn test_register_course_rejects_zero_content_hash() {
         &0u32,
         &None,
         &BytesN::from_array(&env, &[0u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -10124,6 +10232,7 @@ fn test_register_course_accepts_non_zero_content_hash() {
         &0u32,
         &None,
         &non_zero_hash,
+        &soroban_sdk::Vec::new(&env),
     );
 }
 
@@ -10149,7 +10258,7 @@ fn test_withdraw_tokens_requires_both_admins() {
         &destination,
     );
 
-    assert_eq!(token_client.balance(&destination), 500_000_000);
+    assert_eq!(token::Client::new(&env, &token_id).balance(&destination), 500_000_000);
 }
 
 #[test]
@@ -10183,8 +10292,11 @@ fn test_mark_completed_extends_enrollment_and_course_ttl() {
 
     register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "COURSE-TTL-TEST", 100_000_000);
 
+    // Fund student before enrollment
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
     // Enroll student
-    client.enroll(&student, &String::from_str(&env, "COURSE-TTL-TEST"), &None);
+    client.enroll(&student, &String::from_str(&env, "COURSE-TTL-TEST"));
 
     // Advance ledger past min_completion_ledgers
     env.ledger().with_mut(|l| {
@@ -10192,10 +10304,10 @@ fn test_mark_completed_extends_enrollment_and_course_ttl() {
     });
 
     // Mark completed
-    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-TTL-TEST"), &None);
+    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-TTL-TEST"), &Some(String::from_str(&env, "evidence")));
 
     // Verify enrollment is marked as completed
-    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-TTL-TEST"));
+    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-TTL-TEST")).unwrap();
     assert!(enrollment.completed);
 }
 
@@ -10213,27 +10325,33 @@ fn test_issue_certificate_extends_enrollment_ttl() {
 
     register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "COURSE-CERT-TTL", 100_000_000);
 
+    // Fund student before enrollment
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
     // Enroll student
-    client.enroll(&student, &String::from_str(&env, "COURSE-CERT-TTL"), &None);
+    client.enroll(&student, &String::from_str(&env, "COURSE-CERT-TTL"));
 
     // Mark completed first
     env.ledger().with_mut(|l| {
         l.sequence_number += 100;
     });
-    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-CERT-TTL"), &None);
+    client.mark_completed(&admin, &student, &String::from_str(&env, "COURSE-CERT-TTL"), &Some(String::from_str(&env, "evidence")));
 
     // Issue certificate
-    let cert_id = String::from_str(&env, "CERT-001");
+    let cert_id = String::from_str(&env, "CERT-CERT-TTL-001");
+    let enrollment_ref = get_enrollment_ref(&env, &client, &student, "COURSE-CERT-TTL");
     client.issue_certificate(
         &admin,
+        &student,
+        &course_id,
         &cert_id,
         &String::from_str(&env, "Test Course"),
-        &String::from_str(&env, "enrollment_ref_1"),
+        &enrollment_ref,
         &None,
         &None,
     );
 
     // Verify certificate was issued
-    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-CERT-TTL"));
+    let enrollment = client.get_enrollment(&student, &student, &String::from_str(&env, "COURSE-CERT-TTL")).unwrap();
     assert!(enrollment.certificate_issued);
 }

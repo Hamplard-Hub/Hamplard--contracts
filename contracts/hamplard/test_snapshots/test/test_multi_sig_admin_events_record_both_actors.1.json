@@ -239,7 +239,10 @@
                 },
                 "void",
                 {
-                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -469,6 +472,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "certificates_issued"
                       },
                       "val": {
@@ -480,7 +491,7 @@
                         "symbol": "content_hash"
                       },
                       "val": {
-                        "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                        "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                       }
                     },
                     {
@@ -882,6 +893,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "InitLedger"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "InstructorCourseCount"
                             },
                             {
@@ -901,6 +924,18 @@
                             },
                             {
                               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "LastAdminTransferLedger"
                             }
                           ]
                         },
