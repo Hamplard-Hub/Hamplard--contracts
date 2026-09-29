@@ -104,7 +104,7 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, token, Address, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 // ============================================================
@@ -580,7 +580,7 @@ impl HamplardContract {
     /// (~17,280 ledgers ≈ 1 day at 5s/ledger).
     const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
     /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
-    const MAX_BATCH_SIZE: u32 = 50;
+    pub(crate) const MAX_BATCH_SIZE: u32 = 50;
     /// Maximum number of course IDs returned by a single `list_courses()` call.
     /// Larger catalogs must be walked with successive `offset` values so one
     /// invocation cannot exceed the transaction CPU/instruction budget.
@@ -1970,13 +1970,15 @@ impl HamplardContract {
             );
         }
 
-        // Reject duplicate course IDs within the batch
+        // Reject duplicate course IDs in linear time via a host map so a
+        // MAX_BATCH_SIZE input cannot burn quadratic CPU budget.
+        let mut seen: Map<String, bool> = Map::new(&env);
         for i in 0..course_ids.len() {
-            for j in (i + 1)..course_ids.len() {
-                if course_ids.get(i).unwrap() == course_ids.get(j).unwrap() {
-                    panic!("duplicate course in batch");
-                }
+            let id = course_ids.get(i).unwrap();
+            if seen.contains_key(id.clone()) {
+                panic!("duplicate course in batch");
             }
+            seen.set(id, true);
         }
 
         // Validate every course before any mutation
