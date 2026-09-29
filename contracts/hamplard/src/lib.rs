@@ -130,6 +130,49 @@ pub struct ArbitrationFeeConfig {
     pub fee_per_case: i128,
 }
 
+/// Composite storage key for an arbitration case (caller + course_id).
+/// Used as a direct storage key to avoid exceeding DataKey's 50-variant XDR limit.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ArbitrationCaseKey {
+    pub caller: Address,
+    pub course_id: String,
+}
+
+/// The outcome / lifecycle status of an arbitration case.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeStatus {
+    /// Awaiting admin resolution.
+    Open,
+    /// Admin ruled in favour of the student (fee refunded to caller).
+    ResolvedForStudent,
+    /// Admin ruled in favour of the instructor (fee paid to instructor).
+    ResolvedForInstructor,
+}
+
+/// A persistent record of an arbitration case created by `escalate_to_arbitration`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ArbitrationCase {
+    /// Unique case identifier (student address + course_id).
+    pub case_id: String,
+    /// The student / caller who escalated the dispute.
+    pub caller: Address,
+    /// The course this dispute concerns.
+    pub course_id: String,
+    /// Instructor of the course at the time the case was opened.
+    pub instructor: Address,
+    /// Token used for the course (arbitration fee was collected in this token).
+    pub token: Address,
+    /// Arbitration fee collected at escalation time.
+    pub fee_paid: i128,
+    /// Ledger sequence when the case was opened.
+    pub opened_at_ledger: u32,
+    /// Current status of the case.
+    pub status: DisputeStatus,
+}
+
 /// Configuration for risk-based fee surcharges.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -1495,6 +1538,24 @@ impl HamplardContract {
                                 &instructor_amount,
                             );
                         }
+
+                        // Archive the refunded enrollment before removing the active record.
+                        let mut archived_enrollment: Enrollment = enrollment.clone();
+                        archived_enrollment.is_refunded = true;
+                        let history_key =
+                            DataKey::EnrollmentHistory(student.clone(), course_id.clone());
+                        let mut history: Vec<Enrollment> = env
+                            .storage()
+                            .persistent()
+                            .get(&history_key)
+                            .unwrap_or_else(|| Vec::new(&env));
+                        history.push_back(archived_enrollment);
+                        env.storage().persistent().set(&history_key, &history);
+                        env.storage().persistent().extend_ttl(
+                            &history_key,
+                            Self::PERSISTENT_TTL_THRESHOLD,
+                            Self::PERSISTENT_TTL_EXTEND_TO,
+                        );
 
                         env.storage().persistent().remove(&enrollment_key);
 
@@ -4363,9 +4424,22 @@ impl HamplardContract {
                 );
             }
 
-            // Mark enrollment as refunded and remove the active record so
-            // `is_enrolled` reflects that the student is no longer enrolled.
+            // Archive the refunded enrollment to EnrollmentHistory before
+            // removing the active record, so the refund is auditable on-chain.
             enrollment.is_refunded = true;
+            let history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
+            let mut history: Vec<Enrollment> = env
+                .storage()
+                .persistent()
+                .get(&history_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            history.push_back(enrollment.clone());
+            env.storage().persistent().set(&history_key, &history);
+            env.storage().persistent().extend_ttl(
+                &history_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
             env.storage().persistent().remove(&enrollment_key);
 
             // Decrement active enrollments
@@ -5545,6 +5619,16 @@ impl HamplardContract {
         let course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
 
+        // Reject duplicate open cases for the same (caller, course_id) pair.
+        let case_key = ArbitrationCaseKey { caller: caller.clone(), course_id: course_id.clone() };
+        if env.storage().persistent().has(&case_key) {
+            let existing: ArbitrationCase =
+                env.storage().persistent().get(&case_key).unwrap();
+            if existing.status == DisputeStatus::Open {
+                panic!("arbitration case already open for this dispute");
+            }
+        }
+
         let token_client = token::Client::new(&env, &course.token);
         token_client.transfer(
             &caller,
@@ -5552,9 +5636,106 @@ impl HamplardContract {
             &config.fee_per_case,
         );
 
+        // Derive a case ID from the course_id (unique per caller+course_id pair).
+        let case_id = course_id.clone();
+
+        let record = ArbitrationCase {
+            case_id: case_id.clone(),
+            caller: caller.clone(),
+            course_id: course_id.clone(),
+            instructor: course.instructor.clone(),
+            token: course.token.clone(),
+            fee_paid: config.fee_per_case,
+            opened_at_ledger: env.ledger().sequence(),
+            status: DisputeStatus::Open,
+        };
+
+        env.storage().persistent().set(&case_key, &record);
+        env.storage().persistent().extend_ttl(
+            &case_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.events().publish(
             (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
             (caller, course_id, config.fee_per_case),
+        );
+    }
+
+    /// Retrieve a persistent arbitration case record.
+    ///
+    /// Returns `None` if no case has been opened for this (caller, course_id) pair.
+    pub fn get_arbitration_case(
+        env: Env,
+        caller: Address,
+        course_id: String,
+    ) -> Option<ArbitrationCase> {
+        env.storage()
+            .persistent()
+            .get(&ArbitrationCaseKey { caller, course_id })
+    }
+
+    /// Admin function to resolve an open arbitration case and disburse the fee.
+    ///
+    /// - `for_student = true`  — refund the fee to the original caller (student won).
+    /// - `for_student = false` — transfer the fee to the course instructor (instructor won).
+    ///
+    /// Panics if the case does not exist or is not `Open`.
+    pub fn resolve_arbitration(
+        env: Env,
+        admin: Address,
+        caller: Address,
+        course_id: String,
+        for_student: bool,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "resolve_arbitration");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let case_key = ArbitrationCaseKey { caller: caller.clone(), course_id: course_id.clone() };
+        let mut case: ArbitrationCase = env
+            .storage()
+            .persistent()
+            .get(&case_key)
+            .unwrap_or_else(|| panic!("arbitration case not found"));
+
+        if case.status != DisputeStatus::Open {
+            panic!("arbitration case is not open");
+        }
+
+        let token_client = token::Client::new(&env, &case.token);
+
+        if for_student {
+            // Refund the fee to the student who escalated.
+            token_client.transfer(
+                &env.current_contract_address(),
+                &case.caller,
+                &case.fee_paid,
+            );
+            case.status = DisputeStatus::ResolvedForStudent;
+        } else {
+            // Pay the fee to the instructor.
+            token_client.transfer(
+                &env.current_contract_address(),
+                &case.instructor,
+                &case.fee_paid,
+            );
+            case.status = DisputeStatus::ResolvedForInstructor;
+        }
+
+        env.storage().persistent().set(&case_key, &case);
+        env.storage().persistent().extend_ttl(
+            &case_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "arbitration_resolved"), course_id.clone()),
+            (caller, course_id, for_student, admin),
         );
     }
 
