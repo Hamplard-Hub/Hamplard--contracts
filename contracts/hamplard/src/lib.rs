@@ -383,6 +383,12 @@ pub struct RefundRequest {
     pub course_id: String,
     pub requested_at_ledger: u32,
     pub status: RefundStatus,
+    /// Total amount refunded to the student (platform + instructor shares).
+    /// `None` until `process_refund()` resolves the request.
+    pub resolved_amount: Option<i128>,
+    /// Ledger sequence at which `process_refund()` finalized this request.
+    /// `None` until resolved.
+    pub resolved_at_ledger: Option<u32>,
 }
 
 /// Aggregate on-chain reputation stats for an instructor, accumulated
@@ -2906,6 +2912,11 @@ impl HamplardContract {
             env.storage().persistent().remove(&earnings_key);
         } else {
             env.storage().persistent().set(&earnings_key, &new_balance);
+            env.storage().persistent().extend_ttl(
+                &earnings_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
         }
 
         let token_client = token::Client::new(&env, &token);
@@ -3414,6 +3425,11 @@ impl HamplardContract {
         cert.revocation_deadline = Some(deadline);
 
         env.storage().persistent().set(&certificate_key, &cert);
+        env.storage().persistent().extend_ttl(
+            &certificate_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (
@@ -4278,6 +4294,8 @@ impl HamplardContract {
             course_id: course_id.clone(),
             requested_at_ledger: env.ledger().sequence(),
             status: RefundStatus::Pending,
+            resolved_amount: None,
+            resolved_at_ledger: None,
         };
 
         env.storage().persistent().set(&key, &request);
@@ -4377,6 +4395,11 @@ impl HamplardContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Course(course_id.clone()),
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
 
             // Decrement platform-wide active enrollment counter
             let total_active: u32 = env
@@ -4391,11 +4414,20 @@ impl HamplardContract {
             }
 
             request.status = RefundStatus::Approved;
+            request.resolved_amount = Some(platform_amount + instructor_amount);
+            request.resolved_at_ledger = Some(env.ledger().sequence());
         } else {
             request.status = RefundStatus::Rejected;
+            request.resolved_amount = Some(0);
+            request.resolved_at_ledger = Some(env.ledger().sequence());
         }
 
         env.storage().persistent().set(&key, &request);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (Symbol::new(&env, "refund_processed"), course_id.clone()),
