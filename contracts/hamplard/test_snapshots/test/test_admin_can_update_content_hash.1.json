@@ -327,14 +327,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "co_instructors"
-                      },
-                      "val": {
-                        "vec": []
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "content_hash"
                       },
                       "val": {
@@ -734,18 +726,6 @@
                         },
                         "val": {
                           "u32": 20
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "InitLedger"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 0
                         }
                       },
                       {

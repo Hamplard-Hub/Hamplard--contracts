@@ -270,18 +270,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "InitLedger"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 0
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "MaxCoursesPerInstructor"
                             }
                           ]
