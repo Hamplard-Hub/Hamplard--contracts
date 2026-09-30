@@ -263,3 +263,145 @@ fn test_process_refund_archives_enrollment_to_history() {
     assert_eq!(archived.student, student);
     assert_eq!(archived.course_id, course_id);
 }
+
+// =============================================================================
+// ISSUE #254: Archive refunded enrollment to EnrollmentHistory
+// =============================================================================
+
+#[test]
+fn test_process_refund_archives_to_enrollment_history() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    env.mock_all_auths_allowing_non_root_auth();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "REFUND-HIST", 100_000_000);
+
+    client.enroll(&student, &String::from_str(&env, "REFUND-HIST"));
+
+    // Request refund
+    client.request_refund(&student, &String::from_str(&env, "REFUND-HIST"));
+
+    // Process refund (approve)
+    client.process_refund(&admin, &student, &String::from_str(&env, "REFUND-HIST"), &true);
+
+    // Enrollment should be gone from active storage
+    let active = client.get_enrollment(&admin, &student, &String::from_str(&env, "REFUND-HIST"));
+    assert!(active.is_none());
+
+    // EnrollmentHistory should contain the refunded enrollment
+    let history = client.get_enrollment_history(&admin, &student, &String::from_str(&env, "REFUND-HIST"));
+    assert!(!history.is_empty());
+    let archived = history.get(0).unwrap();
+    assert!(archived.is_refunded);
+}
+
+// =============================================================================
+// ISSUE #255: Persist arbitration case in escalate_to_arbitration
+// =============================================================================
+
+#[test]
+fn test_escalate_to_arbitration_persists_case() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "ARB-COURSE", 100_000_000);
+    client.enroll(&student, &String::from_str(&env, "ARB-COURSE"));
+
+    // Configure arbitration fee
+    client.set_arbitration_fee_config(&admin, &5_000_000i128);
+
+    client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-COURSE"));
+
+    let case = client.get_arbitration_case(&student, &String::from_str(&env, "ARB-COURSE"));
+    assert!(case.is_some());
+    let case = case.unwrap();
+    assert_eq!(case.fee_paid, 5_000_000);
+    assert_eq!(case.status, ArbitrationStatus::Open);
+}
+
+// =============================================================================
+// ISSUE #256: resolve_arbitration — both outcomes
+// =============================================================================
+
+#[test]
+fn test_resolve_arbitration_refund_outcome() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    env.mock_all_auths_allowing_non_root_auth();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "ARB-REFUND", 100_000_000);
+    client.enroll(&student, &String::from_str(&env, "ARB-REFUND"));
+    client.set_arbitration_fee_config(&admin, &5_000_000i128);
+
+    let balance_before = token::Client::new(&env, &token_id).balance(&student);
+    client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-REFUND"));
+    let balance_after_escalate = token::Client::new(&env, &token_id).balance(&student);
+    assert_eq!(balance_before - balance_after_escalate, 5_000_000);
+
+    client.resolve_arbitration(&admin, &student, &String::from_str(&env, "ARB-REFUND"), &ArbitrationStatus::ResolvedRefund);
+
+    let case = client.get_arbitration_case(&student, &String::from_str(&env, "ARB-REFUND")).unwrap();
+    assert_eq!(case.status, ArbitrationStatus::ResolvedRefund);
+
+    // Fee should be returned to student
+    let balance_final = token::Client::new(&env, &token_id).balance(&student);
+    assert_eq!(balance_final, balance_before);
+}
+
+#[test]
+fn test_resolve_arbitration_payout_outcome() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    env.mock_all_auths_allowing_non_root_auth();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "ARB-PAYOUT", 100_000_000);
+    client.enroll(&student, &String::from_str(&env, "ARB-PAYOUT"));
+    client.set_arbitration_fee_config(&admin, &5_000_000i128);
+
+    let instructor_before = token::Client::new(&env, &token_id).balance(&instructor);
+    client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-PAYOUT"));
+
+    client.resolve_arbitration(&admin, &student, &String::from_str(&env, "ARB-PAYOUT"), &ArbitrationStatus::ResolvedPayout);
+
+    let case = client.get_arbitration_case(&student, &String::from_str(&env, "ARB-PAYOUT")).unwrap();
+    assert_eq!(case.status, ArbitrationStatus::ResolvedPayout);
+
+    // Fee should go to instructor
+    let instructor_after = token::Client::new(&env, &token_id).balance(&instructor);
+    assert_eq!(instructor_after - instructor_before, 5_000_000);
+}
+
+// =============================================================================
+// ISSUE #257: Prevent duplicate escalation
+// =============================================================================
+
+#[test]
+#[should_panic(expected = "escalate_to_arbitration: case already open for this dispute")]
+fn test_duplicate_escalation_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    env.mock_all_auths_allowing_non_root_auth();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
+    token_client.mint(&student, &100_000_000_000);
+
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "ARB-DUP", 100_000_000);
+    client.enroll(&student, &String::from_str(&env, "ARB-DUP"));
+    client.set_arbitration_fee_config(&admin, &5_000_000i128);
+
+    client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-DUP"));
+    // Second call should panic
+    client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-DUP"));
+}

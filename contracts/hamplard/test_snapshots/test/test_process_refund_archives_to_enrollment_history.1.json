@@ -146,12 +146,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 500000000
+                    "lo": 100000000
                   }
                 },
                 {
@@ -184,7 +184,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             }
@@ -206,7 +206,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             }
@@ -227,7 +227,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 500000000
+                        "lo": 100000000
                       }
                     }
                   ]
@@ -252,7 +252,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             }
@@ -277,7 +277,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 },
                 {
                   "bool": true
@@ -305,8 +305,58 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 100000000
+                    "lo": 20000000
                   }
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "get_enrollment",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "REFUND-HIST"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "get_enrollment_history",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "REFUND-HIST"
                 }
               ]
             }
@@ -397,7 +447,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             },
@@ -417,7 +467,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 },
@@ -485,7 +535,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-REFUND-ATTR"
+                        "string": "REFUND-HIST"
                       }
                     },
                     {
@@ -547,7 +597,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -578,7 +628,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -617,7 +667,7 @@
                   "symbol": "CourseFailureCount"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             },
@@ -637,7 +687,7 @@
                       "symbol": "CourseFailureCount"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 },
@@ -662,7 +712,7 @@
                   "symbol": "CourseInstructorRef"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             },
@@ -682,7 +732,7 @@
                       "symbol": "CourseInstructorRef"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 },
@@ -729,7 +779,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 }
@@ -781,7 +831,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 }
@@ -805,7 +855,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             },
@@ -828,7 +878,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 },
@@ -844,7 +894,7 @@
                           "val": {
                             "i128": {
                               "hi": 0,
-                              "lo": 500000000
+                              "lo": 100000000
                             }
                           }
                         },
@@ -875,7 +925,7 @@
                             "symbol": "course_id"
                           },
                           "val": {
-                            "string": "COURSE-REFUND-ATTR"
+                            "string": "REFUND-HIST"
                           }
                         },
                         {
@@ -915,7 +965,7 @@
                           "val": {
                             "i128": {
                               "hi": 0,
-                              "lo": 400000000
+                              "lo": 80000000
                             }
                           }
                         },
@@ -934,7 +984,7 @@
                           "val": {
                             "i128": {
                               "hi": 0,
-                              "lo": 100000000
+                              "lo": 20000000
                             }
                           }
                         },
@@ -995,7 +1045,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 }
@@ -1132,7 +1182,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-REFUND-ATTR"
+                  "string": "REFUND-HIST"
                 }
               ]
             },
@@ -1155,7 +1205,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-REFUND-ATTR"
+                      "string": "REFUND-HIST"
                     }
                   ]
                 },
@@ -1167,7 +1217,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-REFUND-ATTR"
+                        "string": "REFUND-HIST"
                       }
                     },
                     {
@@ -1583,6 +1633,72 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 1194852393571756375
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6312000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 1301173170172112462
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 1301173170172112462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6312000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 3126073502131104533
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 3126073502131104533
                   }
                 },
                 "durability": "temporary",
@@ -2219,106 +2335,5 @@
       ]
     ]
   },
-  "events": [
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "692c360a04a982db02db346a106cbf008ad9e058c384bdaaf77bc0c48799b3a4",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "transfer"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-              },
-              {
-                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGO6V"
-              }
-            ],
-            "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 100000000
-              }
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "692c360a04a982db02db346a106cbf008ad9e058c384bdaaf77bc0c48799b3a4",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "transfer"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-              },
-              {
-                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGO6V"
-              }
-            ],
-            "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 400000000
-              }
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "refund_processed"
-              },
-              {
-                "string": "COURSE-REFUND-ATTR"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                },
-                {
-                  "string": "COURSE-REFUND-ATTR"
-                },
-                {
-                  "bool": true
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    }
-  ]
+  "events": []
 }
