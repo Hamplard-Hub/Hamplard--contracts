@@ -146,12 +146,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 200000000
+                    "lo": 500000000
                   }
                 },
                 {
@@ -184,7 +184,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             }
@@ -206,7 +206,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             }
@@ -227,7 +227,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 200000000
+                        "lo": 500000000
                       }
                     }
                   ]
@@ -239,20 +239,29 @@
         }
       ]
     ],
+    [],
+    [],
+    [],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "request_refund",
+              "function_name": "withdraw_earnings",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 200000000
+                  }
                 }
               ]
             }
@@ -265,7 +274,7 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 501,
+    "sequence_number": 400001,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -344,7 +353,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             },
@@ -364,7 +373,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 },
@@ -432,7 +441,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-WINDOW-IN"
+                        "string": "COURSE-TTL-EARN"
                       }
                     },
                     {
@@ -494,7 +503,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 200000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -525,7 +534,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 200000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -564,7 +573,7 @@
                   "symbol": "CourseFailureCount"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             },
@@ -584,7 +593,7 @@
                       "symbol": "CourseFailureCount"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 },
@@ -609,7 +618,7 @@
                   "symbol": "CourseInstructorRef"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             },
@@ -629,7 +638,7 @@
                       "symbol": "CourseInstructorRef"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 },
@@ -676,7 +685,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 }
@@ -700,7 +709,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-TTL-EARN"
                 }
               ]
             },
@@ -723,7 +732,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 },
@@ -737,7 +746,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 200000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -768,7 +777,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-WINDOW-IN"
+                        "string": "COURSE-TTL-EARN"
                       }
                     },
                     {
@@ -808,7 +817,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 160000000
+                          "lo": 400000000
                         }
                       }
                     },
@@ -827,7 +836,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 40000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -889,7 +898,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 }
@@ -938,7 +947,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-TTL-EARN"
                     }
                   ]
                 }
@@ -993,14 +1002,14 @@
                 "val": {
                   "i128": {
                     "hi": 0,
-                    "lo": 160000000
+                    "lo": 200000000
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          6300001
+          6700001
         ]
       ],
       [
@@ -1154,7 +1163,7 @@
                 "val": {
                   "i128": {
                     "hi": 0,
-                    "lo": 160000000
+                    "lo": 400000000
                   }
                 }
               }
@@ -1162,106 +1171,6 @@
             "ext": "v0"
           },
           6300001
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "RefundRequest"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                },
-                {
-                  "string": "COURSE-WINDOW-IN"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "RefundRequest"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                    },
-                    {
-                      "string": "COURSE-WINDOW-IN"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "course_id"
-                      },
-                      "val": {
-                        "string": "COURSE-WINDOW-IN"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "requested_at_ledger"
-                      },
-                      "val": {
-                        "u32": 501
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_amount"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_at_ledger"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "status"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Pending"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "student"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          6300501
         ]
       ],
       [
@@ -1720,7 +1629,7 @@
       [
         {
           "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5806905060045992000
@@ -1735,7 +1644,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5806905060045992000
@@ -1747,7 +1656,7 @@
             },
             "ext": "v0"
           },
-          6312500
+          6712000
         ]
       ],
       [
@@ -1827,7 +1736,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 160000000
+                          "lo": 200000000
                         }
                       }
                     },
@@ -1853,7 +1762,7 @@
             },
             "ext": "v0"
           },
-          518401
+          918401
         ]
       ],
       [
@@ -1900,7 +1809,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 40000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -1927,6 +1836,79 @@
             "ext": "v0"
           },
           518401
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "Balance"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Balance"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 200000000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "authorized"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "clawback"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          918401
         ]
       ],
       [
@@ -2046,7 +2028,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 800000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -2184,7 +2166,7 @@
             },
             "ext": "v0"
           },
-          120960
+          6300001
         ]
       ],
       [

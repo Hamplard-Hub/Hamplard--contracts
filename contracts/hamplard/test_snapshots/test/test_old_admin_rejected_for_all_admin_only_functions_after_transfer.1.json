@@ -2332,6 +2332,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_amount"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "resolved_at_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "status"
                       },
                       "val": {

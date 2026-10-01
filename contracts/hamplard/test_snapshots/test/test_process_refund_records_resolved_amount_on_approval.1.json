@@ -146,12 +146,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 200000000
+                    "lo": 500000000
                   }
                 },
                 {
@@ -184,7 +184,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             }
@@ -206,7 +206,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             }
@@ -227,7 +227,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 200000000
+                        "lo": 500000000
                       }
                     }
                   ]
@@ -252,7 +252,61 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "process_refund",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "COURSE-REFUND-AMT"
+                },
+                {
+                  "bool": true
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ],
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
+              "function_name": "transfer",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 100000000
+                  }
                 }
               ]
             }
@@ -265,7 +319,7 @@
   ],
   "ledger": {
     "protocol_version": 22,
-    "sequence_number": 501,
+    "sequence_number": 1,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -344,7 +398,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             },
@@ -364,7 +418,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 },
@@ -376,7 +430,7 @@
                         "symbol": "active_enrollments"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -432,7 +486,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-WINDOW-IN"
+                        "string": "COURSE-REFUND-AMT"
                       }
                     },
                     {
@@ -494,7 +548,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 200000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -525,7 +579,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 200000000
+                          "lo": 500000000
                         }
                       }
                     },
@@ -564,7 +618,7 @@
                   "symbol": "CourseFailureCount"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             },
@@ -584,7 +638,7 @@
                       "symbol": "CourseFailureCount"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 },
@@ -609,7 +663,7 @@
                   "symbol": "CourseInstructorRef"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             },
@@ -629,7 +683,7 @@
                       "symbol": "CourseInstructorRef"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 },
@@ -676,7 +730,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 }
@@ -685,167 +739,6 @@
             "ext": "v0"
           },
           6300000
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "Enrollment"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                },
-                {
-                  "string": "COURSE-WINDOW-IN"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "Enrollment"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                    },
-                    {
-                      "string": "COURSE-WINDOW-IN"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "amount_paid"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 200000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "certificate_id"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "certificate_issued"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "completed"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "course_id"
-                      },
-                      "val": {
-                        "string": "COURSE-WINDOW-IN"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "course_version"
-                      },
-                      "val": {
-                        "u32": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "enrolled_at_ledger"
-                      },
-                      "val": {
-                        "u32": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "enrollment_ref"
-                      },
-                      "val": {
-                        "string": "1"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "evidence_hash"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "instructor_amount"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 160000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "is_refunded"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "platform_amount"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 40000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "student"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          6300001
         ]
       ],
       [
@@ -889,7 +782,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 }
@@ -938,7 +831,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 }
@@ -947,60 +840,6 @@
             "ext": "v0"
           },
           6300000
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "InstructorEarnings"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                },
-                {
-                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "InstructorEarnings"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                    },
-                    {
-                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 160000000
-                  }
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          6300001
         ]
       ],
       [
@@ -1123,61 +962,13 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "InstructorTotalEarnings"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "InstructorTotalEarnings"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 160000000
-                  }
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          6300001
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
                   "symbol": "RefundRequest"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-WINDOW-IN"
+                  "string": "COURSE-REFUND-AMT"
                 }
               ]
             },
@@ -1200,7 +991,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-WINDOW-IN"
+                      "string": "COURSE-REFUND-AMT"
                     }
                   ]
                 },
@@ -1212,7 +1003,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-WINDOW-IN"
+                        "string": "COURSE-REFUND-AMT"
                       }
                     },
                     {
@@ -1220,20 +1011,27 @@
                         "symbol": "requested_at_ledger"
                       },
                       "val": {
-                        "u32": 501
+                        "u32": 1
                       }
                     },
                     {
                       "key": {
                         "symbol": "resolved_amount"
                       },
-                      "val": "void"
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 500000000
+                        }
+                      }
                     },
                     {
                       "key": {
                         "symbol": "resolved_at_ledger"
                       },
-                      "val": "void"
+                      "val": {
+                        "u32": 1
+                      }
                     },
                     {
                       "key": {
@@ -1242,7 +1040,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "Pending"
+                            "symbol": "Approved"
                           }
                         ]
                       }
@@ -1261,7 +1059,7 @@
             },
             "ext": "v0"
           },
-          6300501
+          6300001
         ]
       ],
       [
@@ -1494,7 +1292,7 @@
                           ]
                         },
                         "val": {
-                          "u32": 1
+                          "u32": 0
                         }
                       },
                       {
@@ -1624,6 +1422,39 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
+                "nonce": 1194852393571756375
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 1194852393571756375
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6312000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+            "key": {
+              "ledger_key_nonce": {
                 "nonce": 4837995959683129791
               }
             },
@@ -1673,6 +1504,39 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 8370022561469687789
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6312000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 115220454072064130
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 115220454072064130
                   }
                 },
                 "durability": "temporary",
@@ -1747,7 +1611,7 @@
             },
             "ext": "v0"
           },
-          6312500
+          6312000
         ]
       ],
       [
@@ -1827,7 +1691,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 160000000
+                          "lo": 0
                         }
                       }
                     },
@@ -1900,7 +1764,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 40000000
+                          "lo": 0
                         }
                       }
                     },
@@ -2046,7 +1910,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 800000000
+                          "lo": 1000000000
                         }
                       }
                     },

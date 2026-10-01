@@ -405,3 +405,247 @@ fn test_duplicate_escalation_panics() {
     // Second call should panic
     client.escalate_to_arbitration(&student, &String::from_str(&env, "ARB-DUP"));
 }
+
+// ============================================================
+// ISSUE #250 — revoke_certificate() must extend Certificate TTL
+// ============================================================
+
+fn certificate_ttl(env: &Env, contract_id: &Address, cert_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Certificate(cert_id.clone()))
+    })
+}
+
+#[test]
+fn test_revoke_certificate_extends_certificate_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-REVOKE",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-REVOKE");
+    let cert_id = String::from_str(&env, "CERT-TTL-REVOKE-001");
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Title"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-TTL-REVOKE"),
+        &None,
+        &None,
+    );
+
+    // Advance so the Certificate TTL drops below the threshold.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+        l.min_persistent_entry_ttl = 100_000;
+        l.min_temp_entry_ttl = 100_000;
+    });
+    assert!(
+        certificate_ttl(&env, &contract_id, &cert_id)
+            < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "FRAUD"));
+
+    assert_eq!(
+        certificate_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+// ============================================================
+// ISSUE #251 — process_refund() must extend Course and RefundRequest TTLs
+// ============================================================
+
+fn refund_request_ttl(env: &Env, contract_id: &Address, student: &Address, course_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RefundRequest(student.clone(), course_id.clone()))
+    })
+}
+
+#[test]
+fn test_process_refund_extends_course_and_refundrequest_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-REFUND",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-REFUND");
+
+    client.enroll(&student, &course_id);
+    client.request_refund(&student, &course_id);
+
+    // Bump the token SAC's instance TTL so it survives the ledger advance.
+    env.as_contract(&token_id, || {
+        env.storage().instance().extend_ttl(6_300_000, 6_300_000);
+    });
+
+    // Advance so both TTLs drop below PERSISTENT_TTL_THRESHOLD.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        course_ttl(&env, &contract_id, &course_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+    assert!(
+        refund_request_ttl(&env, &contract_id, &student, &course_id)
+            < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.process_refund(&admin, &student, &course_id, &true);
+
+    assert_eq!(
+        course_ttl(&env, &contract_id, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+    assert_eq!(
+        refund_request_ttl(&env, &contract_id, &student, &course_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+// ============================================================
+// ISSUE #252 — withdraw_earnings() must extend InstructorEarnings TTL on partial withdrawal
+// ============================================================
+
+fn instructor_earnings_ttl(env: &Env, contract_id: &Address, instructor: &Address, token: &Address) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::InstructorEarnings(instructor.clone(), token.clone()))
+    })
+}
+
+#[test]
+fn test_withdraw_earnings_partial_extends_ttl() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let price: i128 = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TTL-EARN",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-TTL-EARN");
+    client.enroll(&student, &course_id);
+
+    // Bump the token SAC's instance TTL so it survives the ledger advance.
+    env.as_contract(&token_id, || {
+        env.storage().instance().extend_ttl(6_300_000, 6_300_000);
+    });
+
+    // Advance so the InstructorEarnings TTL drops below the threshold.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        instructor_earnings_ttl(&env, &contract_id, &instructor, &token_id)
+            < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    let earnings = client.get_instructor_earnings(&instructor, &token_id);
+    // Withdraw half, leaving a non-zero balance.
+    client.withdraw_earnings(&instructor, &token_id, &(earnings / 2));
+
+    assert_eq!(
+        instructor_earnings_ttl(&env, &contract_id, &instructor, &token_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+// ============================================================
+// ISSUE #253 — RefundRequest must record resolved_amount and resolved_at_ledger
+// ============================================================
+
+#[test]
+fn test_process_refund_records_resolved_amount_on_approval() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let price: i128 = 500_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REFUND-AMT",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-REFUND-AMT");
+
+    client.enroll(&student, &course_id);
+    client.request_refund(&student, &course_id);
+
+    let ledger_before = env.ledger().sequence();
+    env.mock_all_auths_allowing_non_root_auth();
+    client.process_refund(&admin, &student, &course_id, &true);
+
+    let request = client
+        .get_refund_request(&student, &course_id)
+        .expect("refund request should exist after processing");
+
+    assert!(
+        request.resolved_amount.is_some(),
+        "resolved_amount must be set after approval"
+    );
+    assert_eq!(
+        request.resolved_amount.unwrap(),
+        price,
+        "resolved_amount must equal the full course price (platform + instructor shares)"
+    );
+    assert!(
+        request.resolved_at_ledger.is_some(),
+        "resolved_at_ledger must be set after approval"
+    );
+    assert!(request.resolved_at_ledger.unwrap() >= ledger_before);
+}
