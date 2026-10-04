@@ -163,6 +163,9 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -437,6 +440,14 @@
                         "symbol": "archived_at_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
                     },
                     {
                       "key": {
@@ -872,6 +883,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "completed_at_ledger"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "course_id"
                           },
                           "val": {
@@ -1173,25 +1190,6 @@
                     {
                       "key": {
                         "symbol": "requested_at_ledger"
-                      },
-                      "val": {
-                        "u32": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_amount"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 500000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_at_ledger"
                       },
                       "val": {
                         "u32": 1

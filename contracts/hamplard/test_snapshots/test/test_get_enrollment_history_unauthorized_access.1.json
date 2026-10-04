@@ -163,6 +163,9 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -436,6 +439,14 @@
                         "symbol": "archived_at_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
                     },
                     {
                       "key": {
@@ -817,6 +828,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "completed_at_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "course_id"
                       },
                       "val": {
@@ -1080,6 +1097,14 @@
                           },
                           "val": {
                             "bool": true
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "completed_at_ledger"
+                          },
+                          "val": {
+                            "u32": 1
                           }
                         },
                         {

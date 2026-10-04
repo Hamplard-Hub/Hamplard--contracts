@@ -138,6 +138,9 @@
                 "void",
                 {
                   "bytes": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -390,6 +393,14 @@
                         "symbol": "archived_at_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
                     },
                     {
                       "key": {
@@ -767,6 +778,14 @@
                       },
                       "val": {
                         "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "completed_at_ledger"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

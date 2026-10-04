@@ -163,6 +163,9 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -953,6 +956,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "certificates_issued"
                       },
                       "val": {
@@ -1385,6 +1396,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "completed_at_ledger"
+                      },
+                      "val": {
+                        "u32": 17281
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "course_id"
                       },
                       "val": {
@@ -1652,6 +1671,14 @@
                           },
                           "val": {
                             "bool": true
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "completed_at_ledger"
+                          },
+                          "val": {
+                            "u32": 1
                           }
                         },
                         {

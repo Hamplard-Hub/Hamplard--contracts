@@ -163,6 +163,9 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -663,6 +666,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "certificates_issued"
                       },
                       "val": {
@@ -1088,6 +1099,14 @@
                       },
                       "val": {
                         "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "completed_at_ledger"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     },
                     {

@@ -185,6 +185,9 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "vec": []
                 }
               ]
             }
@@ -429,6 +432,14 @@
                         "symbol": "archived_at_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "categories"
+                      },
+                      "val": {
+                        "vec": []
+                      }
                     },
                     {
                       "key": {
@@ -807,6 +818,12 @@
                       "val": {
                         "bool": false
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "completed_at_ledger"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -1267,18 +1284,6 @@
                       "val": {
                         "u32": 7
                       }
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_amount"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_at_ledger"
-                      },
-                      "val": "void"
                     },
                     {
                       "key": {

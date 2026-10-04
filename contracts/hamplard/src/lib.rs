@@ -1,7 +1,105 @@
-// SPDX-License-Identifier: MIT
+//! # Hamplard Contract — Security Model
+//!
+//! ## Trust Hierarchy
+//!
+//! | Role              | Who                    | Capabilities                                                          |
+//! |-------------------|------------------------|-----------------------------------------------------------------------|
+//! | Admin             | `DataKey::Admin`       | Approve/archive courses, issue & revoke certificates, pause platform, block students  |
+//! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
+//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings, transfer course (with admin co-approval) |
+//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll (unless blocked by admin)  |
+//! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
+//!
+//! ## Privileged Operations (single admin)
+//! - `approve_course` — moves a course from Pending to Active
+//! - `transfer_course` — co-approves an instructor-initiated course ownership transfer
+//! - `mark_completed` — marks a student enrollment as completed (blocked students cannot proceed)
+//! - `issue_certificate` — mints an on-chain certificate of completion (blocked students cannot proceed)
+//! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
+//! - `bulk_revoke_course_certificates` — flags every certificate of a course as revoked in one transaction
+//! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
+//! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
+//! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
+//! - `block_student` / `unblock_student` — bans or unbans a student from the platform
+//! - `get_platform_fee` — retrieves platform fee configuration (admin only)
+//! - `update_content_hash` — updates the content commitment hash for a course (admin or instructor)
+//!
+//! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
+//! - `withdraw_tokens` — emergency sweep of contract-held tokens (both admins required)
+//! - `archive_course` — permanent course removal; may trigger student refunds
+//! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
+//! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
+//! - `set_admin_expiry` — sets a ledger sequence when the admin role expires (blocks all admin operations)
+//! - `propose_upgrade` / `upgrade_contract` / `cancel_upgrade` — time-locked contract code
+//!   upgrade; see "Contract Upgrades" below
+//!
+//! ## Student Blocking Policy
+//! - `block_student()` called by the admin prevents a student from:
+//!   - Enrolling in new courses via `enroll()` / `batch_enroll()` / `re_enroll()`
+//!   - Marking an existing enrollment as completed via `mark_completed()`
+//!   - Receiving a certificate via `issue_certificate()`
+//!   - Requesting or receiving refunds via `request_refund()` / `process_refund()`
+//! - Blocking is global and applies indefinitely until `unblock_student()` is called
+//! - Blocking does not retroactively revoke already-issued certificates; only forward-looking actions are blocked
+//! - A blocked student's existing enrollments are frozen: they cannot transition to Completed status
+//!   and therefore cannot receive certificates for that work.
+//!
+//! ## Admin Expiry Policy
+//! - `set_admin_expiry()` called by both admins sets a ledger sequence at which the admin role expires
+//! - Once the current ledger sequence reaches or exceeds the expiry value:
+//!   - All single-admin operations (`approve_course`, `block_student`, `issue_certificate`, etc.)
+//!     automatically fail with "admin role has expired"
+//!   - All multi-admin operations (`archive_course`, `transfer_admin`, `set_admin_expiry`, etc.)
+//!     automatically fail with "admin role has expired"
+//!   - The only recovery is for the expired admins to call `transfer_admin()` to nominate a new pair,
+//!     and the new pair calls `accept_admin()` — this resets the admin expiry to None
+//! - Expiry may be cleared by calling `set_admin_expiry()` with `None` before it takes effect
+//!
+//! ## Payment Guarantees
+//! - On enrollment the full course price is transferred from the student atomically:
+//!   `platform_fee_percent` of the price is forwarded to the treasury address immediately;
+//!   the remaining instructor share is held inside the contract and credited to
+//!   `DataKey::InstructorEarnings` for pull-based withdrawal.
+//! - Revenue split uses integer arithmetic: `platform_amount = price * pct / 100`.
+//!   Any remainder (from integer truncation) stays with the instructor share.
+//! - The contract does **not** escrow student funds beyond the enrollment transaction;
+//!   post-enrollment refunds require admin-initiated archiving with an explicit refund list.
+//!
+//! ## What This Contract Does NOT Protect Against
+//! - **Off-chain content access** — the contract cannot enforce that a student actually
+//!   receives course materials after enrolling; content delivery is the backend's responsibility.
+//! - **Course quality or accuracy** — admin approval is a policy gate only; the contract
+//!   does not validate course content or instructor qualifications.
+//! - **Instructor insolvency** — if the instructor's earnings balance is insufficient for a
+//!   refund (e.g. concurrent withdrawals), the archive refund will panic. Callers must
+//!   ensure balances are adequate before invoking `archive_course` with refunds.
+//! - **Token price risk** — payment amounts are fixed in token stroops at enrollment time;
+//!   the contract makes no exchange-rate or price guarantees.
+//! - **Front-running** — enrollment order is determined by ledger sequence; the contract
+//!   does not prevent two students from enrolling in the last seat simultaneously on
+//!   different nodes (Soroban consensus resolves ordering).
+//! - **Admin key compromise** — a compromised admin key can approve courses, issue
+//!   certificates, and withdraw contract tokens. Key rotation requires the two-step
+//!   `transfer_admin` / `accept_admin` flow with both current admins signing. Admin expiry
+//!   enforces that both admins must cooperate for critical operations; a single compromised
+//!   key cannot bypass the expiry check once it takes effect.
+//! - **Treasury update delay** — `update_treasury` takes effect 100 ledgers after proposal;
+//!   enrollments submitted within that window still route fees to the old treasury.
+//!
+//! ## Contract Upgrades
+//! - The contract can migrate to a new Wasm implementation in place, preserving all
+//!   enrollment, certificate, and course data — no redeploy or data loss required to
+//!   ship a fix.
+//! - Upgrades are two-step and time-locked: `propose_upgrade` (both admins) records the
+//!   new Wasm hash and starts a `get_upgrade_timelock()`-ledger review window (default
+//!   ~1 day); `upgrade_contract` (both admins) executes it only after that window has
+//!   elapsed. `cancel_upgrade` withdraws a pending proposal at any time.
+//! - A compromised single admin key cannot upgrade the contract — both admin signatures
+//!   are required for every step, and the time-lock gives observers a chance to react to
+//!   a malicious proposal before it can take effect.
+
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, symbol, vec, Address, Env, Symbol, Vec};
 #[cfg(test)]
 extern crate std;
 
@@ -216,6 +314,8 @@ pub struct Course {
     /// of an archived one, potentially misleading students with historical
     /// enrollment records.
     pub archived_at_ledger: Option<u32>,
+    /// Category tags for the course (e.g. "programming", "design") (#165)
+    pub categories: Vec<String>,
 }
 
 /// An enrollment record — one per student per course
@@ -254,6 +354,8 @@ pub struct Enrollment {
     /// Unique enrollment reference ID, used by issue_certificate to look up
     /// the enrollment and derive the course_id without caller-supplied course_id.
     pub enrollment_ref: String,
+    /// Ledger sequence when the enrollment was marked completed, if any (#166)
+    pub completed_at_ledger: Option<u32>,
 }
 
 /// An on-chain certificate of completion
@@ -328,12 +430,6 @@ pub struct RefundRequest {
     pub course_id: String,
     pub requested_at_ledger: u32,
     pub status: RefundStatus,
-    /// Total amount refunded to the student (platform + instructor shares).
-    /// `None` until `process_refund()` resolves the request.
-    pub resolved_amount: Option<i128>,
-    /// Ledger sequence at which `process_refund()` finalized this request.
-    /// `None` until resolved.
-    pub resolved_at_ledger: Option<u32>,
 }
 
 /// Aggregate on-chain reputation stats for an instructor, accumulated
@@ -349,38 +445,6 @@ pub struct InstructorStats {
     pub total_completions: u32,
     /// Total number of certificates issued via `issue_certificate`.
     pub total_certificates: u32,
-}
-
-// ============================================================
-// ARBITRATION DATA TYPES
-// ============================================================
-
-/// Status of an on-chain arbitration case.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum ArbitrationStatus {
-    Open,
-    ResolvedRefund,
-    ResolvedPayout,
-}
-
-/// An on-chain arbitration case record created when a dispute is escalated.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ArbitrationCase {
-    pub student: Address,
-    pub course_id: String,
-    pub fee_paid: i128,
-    pub status: ArbitrationStatus,
-    pub created_at_ledger: u32,
-}
-
-/// Separate storage key enum for arbitration records.
-/// Using a dedicated enum avoids hitting the DataKey variant size limit
-/// imposed by the `#[contracttype]` proc macro.
-#[contracttype]
-pub enum ArbitrationKey {
-    Case(Address, String),
 }
 
 // ============================================================
@@ -508,98 +572,968 @@ pub enum DataKey {
     StudentEnrollmentCount(Address),
 }
 
-pub struct HamplardContract;
+/// Overflow keys split out to avoid the #[contracttype] variant-count limit.
+#[contracttype]
+pub enum DataKey2 {
+    /// Threshold price (in stroops) above which a course is "high-value"
+    /// and requires co-signature from two different admins to approve
+    HighValueCourseThreshold,
+    /// Stores the first approver's address for a high-value course pending co-signature
+    HighValueCourseApproval(String),
+}
 
-// Storage keys
-const INSTRUCTOR_EARNINGS: &str = "InstructorEarnings";
-const ARBITRATION_FEES: &str = "ArbitrationFees";
-const OWED_BALANCES: &str = "OwedBalances";
-const ADMIN: &str = "Admin";
+/// A proposed contract code upgrade awaiting its governance time-lock.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingUpgrade {
+    /// Hash of the new Wasm code, previously uploaded via
+    /// `env.deployer().upload_contract_wasm()`.
+    pub new_wasm_hash: BytesN<32>,
+    /// Ledger sequence when the upgrade was proposed.
+    pub proposed_at_ledger: u32,
+    /// Ledger sequence at or after which `upgrade_contract` may execute.
+    pub effective_ledger: u32,
+}
+
+// ============================================================
+// CONTRACT
+// ============================================================
 
 #[contract]
-pub trait HamplardTrait {
-    // Existing functions
-    fn deposit_earnings(env: Env, instructor: Address, token: Address, amount: i128);
-    fn withdraw_earnings(env: Env, instructor: Address, token: Address) -> i128;
-    fn withdraw_tokens(env: Env, token: Address, to: Address, amount: i128);
-    fn get_owed_balance(env: Env, token: Address) -> i128;
-}
+pub struct HamplardContract;
 
 #[contractimpl]
-impl HamplardTrait for HamplardContract {
-    // Helper function to get owed balance for a token
-    fn get_owed_balance(env: Env, token: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&(OWED_BALANCES, token))
-            .unwrap_or(0)
-    }
+impl HamplardContract {
+    /// Minimum ledgers before instance storage TTL extension is triggered (~1 year)
+    const INSTANCE_TTL_THRESHOLD: u32 = 6_000_000;
+    const INSTANCE_TTL_EXTEND_TO: u32 = 6_300_000;
+    /// Minimum ledgers before persistent storage TTL extension is triggered (~1 year)
+    pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 6_000_000;
+    pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 6_300_000;
+    const MAX_COURSE_ID_LEN: u32 = 256;
+    const MAX_COURSE_TITLE_LEN: u32 = 512;
+    /// Minimum non-zero course price accepted at registration, denominated
+    /// in stroops at the expected 7-decimal-place precision (0.01 USDC).
+    /// Catches an instructor accidentally entering a price in whole-dollar
+    /// units instead of stroops (e.g. typing `50` meaning $50, instead of
+    /// the correct `500_000_000`).
+    const MIN_COURSE_PRICE_STROOPS: i128 = 100_000;
+    /// Maximum course price accepted at registration, denominated in
+    /// stroops at the expected 7-decimal-place precision (100,000 USDC).
+    /// Catches an accidental extra digit turning a reasonable price into
+    /// an absurd one.
+    const MAX_COURSE_PRICE_STROOPS: i128 = 1_000_000_000_000;
+    /// Default governance time-lock for contract upgrades, in ledger
+    /// sequences (~17,280 ledgers ≈ 1 day at 5s/ledger). Used when the
+    /// admin has not configured a custom value via `set_upgrade_timelock`.
+    const DEFAULT_UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+    /// Cooldown period in ledger sequences after a course is archived
+    /// before the same course ID can be re-registered. This prevents
+    /// confusion where a new course inherits the identity of an archived
+    /// one, potentially misleading students with historical enrollment
+    /// records. (~172,800 ledgers ≈ 10 days at 5s/ledger)
+    const ARCHIVE_COOLDOWN_LEDGERS: u32 = 172_800;
+    /// Default revocation challenge period in ledger sequences
+    /// (~17,280 ledgers ≈ 1 day at 5s/ledger).
+    const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
+    /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
+    pub(crate) const MAX_BATCH_SIZE: u32 = 50;
+    /// Maximum number of course IDs returned by a single `list_courses()` call.
+    /// Larger catalogs must be walked with successive `offset` values so one
+    /// invocation cannot exceed the transaction CPU/instruction budget.
+    pub(crate) const MAX_PAGE_SIZE: u32 = 50;
+    /// Maximum number of students that may be refunded in a single
+    /// `archive_course()` call. Large courses must be refunded in multiple
+    /// transactions.
+    pub(crate) const MAX_STUDENTS_TO_REFUND: u32 = 100;
+    /// Minimum ledger sequences that must elapse between consecutive
+    /// `transfer_admin()` calls. Prevents rapid admin key rotation
+    /// after a compromise (~17,280 ledgers ≈ 1 day at 5s/ledger). (#176)
+    const MIN_ADMIN_TRANSFER_COOLDOWN: u32 = 17_280;
+    /// Number of consecutive enrollment failures (token-transfer errors)
+    /// after which a course is automatically paused as a circuit breaker.
+    /// Reset to 0 on a successful enrollment. (#178)
+    const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+    /// Maximum number of categories a course can have (#165)
+    const MAX_CATEGORIES: u32 = 10;
+    /// Maximum length of a category name in characters (#165)
+    const MAX_CATEGORY_LEN: u32 = 64;
 
-    // Updated deposit_earnings to track owed amounts
-    fn deposit_earnings(env: Env, instructor: Address, token: Address, amount: i128) {
-        // Existing logic to store earnings
-        let key = (INSTRUCTOR_EARNINGS, instructor.clone(), token.clone());
-        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(current + amount));
+    // ----------------------------------------------------------
+    // INIT
+    // ----------------------------------------------------------
 
-        // Update owed balance
-        let owed_key = (OWED_BALANCES, token.clone());
-        let current_owed: i128 = env.storage().persistent().get(&owed_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&owed_key, &(current_owed + amount));
-    }
+    /// Initialise the contract.
+    /// Called once by the deployer immediately after deployment.
+    ///
+    /// # Arguments
+    /// - `admin`                    — admin address (approves courses, issues certificates)
+    /// - `treasury`                 — platform treasury address (receives platform fee share)
+    /// - `default_fee_pct`          — default platform fee percentage (e.g. 20 = 20%)
+    /// - `refund_window_ledgers`    — number of ledger sequences after enrollment during which a
+    ///                                refund request is accepted; requests after this window are
+    ///                                automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
+    pub fn init(
+        env: Env,
+        admin: Address,
+        secondary_admin: Address,
+        treasury: Address,
+        default_fee_pct: u32,
+        max_courses_per_instructor: u32,
+        refund_window_ledgers: u32,
+        revocation_challenge_period: u32,
+    ) {
+        admin.require_auth();
 
-    // Updated withdraw_earnings to reduce owed amounts
-    fn withdraw_earnings(env: Env, instructor: Address, token: Address) -> i128 {
-        let key = (INSTRUCTOR_EARNINGS, instructor.clone(), token.clone());
-        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().remove(&key);
-
-        // Reduce owed balance
-        let owed_key = (OWED_BALANCES, token.clone());
-        let current_owed: i128 = env.storage().persistent().get(&owed_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&owed_key, &(current_owed - amount));
-
-        amount
-    }
-
-    // Updated withdraw_tokens with validation
-    fn withdraw_tokens(env: Env, token: Address, to: Address, amount: i128) {
-        // Validate amount is positive
-        if amount <= 0 {
-            panic!("Amount must be positive");
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("contract already initialized");
         }
 
-        // Get contract's balance for the token
-        let contract_address = env.current_contract_address();
-        let balance: i128 = env
-            .token()
-            .balance(&token, &contract_address);
-
-        // Get total owed for this token
-        let owed = Self::get_owed_balance(env.clone(), token.clone());
-
-        // Calculate surplus
-        let surplus = balance - owed;
-
-        // Validate amount does not exceed surplus
-        if amount > surplus {
-            panic!("Amount exceeds available surplus");
+        if default_fee_pct > 100 {
+            panic!("fee percentage cannot exceed 100");
         }
 
-        // Perform the transfer
-        env.token().transfer(&token, &contract_address, &to, &amount);
-    }
-}
+        if treasury == env.current_contract_address() {
+            panic!("treasury cannot be the contract address");
+        }
 
-// Tests would be in a separate test file, but including here for completeness
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+        if admin == treasury {
+            panic!("admin and treasury must be distinct addresses");
+        }
+
+        if secondary_admin == treasury {
+            panic!("secondary_admin and treasury must be distinct addresses");
+        }
+
+        if admin == secondary_admin {
+            panic!("admin and secondary_admin must be distinct addresses");
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::SecondaryAdmin, &secondary_admin);
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformPaused, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultFee, &default_fee_pct);
+        env.storage().instance().set(
+            &DataKey::MaxCoursesPerInstructor,
+            &max_courses_per_instructor,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundWindow, &refund_window_ledgers);
+        env.storage().instance().set(
+            &DataKey::RevocationChallengePeriod,
+            &revocation_challenge_period,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::InitLedger, &env.ledger().sequence());
+    }
+
+    /// Instructor or admin configures an optional ledger sequence when enrollment opens.
+    ///
+    /// Set to `None` to allow enrollment immediately after the course becomes Active.
+    /// When set, `enroll()` rejects students until the current ledger sequence is
+    /// greater than or equal to `enrollment_start_ledger`.
+    ///
+    /// # Arguments
+    /// - `caller`                  — must be the course instructor or admin
+    /// - `course_id`               — the course to update
+    /// - `enrollment_start_ledger` — optional ledger sequence when enrollment opens
+    pub fn set_enrollment_start_ledger(
+        env: Env,
+        caller: Address,
+        course_id: String,
+        enrollment_start_ledger: Option<u32>,
+    ) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        course.enrollment_start_ledger = enrollment_start_ledger;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_start_set"), course_id.clone()),
+            (course_id, enrollment_start_ledger),
+        );
+    }
+
+    // ----------------------------------------------------------
+    // COURSE MANAGEMENT
+    // ----------------------------------------------------------
+
+    /// Instructor registers a new course on-chain.
+    /// The course starts in Pending status — an admin must approve it
+    /// before students can enroll.
+    ///
+    /// # Arguments
+    /// - `instructor`       — instructor's Stellar address (must sign)
+    /// - `course_id`        — unique ID matching the backend DB record
+    /// - `price`            — enrollment price in USDC stroops
+    /// - `token`            — USDC Stellar Asset Contract address
+    /// - `platform_fee_pct` — optional fee override; pass 0 to follow the live
+    ///   per-token fee (`FeeConfig(token)` / `DefaultFee`). A non-zero value
+    ///   must be at least the token's current fee and is charged at enrollment
+    ///   as a floor on the live per-token fee.
+    /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
+    pub fn register_course(
+        env: Env,
+        instructor: Address,
+        course_id: String,
+        price: i128,
+        token: Address,
+        platform_fee_pct: u32,
+        max_capacity: Option<u32>,
+        content_hash: BytesN<32>,
+        categories: Vec<String>,
+    ) -> String {
+        instructor.require_auth();
+
+        // Validate that the token address is a contract (not an EOA)
+        let token_client = token::Client::new(&env, &token);
+        let token_decimals = token_client.decimals();
+
+        // Validate token decimal precision matches expected standard (7 for Stellar USDC)
+        // This ensures fee calculations are accurate
+        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
+        if token_decimals != EXPECTED_TOKEN_DECIMALS {
+            panic!(
+                "token decimal precision must be {} (found {})",
+                EXPECTED_TOKEN_DECIMALS, token_decimals
+            );
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course_id.is_empty() {
+            panic!("course_id cannot be empty");
+        }
+
+        if course_id.len() > Self::MAX_COURSE_ID_LEN {
+            panic!("course_id exceeds maximum length");
+        }
+
+        // `Some(0)` would make the course permanently unenrollable
+        // (`total_enrollments >= 0` is always true); use `None` for unlimited.
+        if max_capacity == Some(0) {
+            panic!("max_capacity must be greater than zero (use None for unlimited)");
+        }
+
+        // Validate course ID contains only allowed characters.
+        // Allowed: printable ASCII (0x20-0x7E) excluding backtick and tilde
+        // which can cause issues in some off-chain parsers.
+        // This prevents null bytes, control characters, and problematic
+        // Unicode that could break off-chain parsers or create unreproducible
+        // storage keys.
+        // `String` only exposes its bytes through `copy_into_slice()`, which
+        // requires an exactly-sized buffer. The length was already bounded by
+        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
+        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
+        let id_bytes = &mut id_bytes[..course_id.len() as usize];
+        course_id.copy_into_slice(id_bytes);
+
+        for byte in id_bytes.iter() {
+            // Allow printable ASCII: space (0x20) through tilde (0x7E)
+            // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
+            if *byte < 0x20 || *byte > 0x7E {
+                panic!("course_id contains invalid characters (must be printable ASCII)");
+            }
+        }
+
+        // Validate categories (#165)
+        if categories.len() > Self::MAX_CATEGORIES {
+            panic!("register_course: too many categories");
+        }
+        for cat in categories.iter() {
+            if cat.len() > Self::MAX_CATEGORY_LEN {
+                panic!("register_course: category name too long");
+            }
+        }
+
+        if price < 0 {
+            panic!("price cannot be negative");
+        }
+
+        if content_hash.to_array().iter().all(|&b| b == 0) {
+            panic!("content_hash cannot be all zero bytes");
+        }
+
+        // A price of exactly 0 is a valid free course. Any non-zero price
+        // must be denominated in stroops at the token's expected 7-decimal
+        // precision — reject values so small or so large that they signal
+        // the price was entered in the wrong unit.
+        if price != 0
+            && (price < Self::MIN_COURSE_PRICE_STROOPS || price > Self::MAX_COURSE_PRICE_STROOPS)
+        {
+            panic!("price is outside the expected USDC precision range (0 for free, or 0.01-100000 USDC in stroops)");
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Course(course_id.clone()))
+        {
+            panic!("course already registered");
+        }
+
+        // Check if this course ID was previously used and is still within
+        // the archival cooldown period. This prevents confusion where a new
+        // course inherits the identity of an archived one.
+        if let Some(old_course) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::ArchivedCourse(course_id.clone()))
+        {
+            if let Some(archived_ledger) = old_course.archived_at_ledger {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger < archived_ledger + Self::ARCHIVE_COOLDOWN_LEDGERS {
+                    panic!("course ID is within archival cooldown period");
+                }
+            }
+        }
+
+        let max_courses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxCoursesPerInstructor)
+            .unwrap_or(50);
+
+        let course_count_key = DataKey::InstructorCourseCount(instructor.clone());
+        let current_count: u32 = env.storage().instance().get(&course_count_key).unwrap_or(0);
+
+        if current_count >= max_courses {
+            panic!("instructor has reached the maximum number of course registrations");
+        }
+
+        let pending_count_key = DataKey::InstructorPendingCourseCount(instructor.clone());
+        let current_pending_count: u32 = env
+            .storage()
+            .instance()
+            .get(&pending_count_key)
+            .unwrap_or(0);
+
+        if current_pending_count >= max_courses {
+            panic!("instructor has reached the maximum number of pending course registrations");
+        }
+
+        // Validate against the same fee source-of-truth that deduct_fee()
+        // uses at enrollment: the per-token `FeeConfig(token)`, falling back
+        // to `DefaultFee`. Validating against `DefaultFee` alone would accept
+        // overrides below a higher per-token rate (or reject overrides above
+        // a lower one) that enrollment would never actually charge.
+        let token_fee_bps = Self::get_fee_config(env.clone(), token.clone()).fee_bps;
+
+        let fee = if platform_fee_pct == 0 {
+            // Snapshot of the live token rate, rounded up to whole percent.
+            // Informational only — with no override, enrollment always
+            // follows the live FeeConfig(token) / DefaultFee.
+            (token_fee_bps + 99) / 100
+        } else {
+            if platform_fee_pct > 100 {
+                panic!("fee percentage cannot exceed 100");
+            }
+            if platform_fee_pct * 100 < token_fee_bps {
+                panic!("fee percentage cannot be below platform minimum");
+            }
+            platform_fee_pct
+        };
+
+        let min_completion_ledgers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultMinCompletionLedgers)
+            .unwrap_or(0);
+
+        let course = Course {
+            id: course_id.clone(),
+            instructor: instructor.clone(),
+            price,
+            platform_fee_percent: fee,
+            token,
+            total_enrollments: 0,
+            active_enrollments: 0,
+            total_earned: 0,
+            status: CourseStatus::Pending,
+            created_at_ledger: env.ledger().sequence(),
+            max_capacity,
+            enrollment_start_ledger: None,
+            enrollment_expiry_ledgers: None,
+            min_completion_ledgers,
+            version: 1,
+            last_updated_ledger: env.ledger().sequence(),
+            expires_at_ledger: None,
+            content_hash,
+            max_certificates: None,
+            certificates_issued: 0,
+            prerequisite_course_ids: Vec::new(&env),
+            archived_at_ledger: None,
+            categories,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.storage().persistent().set(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            &instructor,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // Append to on-chain course catalog
+        let mut catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+        catalog.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::CourseList, &catalog);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseList,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.storage().instance().set(
+            &DataKey::InstructorCourseCount(instructor.clone()),
+            &(current_count + 1),
+        );
+        env.storage()
+            .instance()
+            .set(&pending_count_key, &(current_pending_count + 1));
+
+        // Append to the per-instructor course list
+        let instructor_list_key = DataKey::InstructorCourseList(instructor.clone());
+        let mut instructor_courses: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&instructor_list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        instructor_courses.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&instructor_list_key, &instructor_courses);
+        env.storage().persistent().extend_ttl(
+            &instructor_list_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // Add instructor to global registry if first course
+        let mut registry: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InstructorRegistry)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Check if instructor already exists in registry
+        let mut exists = false;
+        for i in 0..registry.len() {
+            if registry.get(i).unwrap() == instructor {
+                exists = true;
+                break;
+            }
+        }
+
+        if !exists {
+            registry.push_back(instructor.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::InstructorRegistry, &registry);
+            env.storage().persistent().extend_ttl(
+                &DataKey::InstructorRegistry,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "course_registered"), course_id.clone()),
+            course_id.clone(),
+        );
+
+        course_id
+    }
+
+    /// Admin or approved approver approves a Pending course, making it Active and enrollable.
+    ///
+    /// # Arguments
+    /// - `caller`    — must be admin or an approved approver
+    /// - `course_id` — the course to approve
+    pub fn approve_course(env: Env, caller: Address, course_id: String) {
+        caller.require_auth();
+        Self::require_admin_or_approver(&env, &caller, "approve_course");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        // Enforce governance window: approve_course cannot be called
+        // immediately after init(). This ensures there's a review period
+        // where the community can observe admin actions before the platform
+        // starts accepting courses.
+        if let Some(init_ledger) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::InitLedger)
+        {
+            let min_delay = env
+                .storage()
+                .instance()
+                .get::<DataKey, u32>(&DataKey::MinReviewDelay)
+                .unwrap_or(0);
+            let elapsed = env
+                .ledger()
+                .sequence()
+                .checked_sub(init_ledger)
+                .unwrap_or(0);
+            if elapsed < min_delay {
+                panic!("governance window has not elapsed");
+            }
+        }
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let delay = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MinReviewDelay)
+            .unwrap_or(0);
+
+        let elapsed = env
+            .ledger()
+            .sequence()
+            .checked_sub(course.created_at_ledger)
+            .unwrap_or(0);
+
+        if elapsed < delay {
+            panic!("course review period has not elapsed");
+        }
+
+        if course.status != CourseStatus::Pending {
+            panic!("course is not pending approval");
+        }
+
+        // Issue 167: High-value course co-signature
+        let threshold: Option<i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey2::HighValueCourseThreshold);
+        if let Some(threshold_val) = threshold {
+            if course.price >= threshold_val {
+                let approval_key = DataKey2::HighValueCourseApproval(course_id.clone());
+                let prior_approver: Option<Address> =
+                    env.storage().instance().get(&approval_key);
+                match prior_approver {
+                    None => {
+                        // Record first approval and return — need a second admin
+                        env.storage().instance().set(&approval_key, &caller);
+                        return;
+                    }
+                    Some(ref prior) if *prior == caller => {
+                        panic!("high_value_course_approval: same admin cannot double-sign");
+                    }
+                    Some(_) => {
+                        // Different admin — proceed and clear the approval key
+                        env.storage().instance().remove(&approval_key);
+                    }
+                }
+            }
+        }
+
+        course.status = CourseStatus::Active;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        let pending_key = DataKey::InstructorPendingCourseCount(course.instructor.clone());
+        let pending_count: u32 = env.storage().instance().get(&pending_key).unwrap_or(0);
+        let new_pending_count = pending_count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("pending course count underflow"));
+        env.storage()
+            .instance()
+            .set(&pending_key, &new_pending_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_approved"), course_id.clone()),
+            (
+                course_id,
+                course.instructor,
+                caller,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Admin or approved approver rejects a Pending course, transitioning it to Rejected status.
+    ///
+    /// # Arguments
+    /// - `caller`    — must be admin or an approved approver
+    /// - `course_id` — the course to reject
+    /// - `reason`    — rejection reason (e.g., "CONTENT_POLICY_VIOLATION", "DUPLICATE_COURSE")
+    /// Sets the price threshold above which a course requires two different admins
+    /// to approve (co-signature). Issue #167.
+    pub fn set_high_value_course_threshold(env: Env, admin: Address, threshold: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "set_high_value_course_threshold");
+        env.storage()
+            .instance()
+            .set(&DataKey2::HighValueCourseThreshold, &threshold);
+    }
+
+    /// Returns the high-value course threshold, if set. Issue #167.
+    pub fn get_high_value_course_threshold(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&DataKey2::HighValueCourseThreshold)
+    }
+
+    pub fn reject_course(env: Env, caller: Address, course_id: String, reason: String) {
+        caller.require_auth();
+        Self::require_admin_or_approver(&env, &caller, "reject_course");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if course.status != CourseStatus::Pending {
+            panic!("course is not pending approval");
+        }
+
+        course.status = CourseStatus::Rejected;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_rejected"), course_id.clone()),
+            (
+                course_id,
+                course.instructor,
+                caller,
+                reason,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Instructor or admin pauses a course.
+    /// Existing enrollments are unaffected — students can still access content.
+    /// New enrollments are blocked until the course is unpaused.
+    pub fn pause_course(env: Env, caller: Address, course_id: String) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if course.status != CourseStatus::Active {
+            panic!("course is not active");
+        }
+
+        course.status = CourseStatus::Paused;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_paused"), course_id.clone()),
+            (
+                course_id,
+                CourseStatus::Paused,
+                caller,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Instructor or admin unpauses a Paused course, restoring it to Active.
+    pub fn unpause_course(env: Env, caller: Address, course_id: String) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        // freeze_instructor() auto-pauses the instructor's courses; a frozen
+        // instructor must not be able to undo that by unpausing them.
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if course.status != CourseStatus::Paused {
+            panic!("course is not paused");
+        }
+
+        course.status = CourseStatus::Active;
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_unpaused"), course_id.clone()),
+            (
+                course_id,
+                CourseStatus::Active,
+                caller,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
+    /// Transfer course ownership from the current instructor to a new instructor.
+    ///
+    /// Only the current instructor may initiate the transfer, and the platform
+    /// admin must co-approve in the same invocation. The course record is
+    /// updated in place: enrollment history, earnings already credited to the
+    /// previous instructor, and all other course state are left untouched.
+    /// The course is neither archived nor re-registered.
+    ///
+    /// # Arguments
+    /// - `instructor`     — current course instructor (must sign)
+    /// - `admin`          — platform admin (must sign; co-approval)
+    /// - `course_id`      — the course to transfer
+    /// - `new_instructor` — address that will become the course instructor
+    pub fn transfer_course(
+        env: Env,
+        instructor: Address,
+        admin: Address,
+        course_id: String,
+        new_instructor: Address,
+    ) {
+        instructor.require_auth();
+        admin.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        if instructor != course.instructor {
+            panic!("unauthorized");
+        }
+
+        Self::require_admin(&env, &admin, "transfer_course");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot transfer archived course");
+        }
+
+        if new_instructor == course.instructor {
+            panic!("new instructor must differ from current instructor");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &new_instructor) {
+            panic!("instructor is frozen");
+        }
+
+        let max_courses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxCoursesPerInstructor)
+            .unwrap_or(50);
+
+        let new_count_key = DataKey::InstructorCourseCount(new_instructor.clone());
+        let new_count: u32 = env.storage().instance().get(&new_count_key).unwrap_or(0);
+        if new_count >= max_courses {
+            panic!("instructor has reached the maximum number of course registrations");
+        }
+
+        if course.status == CourseStatus::Pending {
+            let new_pending_key = DataKey::InstructorPendingCourseCount(new_instructor.clone());
+            let new_pending: u32 = env.storage().instance().get(&new_pending_key).unwrap_or(0);
+            if new_pending >= max_courses {
+                panic!("instructor has reached the maximum number of pending course registrations");
+            }
+        }
+
+        let previous_instructor = course.instructor.clone();
+
+        course.instructor = new_instructor.clone();
+        course.last_updated_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Course(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // Keep CourseInstructorRef in sync so enroll() continues to succeed
+        // after ownership changes. Enrollment records themselves are untouched.
+        env.storage().persistent().set(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            &new_instructor,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::CourseInstructorRef(course_id.clone()),
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        let old_count_key = DataKey::InstructorCourseCount(previous_instructor.clone());
+        let old_count: u32 = env.storage().instance().get(&old_count_key).unwrap_or(0);
+        let decremented_old = old_count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("instructor course count underflow"));
+        env.storage()
+            .instance()
+            .set(&old_count_key, &decremented_old);
+        env.storage()
+            .instance()
+            .set(&new_count_key, &(new_count + 1));
+
+        if course.status == CourseStatus::Pending {
+            let old_pending_key =
+                DataKey::InstructorPendingCourseCount(previous_instructor.clone());
+            let old_pending: u32 = env.storage().instance().get(&old_pending_key).unwrap_or(0);
+            let decremented_pending = old_pending
+                .checked_sub(1)
+                .unwrap_or_else(|| panic!("pending course count underflow"));
+            env.storage()
+                .instance()
+                .set(&old_pending_key, &decremented_pending);
+
+            let new_pending_key = DataKey::InstructorPendingCourseCount(new_instructor.clone());
+            let new_pending: u32 = env.storage().instance().get(&new_pending_key).unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&new_pending_key, &(new_pending + 1));
+        }
+
+        // InstructorCourseList is append-only for the previous instructor
+        // (it records every course they ever registered). Append the course
+        // to the new instructor's list so they can query it going forward.
+        let new_list_key = DataKey::InstructorCourseList(new_instructor.clone());
+        let mut new_instructor_courses: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&new_list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        new_instructor_courses.push_back(course_id.clone());
+        env.storage()
+            .persistent()
+            .set(&new_list_key, &new_instructor_courses);
+        env.storage().persistent().extend_ttl(
+            &new_list_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_transferred"), course_id.clone()),
+            (
+                course_id,
+                previous_instructor,
+                new_instructor,
+                admin,
+                env.ledger().sequence(),
+            ),
+        );
+    }
+
     /// Admin archives a course permanently.
     /// Only admin can archive — this is a moderation action.
     ///
@@ -679,22 +1613,6 @@ mod tests {
                             );
                         }
 
-                        // Archive the enrollment to EnrollmentHistory before removing it
-                        let mut arc_enrollment = enrollment.clone();
-                        arc_enrollment.is_refunded = true;
-                        let arc_history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
-                        let mut arc_history: Vec<Enrollment> = env
-                            .storage()
-                            .persistent()
-                            .get(&arc_history_key)
-                            .unwrap_or_else(|| Vec::new(&env));
-                        arc_history.push_back(arc_enrollment);
-                        env.storage().persistent().set(&arc_history_key, &arc_history);
-                        env.storage().persistent().extend_ttl(
-                            &arc_history_key,
-                            Self::PERSISTENT_TTL_THRESHOLD,
-                            Self::PERSISTENT_TTL_EXTEND_TO,
-                        );
                         // Archive the refunded enrollment before removing the active record.
                         let mut archived_enrollment: Enrollment = enrollment.clone();
                         archived_enrollment.is_refunded = true;
@@ -715,48 +1633,61 @@ mod tests {
 
                         env.storage().persistent().remove(&enrollment_key);
 
-    #[test]
-    fn test_withdraw_tokens_validation() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, HamplardContract);
-        let client = HamplardContractClient::new(&env, &contract_id);
+                        refund_count = refund_count
+                            .checked_add(1)
+                            .unwrap_or_else(|| panic!("refund count overflow"));
+                        total_refunded = total_refunded
+                            .checked_add(platform_amount + instructor_amount)
+                            .unwrap_or_else(|| panic!("total_refunded overflow"));
 
-        let admin = Address::random(&env);
-        let token = Address::random(&env);
-        let instructor = Address::random(&env);
+                        if course.active_enrollments > 0 {
+                            course.active_enrollments -= 1;
+                        }
 
-        // Setup: mint tokens to contract
-        env.token().mint(&token, &contract_id, &1000);
+                        let total_active: u32 = env
+                            .storage()
+                            .instance()
+                            .get(&DataKey::TotalActiveEnrollments)
+                            .unwrap_or(0);
+                        if total_active > 0 {
+                            env.storage()
+                                .instance()
+                                .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
+                        }
 
-        // Deposit earnings (increases owed balance)
-        client.deposit_earnings(&instructor, &token, &500);
+                        Self::promote_from_waitlist(&env, &course_id);
+                    }
+                }
+            }
+        }
 
-        // Test 1: Cannot withdraw more than surplus (1000 - 500 = 500)
-        let result = std::panic::catch_unwind(|| {
-            client.withdraw_tokens(&token, &admin, &600);
-        });
-        assert!(result.is_err());
+        // Only archive when there are no remaining active enrollments.
+        // If students remain enrolled, persist the decremented counts so
+        // follow-up refund batches observe the updated course state.
+        if course.active_enrollments > 0 {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Course(course_id.clone()), &course);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Course(course_id.clone()),
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+            return;
+        }
 
-        // Test 2: Can withdraw surplus
-        client.withdraw_tokens(&token, &admin, &500);
-        assert_eq!(env.token().balance(&token, &contract_id), 500);
+        course.status = CourseStatus::Archived;
+        course.archived_at_ledger = Some(env.ledger().sequence());
+        course.last_updated_ledger = env.ledger().sequence();
 
-        // Test 3: Cannot withdraw zero or negative
-        let result = std::panic::catch_unwind(|| {
-            client.withdraw_tokens(&token, &admin, &0);
-        });
-        assert!(result.is_err());
+        env.storage()
+            .persistent()
+            .set(&DataKey::ArchivedCourse(course_id.clone()), &course);
 
-        let result = std::panic::catch_unwind(|| {
-            client.withdraw_tokens(&token, &admin, &-100);
-        });
-        assert!(result.is_err());
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Course(course_id.clone()));
 
-        // Test 4: Cannot withdraw instructor earnings
-        let result = std::panic::catch_unwind(|| {
-            client.withdraw_tokens(&token, &admin, &500);
-        });
-        assert!(result.is_err());
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
             (course_id.clone(), admin1.clone(), admin2.clone()),
@@ -837,6 +1768,46 @@ mod tests {
         );
 
         course.version
+    }
+
+    /// Remove the capacity cap on a course, making it unlimited.
+    /// Can be called by the course instructor or an admin.
+    pub fn clear_course_max_capacity(env: Env, caller: Address, course_id: String) {
+        caller.require_auth();
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            panic!("unauthorized");
+        }
+
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            panic!("instructor is frozen");
+        }
+
+        if course.status == CourseStatus::Archived {
+            panic!("cannot update archived course");
+        }
+
+        course.max_capacity = None;
+        course.version = course
+            .version
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("course version overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "course_updated"), course_id.clone()),
+            (course_id, course.version, caller),
+        );
     }
 
     /// Instructor configures an optional enrollment expiry for a course.
@@ -1225,6 +2196,11 @@ mod tests {
             panic!("admin cannot enroll in courses");
         }
 
+        // Issue 168: Self-enrollment guard
+        if *student == env.current_contract_address() {
+            panic!("enroll: student cannot be the contract itself");
+        }
+
         let registered_instructor: Address = env
             .storage()
             .persistent()
@@ -1420,6 +2396,7 @@ mod tests {
         // Risk flags come from the same helper the fee previews use, so a
         // quote from get_effective_fee_for_payment() matches this charge.
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(env, student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
@@ -1595,6 +2572,7 @@ mod tests {
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
+            completed_at_ledger: None,
         };
 
         env.storage().persistent().set(
@@ -1691,6 +2669,7 @@ mod tests {
             panic!("course is not available for enrollment");
         }
 
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
@@ -1785,6 +2764,7 @@ mod tests {
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
+            completed_at_ledger: None,
         };
 
         env.storage().persistent().set(
@@ -1944,6 +2924,7 @@ mod tests {
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(&env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             &env,
             &course.token,
@@ -2017,6 +2998,7 @@ mod tests {
             platform_amount,
             instructor_amount,
             enrollment_ref: new_enrollment_ref,
+            completed_at_ledger: None,
         };
 
         env.storage()
@@ -2110,11 +3092,6 @@ mod tests {
             env.storage().persistent().remove(&earnings_key);
         } else {
             env.storage().persistent().set(&earnings_key, &new_balance);
-            env.storage().persistent().extend_ttl(
-                &earnings_key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
         }
 
         let token_client = token::Client::new(&env, &token);
@@ -2230,6 +3207,7 @@ mod tests {
 
         enrollment.completed = true;
         enrollment.evidence_hash = evidence_hash;
+        enrollment.completed_at_ledger = Some(env.ledger().sequence()); // Issue 166
 
         env.storage().persistent().set(
             &DataKey::Enrollment(student.clone(), course_id.clone()),
@@ -2623,11 +3601,6 @@ mod tests {
         cert.revocation_deadline = Some(deadline);
 
         env.storage().persistent().set(&certificate_key, &cert);
-        env.storage().persistent().extend_ttl(
-            &certificate_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
 
         env.events().publish(
             (
@@ -2761,6 +3734,10 @@ mod tests {
         // message from this contract. Negative amounts are never valid.
         if amount <= 0 {
             panic!("withdraw_tokens: amount must be greater than zero");
+        }
+
+        if admin1 == admin2 {
+            panic!("unauthorized: requires both admin signatures");
         }
 
         admin1.require_auth();
@@ -3492,8 +4469,6 @@ mod tests {
             course_id: course_id.clone(),
             requested_at_ledger: env.ledger().sequence(),
             status: RefundStatus::Pending,
-            resolved_amount: None,
-            resolved_at_ledger: None,
         };
 
         env.storage().persistent().set(&key, &request);
@@ -3579,9 +4554,6 @@ mod tests {
                 );
             }
 
-            // Mark enrollment as refunded, archive to EnrollmentHistory,
-            // then remove the active record so `is_enrolled` reflects that
-            // the student is no longer enrolled.
             // Archive the refunded enrollment to EnrollmentHistory before
             // removing the active record, so the refund is auditable on-chain.
             enrollment.is_refunded = true;
@@ -3609,11 +4581,6 @@ mod tests {
             env.storage()
                 .persistent()
                 .set(&DataKey::Course(course_id.clone()), &course);
-            env.storage().persistent().extend_ttl(
-                &DataKey::Course(course_id.clone()),
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
 
             // Decrement platform-wide active enrollment counter
             let total_active: u32 = env
@@ -3628,20 +4595,11 @@ mod tests {
             }
 
             request.status = RefundStatus::Approved;
-            request.resolved_amount = Some(platform_amount + instructor_amount);
-            request.resolved_at_ledger = Some(env.ledger().sequence());
         } else {
             request.status = RefundStatus::Rejected;
-            request.resolved_amount = Some(0);
-            request.resolved_at_ledger = Some(env.ledger().sequence());
         }
 
         env.storage().persistent().set(&key, &request);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
 
         env.events().publish(
             (Symbol::new(&env, "refund_processed"), course_id.clone()),
@@ -4264,6 +5222,10 @@ mod tests {
             .get(&DataKey::SecondaryAdmin)
             .unwrap();
 
+        if caller1 == caller2 {
+            panic!("unauthorized: requires both admin signatures");
+        }
+
         if (*caller1 == admin && *caller2 == secondary_admin)
             || (*caller1 == secondary_admin && *caller2 == admin)
         {
@@ -4778,18 +5740,6 @@ mod tests {
     pub fn escalate_to_arbitration(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
-        // Issue 257: Prevent duplicate escalation for the same dispute
-        let arb_key = ArbitrationKey::Case(caller.clone(), course_id.clone());
-        if let Some(existing) = env
-            .storage()
-            .persistent()
-            .get::<ArbitrationKey, ArbitrationCase>(&arb_key)
-        {
-            if existing.status == ArbitrationStatus::Open {
-                panic!("escalate_to_arbitration: case already open for this dispute");
-            }
-        }
-
         let config: ArbitrationFeeConfig = env
             .storage()
             .instance()
@@ -4820,17 +5770,6 @@ mod tests {
             &config.fee_per_case,
         );
 
-        // Issue 255: Persist the arbitration case record
-        let case = ArbitrationCase {
-            student: caller.clone(),
-            course_id: course_id.clone(),
-            fee_paid: config.fee_per_case,
-            status: ArbitrationStatus::Open,
-            created_at_ledger: env.ledger().sequence(),
-        };
-        env.storage().persistent().set(&arb_key, &case);
-        env.storage().persistent().extend_ttl(
-            &arb_key,
         // Derive a case ID from the course_id (unique per caller+course_id pair).
         let case_id = course_id.clone();
 
@@ -4858,10 +5797,6 @@ mod tests {
         );
     }
 
-    /// Get an arbitration case by student and course ID.
-    pub fn get_arbitration_case(
-        env: Env,
-        student: Address,
     /// Retrieve a persistent arbitration case record.
     ///
     /// Returns `None` if no case has been opened for this (caller, course_id) pair.
@@ -4872,22 +5807,6 @@ mod tests {
     ) -> Option<ArbitrationCase> {
         env.storage()
             .persistent()
-            .get(&ArbitrationKey::Case(student, course_id))
-    }
-
-    /// Resolve an open arbitration case.
-    ///
-    /// # Arguments
-    /// - `admin`     — platform admin (must sign)
-    /// - `student`   — the student who escalated the dispute
-    /// - `course_id` — the course the dispute is about
-    /// - `outcome`   — `ResolvedRefund` sends fee back to student; `ResolvedPayout` sends fee to instructor
-    pub fn resolve_arbitration(
-        env: Env,
-        admin: Address,
-        student: Address,
-        course_id: String,
-        outcome: ArbitrationStatus,
             .get(&ArbitrationCaseKey { caller, course_id })
     }
 
@@ -4910,54 +5829,6 @@ mod tests {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
-        let arb_key = ArbitrationKey::Case(student.clone(), course_id.clone());
-        let mut case = env
-            .storage()
-            .persistent()
-            .get::<ArbitrationKey, ArbitrationCase>(&arb_key)
-            .unwrap_or_else(|| panic!("arbitration case not found"));
-
-        if case.status != ArbitrationStatus::Open {
-            panic!("arbitration case is already resolved");
-        }
-
-        if outcome == ArbitrationStatus::Open {
-            panic!("outcome must be ResolvedRefund or ResolvedPayout");
-        }
-
-        let course = Self::get_course_internal(&env, &course_id)
-            .unwrap_or_else(|| panic!("course not found"));
-
-        let token_client = token::Client::new(&env, &course.token);
-
-        match outcome {
-            ArbitrationStatus::ResolvedRefund => {
-                // Return fee to student
-                if case.fee_paid > 0 {
-                    token_client.transfer(
-                        &env.current_contract_address(),
-                        &student,
-                        &case.fee_paid,
-                    );
-                }
-            }
-            ArbitrationStatus::ResolvedPayout => {
-                // Send fee to instructor
-                if case.fee_paid > 0 {
-                    token_client.transfer(
-                        &env.current_contract_address(),
-                        &course.instructor,
-                        &case.fee_paid,
-                    );
-                }
-            }
-            ArbitrationStatus::Open => {}
-        }
-
-        case.status = outcome;
-        env.storage().persistent().set(&arb_key, &case);
-        env.storage().persistent().extend_ttl(
-            &arb_key,
         let case_key = ArbitrationCaseKey { caller: caller.clone(), course_id: course_id.clone() };
         let mut case: ArbitrationCase = env
             .storage()
@@ -4998,7 +5869,6 @@ mod tests {
 
         env.events().publish(
             (Symbol::new(&env, "arbitration_resolved"), course_id.clone()),
-            (student, course_id, admin),
             (caller, course_id, for_student, admin),
         );
     }
@@ -5197,3 +6067,5 @@ mod tests {
         }
     }
 }
+
+mod test;
