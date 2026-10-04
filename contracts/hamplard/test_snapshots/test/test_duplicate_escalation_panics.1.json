@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 10,
+    "address": 9,
     "nonce": 0
   },
   "auth": [
@@ -146,12 +146,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 500000000
+                    "lo": 100000000
                   }
                 },
                 {
@@ -163,9 +163,6 @@
                 "void",
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
-                },
-                {
-                  "vec": []
                 }
               ]
             }
@@ -187,7 +184,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             }
@@ -209,7 +206,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             }
@@ -230,7 +227,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 500000000
+                        "lo": 100000000
                       }
                     }
                   ]
@@ -249,19 +246,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "mark_completed",
+              "function_name": "set_arbitration_fee_config",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                },
-                {
-                  "string": "COURSE-CERT-DENY"
-                },
-                {
-                  "string": "evidence"
+                  "i128": {
+                    "hi": 0,
+                    "lo": 5000000
+                  }
                 }
               ]
             }
@@ -272,37 +266,47 @@
     ],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "issue_certificate",
+              "function_name": "escalate_to_arbitration",
               "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
-                },
-                {
-                  "string": "CERT-DENY"
-                },
-                {
-                  "string": "Deny Course"
-                },
-                {
-                  "string": "backend-ref-deny"
-                },
-                "void",
-                "void"
+                  "string": "ARB-DUP"
+                }
               ]
             }
           },
-          "sub_invocations": []
+          "sub_invocations": [
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
+                  "function_name": "transfer",
+                  "args": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 5000000
+                      }
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            }
+          ]
         }
       ]
     ],
@@ -386,10 +390,13 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "Certificate"
+                  "symbol": "Case"
                 },
                 {
-                  "string": "CERT-DENY"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "ARB-DUP"
                 }
               ]
             },
@@ -406,10 +413,13 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "Certificate"
+                      "symbol": "Case"
                     },
                     {
-                      "string": "CERT-DENY"
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    },
+                    {
+                      "string": "ARB-DUP"
                     }
                   ]
                 },
@@ -421,56 +431,12 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-CERT-DENY"
+                        "string": "ARB-DUP"
                       }
                     },
                     {
                       "key": {
-                        "symbol": "course_title"
-                      },
-                      "val": {
-                        "string": "Deny Course"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "enrollment_reference"
-                      },
-                      "val": {
-                        "string": "backend-ref-deny"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "expires_at_ledger"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "id"
-                      },
-                      "val": {
-                        "string": "CERT-DENY"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "instructor"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "instructor_signature"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "issued_at_ledger"
+                        "symbol": "created_at_ledger"
                       },
                       "val": {
                         "u32": 1
@@ -478,43 +444,26 @@
                     },
                     {
                       "key": {
-                        "symbol": "issued_by"
+                        "symbol": "fee_paid"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                        "i128": {
+                          "hi": 0,
+                          "lo": 5000000
+                        }
                       }
                     },
                     {
                       "key": {
-                        "symbol": "revocation_deadline"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "revocation_ledger"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "revocation_reason"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
-                        "symbol": "revoked"
+                        "symbol": "status"
                       },
                       "val": {
-                        "bool": false
+                        "vec": [
+                          {
+                            "symbol": "Open"
+                          }
+                        ]
                       }
-                    },
-                    {
-                      "key": {
-                        "symbol": "revoked_by"
-                      },
-                      "val": "void"
                     },
                     {
                       "key": {
@@ -543,7 +492,7 @@
                   "symbol": "Course"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             },
@@ -563,7 +512,7 @@
                       "symbol": "Course"
                     },
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 },
@@ -575,7 +524,7 @@
                         "symbol": "active_enrollments"
                       },
                       "val": {
-                        "u32": 0
+                        "u32": 1
                       }
                     },
                     {
@@ -586,18 +535,10 @@
                     },
                     {
                       "key": {
-                        "symbol": "categories"
-                      },
-                      "val": {
-                        "vec": []
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "certificates_issued"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -639,7 +580,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "COURSE-CERT-DENY"
+                        "string": "ARB-DUP"
                       }
                     },
                     {
@@ -701,7 +642,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -732,7 +673,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -768,59 +709,10 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "CourseCertificates"
-                },
-                {
-                  "string": "COURSE-CERT-DENY"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "CourseCertificates"
-                    },
-                    {
-                      "string": "COURSE-CERT-DENY"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "vec": [
-                    {
-                      "string": "CERT-DENY"
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          6300001
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
                   "symbol": "CourseFailureCount"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             },
@@ -840,7 +732,7 @@
                       "symbol": "CourseFailureCount"
                     },
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 },
@@ -865,7 +757,7 @@
                   "symbol": "CourseInstructorRef"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             },
@@ -885,7 +777,7 @@
                       "symbol": "CourseInstructorRef"
                     },
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 },
@@ -932,7 +824,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 }
@@ -956,7 +848,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "COURSE-CERT-DENY"
+                  "string": "ARB-DUP"
                 }
               ]
             },
@@ -979,7 +871,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 },
@@ -993,7 +885,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 500000000
+                          "lo": 100000000
                         }
                       }
                     },
@@ -1001,16 +893,14 @@
                       "key": {
                         "symbol": "certificate_id"
                       },
-                      "val": {
-                        "string": "CERT-DENY"
-                      }
+                      "val": "void"
                     },
                     {
                       "key": {
                         "symbol": "certificate_issued"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -1018,15 +908,7 @@
                         "symbol": "completed"
                       },
                       "val": {
-                        "bool": true
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "completed_at_ledger"
-                      },
-                      "val": {
-                        "u32": 1
+                        "bool": false
                       }
                     },
                     {
@@ -1034,7 +916,7 @@
                         "symbol": "course_id"
                       },
                       "val": {
-                        "string": "COURSE-CERT-DENY"
+                        "string": "ARB-DUP"
                       }
                     },
                     {
@@ -1065,9 +947,7 @@
                       "key": {
                         "symbol": "evidence_hash"
                       },
-                      "val": {
-                        "string": "evidence"
-                      }
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -1076,7 +956,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 400000000
+                          "lo": 80000000
                         }
                       }
                     },
@@ -1095,7 +975,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000
+                          "lo": 20000000
                         }
                       }
                     },
@@ -1157,7 +1037,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     },
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 }
@@ -1206,7 +1086,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "COURSE-CERT-DENY"
+                      "string": "ARB-DUP"
                     }
                   ]
                 }
@@ -1261,7 +1141,7 @@
                 "val": {
                   "i128": {
                     "hi": 0,
-                    "lo": 400000000
+                    "lo": 80000000
                   }
                 }
               }
@@ -1356,7 +1236,7 @@
                         "symbol": "total_certificates"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1364,7 +1244,7 @@
                         "symbol": "total_completions"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1422,7 +1302,7 @@
                 "val": {
                   "i128": {
                     "hi": 0,
-                    "lo": 400000000
+                    "lo": 80000000
                   }
                 }
               }
@@ -1525,6 +1405,30 @@
                         },
                         "val": {
                           "bool": true
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ArbitrationFeeConfig"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "map": [
+                            {
+                              "key": {
+                                "symbol": "fee_per_case"
+                              },
+                              "val": {
+                                "i128": {
+                                  "hi": 0,
+                                  "lo": 5000000
+                                }
+                              }
+                            }
+                          ]
                         }
                       },
                       {
@@ -1662,7 +1566,7 @@
                           ]
                         },
                         "val": {
-                          "u32": 0
+                          "u32": 1
                         }
                       },
                       {
@@ -1784,39 +1688,6 @@
             "ext": "v0"
           },
           6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 1194852393571756375
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 1194852393571756375
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6312000
         ]
       ],
       [
@@ -1957,6 +1828,39 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
             "key": {
               "ledger_key_nonce": {
+                "nonce": 1194852393571756375
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 1194852393571756375
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6312000
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+            "key": {
+              "ledger_key_nonce": {
                 "nonce": 6277191135259896685
               }
             },
@@ -2028,7 +1932,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 400000000
+                          "lo": 85000000
                         }
                       }
                     },
@@ -2101,7 +2005,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000
+                          "lo": 20000000
                         }
                       }
                     },
@@ -2247,7 +2151,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 99500000000
+                          "lo": 99895000000
                         }
                       }
                     },
