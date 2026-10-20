@@ -60,6 +60,62 @@ fn setup() -> (Env, Address, Address, Address, Address, Address, Address) {
     )
 }
 
+#[track_caller]
+fn assert_only_auths(env: &Env, expected: &[Address]) {
+    let auths = env.auths();
+    assert_eq!(
+        auths.len(),
+        expected.len(),
+        "unexpected auth count: expected {} signer(s), got {}",
+        expected.len(),
+        auths.len()
+    );
+    for expected_address in expected {
+        assert!(
+            auths.iter().any(|(address, _)| address == expected_address),
+            "missing expected auth for {:?}",
+            expected_address
+        );
+    }
+}
+
+macro_rules! invoke_with_auth {
+    ($env:expr, $client:expr, $contract:expr, $signer:expr, $fn_name:literal, $args:expr, $method:ident($($arg:expr),* $(,)?)) => {{
+        let args = ($args).into_val($env);
+        let invoke = MockAuthInvoke {
+            contract: $contract,
+            fn_name: $fn_name,
+            args,
+            sub_invokes: &[],
+        };
+        let auth = MockAuth {
+            address: $signer,
+            invoke: &invoke,
+        };
+        $client.mock_auths(&[auth]).$method($($arg),*);
+    }};
+}
+
+macro_rules! invoke_with_auths {
+    ($env:expr, $client:expr, $contract:expr, $signers:expr, $fn_name:literal, $args:expr, $method:ident($($arg:expr),* $(,)?)) => {{
+        let args = ($args).into_val($env);
+        let invoke = MockAuthInvoke {
+            contract: $contract,
+            fn_name: $fn_name,
+            args,
+            sub_invokes: &[],
+        };
+        let auths: std::vec::Vec<MockAuth> = $signers
+            .iter()
+            .map(|address| MockAuth {
+                address: *address,
+                invoke: &invoke,
+            })
+            .collect();
+        $client.mock_auths(&auths).$method($($arg),*);
+    }};
+}
+
 fn register_and_approve_course(
     env: &Env,
     client: &HamplardContractClient,
@@ -100,7 +156,6 @@ fn evidence_hash(env: &Env, value: &str) -> BytesN<32> {
     }
     BytesN::from_array(env, &bytes)
 }
-
 
 fn get_enrollment_ref(
     env: &Env,
@@ -1823,7 +1878,6 @@ fn test_archive_course_rejects_oversized_refund_list() {
 }
 
 #[test]
-#[should_panic]
 fn test_enroll_insufficient_funds_rollback() {
     let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -1845,12 +1899,14 @@ fn test_enroll_insufficient_funds_rollback() {
     // Student has enough for platform fee (100_000_000) but not the full course price
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &150_000_000);
 
-    // Enroll should panic because instructor transfer will fail
+    // Enrollment exits cleanly when the token transfer fails.
     client.enroll(&student, &course_id);
 
-    // Verify treasury didn't receive any tokens (rollback proof)
+    // Verify no funds moved and no enrollment state was written.
     assert_eq!(token_client.balance(&treasury), 0);
     assert_eq!(token_client.balance(&student), 150_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(!client.is_enrolled(&student, &course_id));
 }
 
 #[test]
@@ -2552,7 +2608,7 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
     client.request_refund(&refund_student, &refund_course_id);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.process_refund(&admin, &refund_student, &refund_course_id, &true);
+        client.process_refund(&admin, &refund_student, &refund_course_id, &true, &None);
     }));
     assert!(res.is_err(), "old admin must be rejected by process_refund");
 
@@ -3071,9 +3127,7 @@ fn test_unpause_platform_rejects_double_unpause() {
 /// Read the remaining instance TTL of the contract.
 fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
     use soroban_sdk::testutils::storage::Instance as _;
-    env.as_contract(contract_id, || {
-        env.storage().instance().get_ttl()
-    })
+    env.as_contract(contract_id, || env.storage().instance().get_ttl())
 }
 
 #[test]
@@ -3085,9 +3139,7 @@ fn test_pause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.pause_platform(&admin);
 
@@ -3108,9 +3160,7 @@ fn test_unpause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.unpause_platform(&admin);
 
@@ -4737,7 +4787,7 @@ fn test_refund_lifecycle() {
     // Approve refund
     let initial_balance = token::Client::new(&env, &token_id).balance(&student);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let final_balance = token::Client::new(&env, &token_id).balance(&student);
     assert_eq!(final_balance - initial_balance, 1_000_000_000);
@@ -4802,7 +4852,7 @@ fn test_refund_rejection() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     let request = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(request.status, RefundStatus::Rejected);
@@ -5420,7 +5470,7 @@ fn test_process_refund_event_includes_admin() {
     client.enroll(&student, &course_id);
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let (event_student, event_course_id, event_approved, event_admin): (
         Address,
@@ -7548,6 +7598,7 @@ fn test_platform_counter_decrements_on_refund() {
         &student1,
         &String::from_str(&env, "COURSE-001"),
         &true,
+        &None,
     );
 
     // Counter should decrement
@@ -9577,7 +9628,9 @@ fn test_mark_completed_accepts_zeroed_evidence_hash() {
     let evidence = Some(BytesN::from_array(&env, &[0u8; 32]));
     client.mark_completed(&admin, &student, &course_id, &evidence);
 
-    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
     assert_eq!(enrollment.evidence_hash, evidence);
     assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
@@ -11290,7 +11343,7 @@ fn test_process_refund_archives_enrollment_to_history() {
     // Request and approve the refund.
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     // The active enrollment must no longer exist.
     assert!(
@@ -11346,7 +11399,7 @@ fn test_re_enroll_rejects_before_enrollment_start_ledger() {
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "evidence")),
+        &Some(evidence_hash(&env, "evidence")),
     );
 
     // Instructor sets the enrollment start ledger in the future
@@ -11381,7 +11434,7 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "evidence")),
+        &Some(evidence_hash(&env, "evidence")),
     );
 
     let enrollment_start = env.ledger().sequence() + 10;
@@ -11397,4 +11450,1306 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
         .unwrap();
     assert!(!enrollment.completed);
     assert_eq!(enrollment.enrolled_at_ledger, enrollment_start);
+}
+
+#[test]
+fn test_targeted_auth_enroll_requires_only_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-ENROLL",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-ENROLL");
+
+    let token_transfer = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (student.clone(), contract_id.clone(), 100_000_000i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let enroll_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "enroll",
+        args: (student.clone(), course_id.clone()).into_val(&env),
+        sub_invokes: &[token_transfer],
+    };
+    let student_auth = MockAuth {
+        address: &student,
+        invoke: &enroll_invoke,
+    };
+
+    client
+        .mock_auths(&[student_auth])
+        .enroll(&student, &course_id);
+
+    assert_only_auths(&env, &[student.clone()]);
+    assert!(client.is_enrolled(&student, &course_id));
+}
+
+#[test]
+fn test_targeted_auth_init_requires_only_admin() {
+    let env = Env::default();
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let secondary_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let args = (
+        admin.clone(),
+        secondary_admin.clone(),
+        treasury.clone(),
+        20u32,
+        50u32,
+        1000u32,
+        17_280u32,
+    );
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "init",
+        args: args.into_val(&env),
+        sub_invokes: &[],
+    };
+    let auth = MockAuth {
+        address: &admin,
+        invoke: &invoke,
+    };
+
+    client.mock_auths(&[auth]).init(
+        &admin,
+        &secondary_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
+
+    assert_only_auths(&env, &[admin.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_course_lifecycle_entrypoints() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-AUTH-LIFECYCLE");
+    let content_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "register_course",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            100_000_000i128,
+            token_id.clone(),
+            0u32,
+            None::<u32>,
+            content_hash.clone(),
+            soroban_sdk::Vec::<String>::new(&env)
+        ),
+        register_course(
+            &instructor,
+            &course_id,
+            &100_000_000i128,
+            &token_id,
+            &0u32,
+            &None,
+            &content_hash,
+            &soroban_sdk::Vec::new(&env)
+        )
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "approve_course",
+        (admin.clone(), course_id.clone()),
+        approve_course(&admin, &course_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "update_course",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            Some(150_000_000i128),
+            Some(Some(10u32))
+        ),
+        update_course(
+            &instructor,
+            &course_id,
+            &Some(150_000_000i128),
+            &Some(Some(10u32))
+        )
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "set_enrollment_start_ledger",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            Some(env.ledger().sequence() + 1)
+        ),
+        set_enrollment_start_ledger(&instructor, &course_id, &Some(env.ledger().sequence() + 1))
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "set_enrollment_expiry",
+        (instructor.clone(), course_id.clone(), Some(50u32)),
+        set_enrollment_expiry(&instructor, &course_id, &Some(50u32))
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "update_content_hash",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            BytesN::from_array(&env, &[2u8; 32])
+        ),
+        update_content_hash(
+            &instructor,
+            &course_id,
+            &BytesN::from_array(&env, &[2u8; 32])
+        )
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "set_course_expiry",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            Some(env.ledger().sequence() + 10_000)
+        ),
+        set_course_expiry(
+            &instructor,
+            &course_id,
+            &Some(env.ledger().sequence() + 10_000)
+        )
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "set_prerequisite_courses",
+        (
+            instructor.clone(),
+            course_id.clone(),
+            soroban_sdk::Vec::<String>::new(&env)
+        ),
+        set_prerequisite_courses(&instructor, &course_id, &soroban_sdk::Vec::new(&env))
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "set_max_certificates",
+        (instructor.clone(), course_id.clone(), Some(10u32)),
+        set_max_certificates(&instructor, &course_id, &Some(10u32))
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "pause_course",
+        (instructor.clone(), course_id.clone()),
+        pause_course(&instructor, &course_id)
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "unpause_course",
+        (admin.clone(), course_id.clone()),
+        unpause_course(&admin, &course_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_high_value_course_threshold",
+        (admin.clone(), 5_000_000_000i128),
+        set_high_value_course_threshold(&admin, &5_000_000_000i128)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &instructor,
+        "clear_course_max_capacity",
+        (instructor.clone(), course_id.clone()),
+        clear_course_max_capacity(&instructor, &course_id)
+    );
+    assert_only_auths(&env, &[instructor.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "pause_course",
+        (admin.clone(), course_id.clone()),
+        pause_course(&admin, &course_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "archive_course",
+        (
+            admin.clone(),
+            sec_admin.clone(),
+            course_id.clone(),
+            None::<soroban_sdk::Vec<Address>>
+        ),
+        archive_course(&admin, &sec_admin, &course_id, &None)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    let rejected_course_id = String::from_str(&env, "COURSE-AUTH-REJECT");
+    client.register_course(
+        &instructor,
+        &rejected_course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+        &content_hash,
+        &soroban_sdk::Vec::new(&env),
+    );
+    let reason = String::from_str(&env, "quality review failed");
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "reject_course",
+        (admin.clone(), rejected_course_id.clone(), reason.clone()),
+        reject_course(&admin, &rejected_course_id, &reason)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_mark_completed_without_evidence_requires_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-NO-EVIDENCE",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-NO-EVIDENCE");
+    client.enroll(&student, &course_id);
+
+    let args = (
+        admin.clone(),
+        student.clone(),
+        course_id.clone(),
+        None::<BytesN<32>>,
+    );
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "mark_completed",
+        args: args.clone().into_val(&env),
+        sub_invokes: &[],
+    };
+    let admin_auth = MockAuth {
+        address: &admin,
+        invoke: &invoke,
+    };
+    let admin_only = client
+        .mock_auths(&[admin_auth])
+        .try_mark_completed(&admin, &student, &course_id, &None);
+    assert!(
+        admin_only.is_err(),
+        "student auth must be required when no evidence hash is supplied"
+    );
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &student],
+        "mark_completed",
+        args,
+        mark_completed(&admin, &student, &course_id, &None)
+    );
+    assert_only_auths(&env, &[admin.clone(), student.clone()]);
+    assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
+
+#[test]
+fn test_targeted_auth_transfer_course_requires_instructor_and_admin() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-TRANSFER",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-TRANSFER");
+    let new_instructor = Address::generate(&env);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&instructor, &admin],
+        "transfer_course",
+        (
+            instructor.clone(),
+            admin.clone(),
+            course_id.clone(),
+            new_instructor.clone()
+        ),
+        transfer_course(&instructor, &admin, &course_id, &new_instructor)
+    );
+
+    assert_only_auths(&env, &[instructor.clone(), admin.clone()]);
+    assert_eq!(
+        client.get_course(&course_id).unwrap().instructor,
+        new_instructor
+    );
+}
+
+#[test]
+fn test_targeted_auth_completion_and_certificate_entrypoints() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-CERT",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-CERT");
+    client.enroll(&student, &course_id);
+
+    let evidence = Some(evidence_hash(&env, "targeted-auth"));
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "mark_completed",
+        (
+            admin.clone(),
+            student.clone(),
+            course_id.clone(),
+            evidence.clone()
+        ),
+        mark_completed(&admin, &student, &course_id, &evidence)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    let certificate_id = String::from_str(&env, "CERT-AUTH-1");
+    let course_title = String::from_str(&env, "Course");
+    let enrollment_ref = get_enrollment_ref(&env, &client, &student, "COURSE-AUTH-CERT");
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "issue_certificate",
+        (
+            admin.clone(),
+            student.clone(),
+            course_id.clone(),
+            certificate_id.clone(),
+            course_title.clone(),
+            enrollment_ref.clone(),
+            None::<u32>,
+            None::<BytesN<64>>
+        ),
+        issue_certificate(
+            &admin,
+            &student,
+            &course_id,
+            &certificate_id,
+            &course_title,
+            &enrollment_ref,
+            &None,
+            &None
+        )
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    let reason = String::from_str(&env, "ISSUED_IN_ERROR");
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "revoke_certificate",
+        (admin.clone(), certificate_id.clone(), reason.clone()),
+        revoke_certificate(&admin, &certificate_id, &reason)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &student,
+        "challenge_revocation",
+        (student.clone(), certificate_id.clone()),
+        challenge_revocation(&student, &certificate_id)
+    );
+    assert_only_auths(&env, &[student.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "bulk_revoke_course_certificates",
+        (admin.clone(), course_id.clone()),
+        bulk_revoke_course_certificates(&admin, &course_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_admin_config_entrypoints() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let approver = Address::generate(&env);
+    let blocked_student = Address::generate(&env);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "update_default_fee",
+        (admin.clone(), 25u32),
+        update_default_fee(&admin, &25u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "add_approved_token",
+        (admin.clone(), token_id.clone()),
+        add_approved_token(&admin, &token_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_token_btc_eth",
+        (admin.clone(), token_id.clone(), false),
+        set_token_btc_eth(&admin, &token_id, &false)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "update_max_courses_limit",
+        (admin.clone(), 60u32),
+        update_max_courses_limit(&admin, &60u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "freeze_instructor",
+        (admin.clone(), instructor.clone()),
+        freeze_instructor(&admin, &instructor)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "unfreeze_instructor",
+        (admin.clone(), instructor.clone()),
+        unfreeze_instructor(&admin, &instructor)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "add_approver",
+        (admin.clone(), approver.clone()),
+        add_approver(&admin, &approver)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "remove_approver",
+        (admin.clone(), approver.clone()),
+        remove_approver(&admin, &approver)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "block_student",
+        (admin.clone(), blocked_student.clone()),
+        block_student(&admin, &blocked_student)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "unblock_student",
+        (admin.clone(), blocked_student.clone()),
+        unblock_student(&admin, &blocked_student)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_platform_enrollment_cap",
+        (admin.clone(), Some(100u32)),
+        set_platform_enrollment_cap(&admin, &Some(100u32))
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "update_min_review_delay",
+        (admin.clone(), 1u32),
+        update_min_review_delay(&admin, &1u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "update_min_completion_ledgers",
+        (admin.clone(), 100u32),
+        update_min_completion_ledgers(&admin, &100u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "update_refund_window",
+        (admin.clone(), 2000u32),
+        update_refund_window(&admin, &2000u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_revocation_challenge_period",
+        (admin.clone(), 100u32),
+        set_revocation_challenge_period(&admin, &100u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_fee_config",
+        (admin.clone(), token_id.clone(), 100u32),
+        set_fee_config(&admin, &token_id, &100u32)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_arbitration_fee_config",
+        (admin.clone(), 1000i128),
+        set_arbitration_fee_config(&admin, &1000i128)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_risk_config_enabled",
+        (admin.clone(), true),
+        set_risk_config_enabled(&admin, &true)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "pause_platform",
+        (admin.clone(),),
+        pause_platform(&admin)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "unpause_platform",
+        (admin.clone(),),
+        unpause_platform(&admin)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "remove_approved_token",
+        (admin.clone(), token_id.clone()),
+        remove_approved_token(&admin, &token_id)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_multi_admin_entrypoints() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-MULTI",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-MULTI");
+    client.enroll(&student, &course_id);
+
+    let destination = Address::generate(&env);
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "withdraw_tokens",
+        (
+            admin.clone(),
+            sec_admin.clone(),
+            token_id.clone(),
+            1i128,
+            destination.clone()
+        ),
+        withdraw_tokens(&admin, &sec_admin, &token_id, &1i128, &destination)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+    assert_eq!(token::Client::new(&env, &token_id).balance(&destination), 1);
+
+    let new_treasury = Address::generate(&env);
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "update_treasury",
+        (admin.clone(), sec_admin.clone(), new_treasury.clone()),
+        update_treasury(&admin, &sec_admin, &new_treasury)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "set_admin_expiry",
+        (
+            admin.clone(),
+            sec_admin.clone(),
+            Some(env.ledger().sequence() + 10_000)
+        ),
+        set_admin_expiry(&admin, &sec_admin, &Some(env.ledger().sequence() + 10_000))
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "set_upgrade_timelock",
+        (admin.clone(), sec_admin.clone(), 50u32),
+        set_upgrade_timelock(&admin, &sec_admin, &50u32)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    let wasm_hash = BytesN::from_array(&env, &[9u8; 32]);
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "propose_upgrade",
+        (admin.clone(), sec_admin.clone(), wasm_hash.clone()),
+        propose_upgrade(&admin, &sec_admin, &wasm_hash)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "cancel_upgrade",
+        (admin.clone(), sec_admin.clone()),
+        cancel_upgrade(&admin, &sec_admin)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    let new_admin = Address::generate(&env);
+    let new_sec_admin = Address::generate(&env);
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&admin, &sec_admin],
+        "transfer_admin",
+        (
+            admin.clone(),
+            sec_admin.clone(),
+            new_admin.clone(),
+            new_sec_admin.clone()
+        ),
+        transfer_admin(&admin, &sec_admin, &new_admin, &new_sec_admin)
+    );
+    assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
+
+    invoke_with_auths!(
+        &env,
+        &client,
+        &contract_id,
+        &[&new_admin, &new_sec_admin],
+        "accept_admin",
+        (new_admin.clone(), new_sec_admin.clone()),
+        accept_admin(&new_admin, &new_sec_admin)
+    );
+    assert_only_auths(&env, &[new_admin, new_sec_admin]);
+}
+
+#[test]
+fn test_targeted_auth_student_entrypoints() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-BATCH-1",
+        100_000_000,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-BATCH-2",
+        100_000_000,
+    );
+    let course_1 = String::from_str(&env, "COURSE-AUTH-BATCH-1");
+    let course_2 = String::from_str(&env, "COURSE-AUTH-BATCH-2");
+    let course_ids = Vec::from_array(&env, [course_1.clone(), course_2.clone()]);
+
+    let transfer_1 = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (student.clone(), contract_id.clone(), 100_000_000i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let transfer_2 = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (student.clone(), contract_id.clone(), 100_000_000i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let sub_invokes = [transfer_1, transfer_2];
+    let batch_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "batch_enroll",
+        args: (student.clone(), course_ids.clone()).into_val(&env),
+        sub_invokes: &sub_invokes,
+    };
+    let batch_auth = MockAuth {
+        address: &student,
+        invoke: &batch_invoke,
+    };
+
+    client
+        .mock_auths(&[batch_auth])
+        .batch_enroll(&student, &course_ids);
+
+    assert_only_auths(&env, &[student.clone()]);
+    assert!(client.is_enrolled(&student, &course_1));
+    assert!(client.is_enrolled(&student, &course_2));
+
+    let remaining_course_id = String::from_str(&env, "COURSE-AUTH-REENROLL");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-REENROLL",
+        100_000_000,
+    );
+    client.enroll(&student, &remaining_course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &remaining_course_id,
+        &Some(evidence_hash(&env, "targeted-auth-reenroll")),
+    );
+
+    let re_enroll_transfer = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (student.clone(), contract_id.clone(), 100_000_000i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let re_enroll_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "re_enroll",
+        args: (student.clone(), remaining_course_id.clone()).into_val(&env),
+        sub_invokes: &[re_enroll_transfer],
+    };
+    let re_enroll_auth = MockAuth {
+        address: &student,
+        invoke: &re_enroll_invoke,
+    };
+
+    client
+        .mock_auths(&[re_enroll_auth])
+        .re_enroll(&student, &remaining_course_id);
+
+    assert_only_auths(&env, &[student.clone()]);
+
+    let waitlist_course_id = String::from_str(&env, "COURSE-AUTH-WAITLIST");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-WAITLIST",
+        100_000_000,
+    );
+    client.update_course(&instructor, &waitlist_course_id, &None, &Some(Some(1u32)));
+    let first_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&first_student, &1_000_000_000);
+    client.enroll(&first_student, &waitlist_course_id);
+
+    let waitlisted_student = Address::generate(&env);
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &waitlisted_student,
+        "join_waitlist",
+        (waitlisted_student.clone(), waitlist_course_id.clone()),
+        join_waitlist(&waitlisted_student, &waitlist_course_id)
+    );
+    assert_only_auths(&env, &[waitlisted_student.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &waitlisted_student,
+        "leave_waitlist",
+        (waitlisted_student.clone(), waitlist_course_id.clone()),
+        leave_waitlist(&waitlisted_student, &waitlist_course_id)
+    );
+    assert_only_auths(&env, &[waitlisted_student.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_refund_and_arbitration_entrypoints() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-REFUND",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-REFUND");
+    client.enroll(&student, &course_id);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &student,
+        "request_refund",
+        (student.clone(), course_id.clone()),
+        request_refund(&student, &course_id)
+    );
+    assert_only_auths(&env, &[student.clone()]);
+
+    let platform_amount = 100_000_000i128 * 20 / 100;
+    let process_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "process_refund",
+        args: (
+            admin.clone(),
+            student.clone(),
+            course_id.clone(),
+            true,
+            None::<i128>,
+        )
+            .into_val(&env),
+        sub_invokes: &[],
+    };
+    let admin_auth = MockAuth {
+        address: &admin,
+        invoke: &process_invoke,
+    };
+    // Current refund model draws the platform share from the treasury, so the
+    // treasury must sign in addition to the admin. Tracking: #309.
+    let admin_only_result = client
+        .mock_auths(&[admin_auth])
+        .try_process_refund(&admin, &student, &course_id, &true, &None);
+    assert!(
+        admin_only_result.is_err(),
+        "treasury auth must be required while the treasury funds refunds"
+    );
+
+    let treasury_transfer = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (treasury.clone(), student.clone(), platform_amount).into_val(&env),
+        sub_invokes: &[],
+    };
+    let process_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "process_refund",
+        args: (
+            admin.clone(),
+            student.clone(),
+            course_id.clone(),
+            true,
+            None::<i128>,
+        )
+            .into_val(&env),
+        sub_invokes: &[],
+    };
+    let admin_auth = MockAuth {
+        address: &admin,
+        invoke: &process_invoke,
+    };
+    let treasury_auth = MockAuth {
+        address: &treasury,
+        invoke: &treasury_transfer,
+    };
+
+    client
+        .mock_auths(&[admin_auth, treasury_auth])
+        .process_refund(&admin, &student, &course_id, &true, &None);
+
+    assert_only_auths(&env, &[admin.clone(), treasury.clone()]);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&student),
+        1_000_000_000
+    );
+
+    let arbitration_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&arbitration_student, &1_000_000_000);
+    let arbitration_course_id = String::from_str(&env, "COURSE-AUTH-ARBITRATION");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-ARBITRATION",
+        100_000_000,
+    );
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "set_arbitration_fee_config",
+        (admin.clone(), 1000i128),
+        set_arbitration_fee_config(&admin, &1000i128)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    let fee_transfer = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (arbitration_student.clone(), contract_id.clone(), 1000i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let escalate_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "escalate_to_arbitration",
+        args: (arbitration_student.clone(), arbitration_course_id.clone()).into_val(&env),
+        sub_invokes: &[fee_transfer],
+    };
+    let escalate_auth = MockAuth {
+        address: &arbitration_student,
+        invoke: &escalate_invoke,
+    };
+
+    client
+        .mock_auths(&[escalate_auth])
+        .escalate_to_arbitration(&arbitration_student, &arbitration_course_id);
+
+    assert_only_auths(&env, &[arbitration_student.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
+        "resolve_arbitration",
+        (
+            admin.clone(),
+            arbitration_student.clone(),
+            arbitration_course_id.clone(),
+            true
+        ),
+        resolve_arbitration(&admin, &arbitration_student, &arbitration_course_id, &true)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+}
+
+#[test]
+fn test_targeted_auth_archive_with_refunds_requires_both_admins_and_treasury() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&student_a, &1_000_000_000);
+    asset_client.mint(&student_b, &1_000_000_000);
+
+    let price = 100_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-AUTH-ARCHIVE-REFUND",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-AUTH-ARCHIVE-REFUND");
+    client.enroll(&student_a, &course_id);
+    client.enroll(&student_b, &course_id);
+    client.pause_course(&admin, &course_id);
+
+    let platform_amount = price * 20 / 100;
+    let transfer_a = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (treasury.clone(), student_a.clone(), platform_amount).into_val(&env),
+        sub_invokes: &[],
+    };
+    let transfer_b = MockAuthInvoke {
+        contract: &token_id,
+        fn_name: "transfer",
+        args: (treasury.clone(), student_b.clone(), platform_amount).into_val(&env),
+        sub_invokes: &[],
+    };
+    let students = Vec::from_array(&env, [student_a.clone(), student_b.clone()]);
+    let archive_invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "archive_course",
+        args: (
+            admin.clone(),
+            sec_admin.clone(),
+            course_id.clone(),
+            Some(students.clone()),
+        )
+            .into_val(&env),
+        sub_invokes: &[],
+    };
+    let admin_auth = MockAuth {
+        address: &admin,
+        invoke: &archive_invoke,
+    };
+    let sec_admin_auth = MockAuth {
+        address: &sec_admin,
+        invoke: &archive_invoke,
+    };
+    let treasury_auth_a = MockAuth {
+        address: &treasury,
+        invoke: &transfer_a,
+    };
+    let treasury_auth_b = MockAuth {
+        address: &treasury,
+        invoke: &transfer_b,
+    };
+
+    client
+        .mock_auths(&[admin_auth, sec_admin_auth, treasury_auth_a, treasury_auth_b])
+        .archive_course(&admin, &sec_admin, &course_id, &Some(students));
+
+    let auths = env.auths();
+    for expected in [&admin, &sec_admin, &treasury] {
+        assert!(
+            auths.iter().any(|(address, _)| address == expected),
+            "missing expected auth for {:?}",
+            expected
+        );
+    }
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&student_a),
+        1_000_000_000
+    );
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&student_b),
+        1_000_000_000
+    );
+    assert_eq!(
+        client.get_course(&course_id).unwrap().status,
+        CourseStatus::Archived
+    );
 }
