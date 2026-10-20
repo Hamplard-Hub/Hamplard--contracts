@@ -101,7 +101,6 @@ fn evidence_hash(env: &Env, value: &str) -> BytesN<32> {
     BytesN::from_array(env, &bytes)
 }
 
-
 fn get_enrollment_ref(
     env: &Env,
     client: &HamplardContractClient,
@@ -1823,7 +1822,6 @@ fn test_archive_course_rejects_oversized_refund_list() {
 }
 
 #[test]
-#[should_panic]
 fn test_enroll_insufficient_funds_rollback() {
     let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -1845,12 +1843,14 @@ fn test_enroll_insufficient_funds_rollback() {
     // Student has enough for platform fee (100_000_000) but not the full course price
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &150_000_000);
 
-    // Enroll should panic because instructor transfer will fail
+    // Enrollment exits cleanly when the token transfer fails.
     client.enroll(&student, &course_id);
 
-    // Verify treasury didn't receive any tokens (rollback proof)
+    // Verify no funds moved and no enrollment state was written.
     assert_eq!(token_client.balance(&treasury), 0);
     assert_eq!(token_client.balance(&student), 150_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(!client.is_enrolled(&student, &course_id));
 }
 
 #[test]
@@ -2552,7 +2552,7 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
     client.request_refund(&refund_student, &refund_course_id);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.process_refund(&admin, &refund_student, &refund_course_id, &true);
+        client.process_refund(&admin, &refund_student, &refund_course_id, &true, &None);
     }));
     assert!(res.is_err(), "old admin must be rejected by process_refund");
 
@@ -3071,9 +3071,7 @@ fn test_unpause_platform_rejects_double_unpause() {
 /// Read the remaining instance TTL of the contract.
 fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
     use soroban_sdk::testutils::storage::Instance as _;
-    env.as_contract(contract_id, || {
-        env.storage().instance().get_ttl()
-    })
+    env.as_contract(contract_id, || env.storage().instance().get_ttl())
 }
 
 #[test]
@@ -3085,9 +3083,7 @@ fn test_pause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.pause_platform(&admin);
 
@@ -3108,9 +3104,7 @@ fn test_unpause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.unpause_platform(&admin);
 
@@ -4737,7 +4731,7 @@ fn test_refund_lifecycle() {
     // Approve refund
     let initial_balance = token::Client::new(&env, &token_id).balance(&student);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let final_balance = token::Client::new(&env, &token_id).balance(&student);
     assert_eq!(final_balance - initial_balance, 1_000_000_000);
@@ -4802,7 +4796,7 @@ fn test_refund_rejection() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     let request = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(request.status, RefundStatus::Rejected);
@@ -5420,7 +5414,7 @@ fn test_process_refund_event_includes_admin() {
     client.enroll(&student, &course_id);
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let (event_student, event_course_id, event_approved, event_admin): (
         Address,
@@ -7548,6 +7542,7 @@ fn test_platform_counter_decrements_on_refund() {
         &student1,
         &String::from_str(&env, "COURSE-001"),
         &true,
+        &None,
     );
 
     // Counter should decrement
@@ -9577,7 +9572,9 @@ fn test_mark_completed_accepts_zeroed_evidence_hash() {
     let evidence = Some(BytesN::from_array(&env, &[0u8; 32]));
     client.mark_completed(&admin, &student, &course_id, &evidence);
 
-    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
     assert_eq!(enrollment.evidence_hash, evidence);
     assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
@@ -11290,7 +11287,7 @@ fn test_process_refund_archives_enrollment_to_history() {
     // Request and approve the refund.
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     // The active enrollment must no longer exist.
     assert!(
@@ -11346,7 +11343,7 @@ fn test_re_enroll_rejects_before_enrollment_start_ledger() {
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "evidence")),
+        &Some(evidence_hash(&env, "evidence")),
     );
 
     // Instructor sets the enrollment start ledger in the future
@@ -11381,7 +11378,7 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
         &admin,
         &student,
         &course_id,
-        &Some(String::from_str(&env, "evidence")),
+        &Some(evidence_hash(&env, "evidence")),
     );
 
     let enrollment_start = env.ledger().sequence() + 10;
@@ -11397,4 +11394,260 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
         .unwrap();
     assert!(!enrollment.completed);
     assert_eq!(enrollment.enrolled_at_ledger, enrollment_start);
+}
+
+#[test]
+fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-WITHDRAW",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-FROZEN-WITHDRAW");
+    client.enroll(&student, &course_id);
+
+    let instructor_share = 500_000_000i128 * 80 / 100;
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share
+    );
+
+    client.freeze_instructor(&admin, &instructor);
+    let frozen_withdrawal = client.try_withdraw_earnings(&instructor, &token_id, &0, &None);
+    assert!(
+        frozen_withdrawal.is_err(),
+        "frozen instructors must not be able to withdraw"
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share
+    );
+
+    client.unfreeze_instructor(&admin, &instructor);
+    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&instructor),
+        instructor_share
+    );
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+}
+
+#[test]
+fn test_instructor_total_earnings_is_lifetime_net_across_withdraw_and_refund() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    let price = 1_000_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TOTAL-LIFETIME",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-TOTAL-LIFETIME");
+    client.enroll(&student, &course_id);
+
+    let instructor_share = price * 80 / 100;
+    let platform_share = price - instructor_share;
+    assert_eq!(
+        client.get_instructor_total_earnings(&instructor),
+        instructor_share
+    );
+
+    let withdrawn = 300_000_000i128;
+    client.withdraw_earnings(&instructor, &token_id, &withdrawn, &None);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share - withdrawn
+    );
+    // Withdrawals must not reduce lifetime net earnings.
+    assert_eq!(
+        client.get_instructor_total_earnings(&instructor),
+        instructor_share
+    );
+
+    client.request_refund(&student, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    let refund_amount = 625_000_000i128;
+    client.process_refund(&admin, &student, &course_id, &true, &Some(refund_amount));
+
+    let platform_refund = refund_amount * platform_share / price;
+    let instructor_refund = refund_amount - platform_refund;
+
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+    assert_eq!(
+        client.get_instructor_total_earnings(&instructor),
+        instructor_share - instructor_refund
+    );
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&instructor),
+        withdrawn
+    );
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&student),
+        10_000_000_000 - price + refund_amount
+    );
+}
+
+#[test]
+fn test_expired_enrollment_does_not_release_capacity_slot() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first_student = Address::generate(&env);
+    let second_student = Address::generate(&env);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    asset_client.mint(&first_student, &1_000_000_000);
+    asset_client.mint(&second_student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-CAPACITY",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-CAPACITY");
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)));
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+
+    client.enroll(&first_student, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 1);
+    assert_eq!(course.active_enrollments, 1);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 200;
+    });
+    assert_eq!(
+        client.has_completed(&first_student, &course_id),
+        Some(false)
+    );
+
+    let result = client.try_enroll(&second_student, &course_id);
+    assert!(
+        result.is_err(),
+        "expiry must not free a max_capacity slot on its own"
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.max_capacity, Some(1));
+    assert_eq!(course.total_enrollments, 1);
+    assert_eq!(course.active_enrollments, 1);
+    assert!(!client.is_enrolled(&second_student, &course_id));
+}
+
+#[test]
+fn test_expired_enrollment_can_re_enroll_and_is_archived() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-REENROLL",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-REENROLL");
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+
+    client.enroll(&student, &course_id);
+    let original = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
+    assert!(!original.completed);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 200;
+    });
+    assert_eq!(client.has_completed(&student, &course_id), Some(false));
+
+    client.re_enroll(&student, &course_id);
+
+    let replacement = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
+    assert!(!replacement.completed);
+    assert_eq!(replacement.amount_paid, 500_000_000);
+    assert_eq!(replacement.enrolled_at_ledger, env.ledger().sequence());
+    assert_ne!(replacement.enrollment_ref, original.enrollment_ref);
+
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(history.len(), 1);
+    let archived = history.get(0).unwrap();
+    assert!(!archived.completed);
+    assert!(!archived.is_refunded);
+    assert_eq!(archived.enrolled_at_ledger, original.enrolled_at_ledger);
+    assert_eq!(archived.enrollment_ref, original.enrollment_ref);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 2);
+    assert_eq!(course.active_enrollments, 1);
+    assert_eq!(client.get_total_active_enrollments(), 1);
+}
+
+#[test]
+fn test_expired_enrollment_still_blocks_enroll_and_mark_completed() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-ENTRYPOINTS",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-ENTRYPOINTS");
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+    client.enroll(&student, &course_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 200;
+    });
+
+    let enroll_result = client.try_enroll(&student, &course_id);
+    assert!(
+        enroll_result.is_err(),
+        "enroll() must keep rejecting an existing expired enrollment"
+    );
+
+    let completion_result = client.try_mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "late_evidence")),
+    );
+    assert!(
+        completion_result.is_err(),
+        "mark_completed() must reject an expired enrollment"
+    );
+
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(history.len(), 0);
 }
