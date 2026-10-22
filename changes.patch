@@ -1,0 +1,544 @@
+diff --git a/contracts/hamplard/src/lib.rs b/contracts/hamplard/src/lib.rs
+index 6215d0c..7954cac 100644
+--- a/contracts/hamplard/src/lib.rs
++++ b/contracts/hamplard/src/lib.rs
+@@ -608,6 +608,10 @@ pub enum DataKey2 {
+     HighValueCourseThreshold,
+     /// Stores the first approver's address for a high-value course pending co-signature
+     HighValueCourseApproval(String),
++    /// Total outstanding un-withdrawn instructor earnings for a token (in stroops)
++    TotalInstructorEarnings(Address),
++    /// Total outstanding arbitration fees held for a token (in stroops)
++    TotalArbitrationFees(Address),
+ }
+ 
+ /// A proposed contract code upgrade awaiting its governance time-lock.
+@@ -2535,7 +2539,7 @@ impl HamplardContract {
+                 .is_err()
+             {
+                 Self::emit_enrollment_failed(env, student, course_id, "INSUFFICIENT_BALANCE");
+-                return;
++                panic!("insufficient balance");
+             }
+             let balance_after = token_client.balance(&env.current_contract_address());
+ 
+@@ -2545,7 +2549,7 @@ impl HamplardContract {
+ 
+             if actual_received != course.price {
+                 Self::emit_enrollment_failed(env, student, course_id, "TRANSFER_AMOUNT_MISMATCH");
+-                return;
++                panic!("token transfer amount mismatch");
+             }
+ 
+             if platform_amount > 0 {
+@@ -2948,13 +2952,13 @@ impl HamplardContract {
+         if course.status != CourseStatus::Active {
+             panic!("course is not available for enrollment");
+         }
+-        
++
+         if let Some(start) = course.enrollment_start_ledger {
+             if env.ledger().sequence() < start {
+                 panic!("enrollment has not started for this course");
+             }
+         }
+-            
++
+         if !env
+             .storage()
+             .instance()
+@@ -3028,7 +3032,7 @@ impl HamplardContract {
+                 .is_err()
+             {
+                 Self::emit_enrollment_failed(&env, &student, &course_id, "INSUFFICIENT_BALANCE");
+-                return;
++                panic!("insufficient balance");
+             }
+ 
+             let balance_after = token_client.balance(&env.current_contract_address());
+@@ -3037,8 +3041,13 @@ impl HamplardContract {
+                 .unwrap_or_else(|| panic!("balance overflow during transfer verification"));
+ 
+             if actual_received != course.price {
+-                Self::emit_enrollment_failed(&env, &student, &course_id, "TRANSFER_AMOUNT_MISMATCH");
+-                return;
++                Self::emit_enrollment_failed(
++                    &env,
++                    &student,
++                    &course_id,
++                    "TRANSFER_AMOUNT_MISMATCH",
++                );
++                panic!("token transfer amount mismatch");
+             }
+ 
+             if platform_amount > 0 {
+@@ -3198,6 +3207,18 @@ impl HamplardContract {
+             env.storage().persistent().set(&earnings_key, &new_balance);
+         }
+ 
++        // Decrement total outstanding instructor earnings for this token
++        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
++        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
++        let new_outstanding = current_outstanding.saturating_sub(withdraw_amount);
++        if new_outstanding == 0 {
++            env.storage().instance().remove(&outstanding_key);
++        } else {
++            env.storage()
++                .instance()
++                .set(&outstanding_key, &new_outstanding);
++        }
++
+         let token_client = token::Client::new(&env, &token);
+         token_client.transfer(
+             &env.current_contract_address(),
+@@ -3227,6 +3248,58 @@ impl HamplardContract {
+             .unwrap_or(0)
+     }
+ 
++    /// Internal helper: returns the total tracked liabilities for a token
++    /// (outstanding instructor earnings + outstanding open arbitration fees).
++    pub(crate) fn get_total_liabilities_internal(env: &Env, token: &Address) -> i128 {
++        let earnings: i128 = env
++            .storage()
++            .instance()
++            .get(&DataKey2::TotalInstructorEarnings(token.clone()))
++            .unwrap_or(0);
++        let arb_fees: i128 = env
++            .storage()
++            .instance()
++            .get(&DataKey2::TotalArbitrationFees(token.clone()))
++            .unwrap_or(0);
++        earnings
++            .checked_add(arb_fees)
++            .unwrap_or_else(|| panic!("liabilities overflow"))
++    }
++
++    /// Get total tracked liabilities for a token (outstanding instructor earnings + arbitration fees)
++    pub fn get_total_liabilities(env: Env, token: Address) -> i128 {
++        Self::get_total_liabilities_internal(&env, &token)
++    }
++
++    /// Alias for get_total_liabilities: returns total owed balance for a token
++    pub fn get_owed_balance(env: Env, token: Address) -> i128 {
++        Self::get_total_liabilities_internal(&env, &token)
++    }
++
++    /// Get total outstanding un-withdrawn instructor earnings for a token
++    pub fn get_outstanding_earnings(env: Env, token: Address) -> i128 {
++        env.storage()
++            .instance()
++            .get(&DataKey2::TotalInstructorEarnings(token))
++            .unwrap_or(0)
++    }
++
++    /// Get total arbitration fees held for a token
++    pub fn get_total_arbitration_fees(env: Env, token: Address) -> i128 {
++        env.storage()
++            .instance()
++            .get(&DataKey2::TotalArbitrationFees(token))
++            .unwrap_or(0)
++    }
++
++    /// Get the available surplus balance that can be swept via withdraw_tokens()
++    pub fn get_surplus_balance(env: Env, token: Address) -> i128 {
++        let token_client = token::Client::new(&env, &token);
++        let balance = token_client.balance(&env.current_contract_address());
++        let liabilities = Self::get_total_liabilities_internal(&env, &token);
++        balance.saturating_sub(liabilities)
++    }
++
+     // ----------------------------------------------------------
+     // COURSE COMPLETION & CERTIFICATES
+     // ----------------------------------------------------------
+@@ -3869,6 +3942,14 @@ impl HamplardContract {
+         admin2.require_auth();
+         Self::require_multi_admin(&env, &admin1, &admin2);
+         let token_client = token::Client::new(&env, &token);
++        let contract_balance = token_client.balance(&env.current_contract_address());
++        let total_liabilities = Self::get_total_liabilities_internal(&env, &token);
++
++        let available_surplus = contract_balance.saturating_sub(total_liabilities);
++        if amount > available_surplus {
++            panic!("withdraw_tokens: cannot withdraw below tracked liabilities");
++        }
++
+         token_client.transfer(&env.current_contract_address(), &destination, &amount);
+ 
+         env.events().publish(
+@@ -5486,6 +5567,16 @@ impl HamplardContract {
+             Self::PERSISTENT_TTL_THRESHOLD,
+             Self::PERSISTENT_TTL_EXTEND_TO,
+         );
++
++        // Track total outstanding instructor earnings for this token across all instructors
++        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
++        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
++        let new_outstanding = current_outstanding
++            .checked_add(amount)
++            .unwrap_or_else(|| panic!("overflow computing total outstanding instructor earnings"));
++        env.storage()
++            .instance()
++            .set(&outstanding_key, &new_outstanding);
+     }
+ 
+     fn debit_instructor_earnings(env: &Env, instructor: &Address, token: &Address, amount: i128) {
+@@ -5512,6 +5603,18 @@ impl HamplardContract {
+         } else {
+             env.storage().persistent().set(&total_key, &new_total);
+         }
++
++        // Decrement total outstanding instructor earnings for this token
++        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
++        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
++        let new_outstanding = current_outstanding.saturating_sub(amount);
++        if new_outstanding == 0 {
++            env.storage().instance().remove(&outstanding_key);
++        } else {
++            env.storage()
++                .instance()
++                .set(&outstanding_key, &new_outstanding);
++        }
+     }
+ 
+     /// Load an instructor's reputation stats, apply `f`, and persist the result.
+@@ -5956,6 +6059,14 @@ impl HamplardContract {
+             Self::PERSISTENT_TTL_EXTEND_TO,
+         );
+ 
++        // Track total outstanding arbitration fees for this token
++        let arb_key = DataKey2::TotalArbitrationFees(course.token.clone());
++        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
++        let new_arb = current_arb
++            .checked_add(config.fee_per_case)
++            .unwrap_or_else(|| panic!("overflow computing total arbitration fees"));
++        env.storage().instance().set(&arb_key, &new_arb);
++
+         env.events().publish(
+             (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
+             (caller, course_id, config.fee_per_case),
+@@ -6035,6 +6146,16 @@ impl HamplardContract {
+             Self::PERSISTENT_TTL_EXTEND_TO,
+         );
+ 
++        // Decrement total outstanding arbitration fees for this token
++        let arb_key = DataKey2::TotalArbitrationFees(case.token.clone());
++        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
++        let new_arb = current_arb.saturating_sub(case.fee_paid);
++        if new_arb == 0 {
++            env.storage().instance().remove(&arb_key);
++        } else {
++            env.storage().instance().set(&arb_key, &new_arb);
++        }
++
+         env.events().publish(
+             (Symbol::new(&env, "arbitration_resolved"), course_id.clone()),
+             (caller, course_id, for_student, admin),
+diff --git a/contracts/hamplard/src/test.rs b/contracts/hamplard/src/test.rs
+index 2ef2f1e..0190c3d 100644
+--- a/contracts/hamplard/src/test.rs
++++ b/contracts/hamplard/src/test.rs
+@@ -101,7 +101,6 @@ fn evidence_hash(env: &Env, value: &str) -> BytesN<32> {
+     BytesN::from_array(env, &bytes)
+ }
+ 
+-
+ fn get_enrollment_ref(
+     env: &Env,
+     client: &HamplardContractClient,
+@@ -2552,7 +2551,7 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
+     client.request_refund(&refund_student, &refund_course_id);
+ 
+     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+-        client.process_refund(&admin, &refund_student, &refund_course_id, &true);
++        client.process_refund(&admin, &refund_student, &refund_course_id, &true, &None);
+     }));
+     assert!(res.is_err(), "old admin must be rejected by process_refund");
+ 
+@@ -3071,9 +3070,7 @@ fn test_unpause_platform_rejects_double_unpause() {
+ /// Read the remaining instance TTL of the contract.
+ fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
+     use soroban_sdk::testutils::storage::Instance as _;
+-    env.as_contract(contract_id, || {
+-        env.storage().instance().get_ttl()
+-    })
++    env.as_contract(contract_id, || env.storage().instance().get_ttl())
+ }
+ 
+ #[test]
+@@ -3085,9 +3082,7 @@ fn test_pause_platform_extends_instance_ttl() {
+         l.sequence_number += 400_000;
+     });
+ 
+-    assert!(
+-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
+-    );
++    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
+ 
+     client.pause_platform(&admin);
+ 
+@@ -3108,9 +3103,7 @@ fn test_unpause_platform_extends_instance_ttl() {
+         l.sequence_number += 400_000;
+     });
+ 
+-    assert!(
+-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
+-    );
++    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
+ 
+     client.unpause_platform(&admin);
+ 
+@@ -4737,7 +4730,7 @@ fn test_refund_lifecycle() {
+     // Approve refund
+     let initial_balance = token::Client::new(&env, &token_id).balance(&student);
+     env.mock_all_auths_allowing_non_root_auth();
+-    client.process_refund(&admin, &student, &course_id, &true);
++    client.process_refund(&admin, &student, &course_id, &true, &None);
+ 
+     let final_balance = token::Client::new(&env, &token_id).balance(&student);
+     assert_eq!(final_balance - initial_balance, 1_000_000_000);
+@@ -4802,7 +4795,7 @@ fn test_refund_rejection() {
+ 
+     client.request_refund(&student, &course_id);
+     env.mock_all_auths_allowing_non_root_auth();
+-    client.process_refund(&admin, &student, &course_id, &false);
++    client.process_refund(&admin, &student, &course_id, &false, &None);
+ 
+     let request = client.get_refund_request(&student, &course_id).unwrap();
+     assert_eq!(request.status, RefundStatus::Rejected);
+@@ -5420,7 +5413,7 @@ fn test_process_refund_event_includes_admin() {
+     client.enroll(&student, &course_id);
+     client.request_refund(&student, &course_id);
+     env.mock_all_auths_allowing_non_root_auth();
+-    client.process_refund(&admin, &student, &course_id, &true);
++    client.process_refund(&admin, &student, &course_id, &true, &None);
+ 
+     let (event_student, event_course_id, event_approved, event_admin): (
+         Address,
+@@ -7548,6 +7541,7 @@ fn test_platform_counter_decrements_on_refund() {
+         &student1,
+         &String::from_str(&env, "COURSE-001"),
+         &true,
++        &None,
+     );
+ 
+     // Counter should decrement
+@@ -9577,7 +9571,9 @@ fn test_mark_completed_accepts_zeroed_evidence_hash() {
+     let evidence = Some(BytesN::from_array(&env, &[0u8; 32]));
+     client.mark_completed(&admin, &student, &course_id, &evidence);
+ 
+-    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
++    let enrollment = client
++        .get_enrollment(&student, &student, &course_id)
++        .unwrap();
+     assert_eq!(enrollment.evidence_hash, evidence);
+     assert_eq!(client.has_completed(&student, &course_id), Some(true));
+ }
+@@ -11290,7 +11286,7 @@ fn test_process_refund_archives_enrollment_to_history() {
+     // Request and approve the refund.
+     client.request_refund(&student, &course_id);
+     env.mock_all_auths_allowing_non_root_auth();
+-    client.process_refund(&admin, &student, &course_id, &true);
++    client.process_refund(&admin, &student, &course_id, &true, &None);
+ 
+     // The active enrollment must no longer exist.
+     assert!(
+@@ -11346,7 +11342,7 @@ fn test_re_enroll_rejects_before_enrollment_start_ledger() {
+         &admin,
+         &student,
+         &course_id,
+-        &Some(String::from_str(&env, "evidence")),
++        &Some(evidence_hash(&env, "evidence")),
+     );
+ 
+     // Instructor sets the enrollment start ledger in the future
+@@ -11381,7 +11377,7 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
+         &admin,
+         &student,
+         &course_id,
+-        &Some(String::from_str(&env, "evidence")),
++        &Some(evidence_hash(&env, "evidence")),
+     );
+ 
+     let enrollment_start = env.ledger().sequence() + 10;
+@@ -11398,3 +11394,181 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
+     assert!(!enrollment.completed);
+     assert_eq!(enrollment.enrolled_at_ledger, enrollment_start);
+ }
++
++// =============================================================================
++// ISSUE: withdraw_tokens accounting check against outstanding liabilities
++// =============================================================================
++
++#[test]
++#[should_panic(expected = "withdraw_tokens: cannot withdraw below tracked liabilities")]
++fn test_withdraw_tokens_cannot_drain_unwithdrawn_instructor_earnings() {
++    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
++    let client = HamplardContractClient::new(&env, &contract_id);
++    let student = Address::generate(&env);
++
++    let price = 1_000_000_000i128;
++    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
++
++    register_and_approve_course(
++        &env,
++        &client,
++        &token_id,
++        &admin,
++        &instructor,
++        "COURSE-EARNINGS-PROTECT",
++        price,
++    );
++    let course_id = String::from_str(&env, "COURSE-EARNINGS-PROTECT");
++
++    // Student enrolls: platform fee is 20% (200_000_000), instructor gets 80% (800_000_000)
++    client.enroll(&student, &course_id);
++
++    // Verify contract balance is 800_000_000 and total liabilities is 800_000_000
++    assert_eq!(
++        token::Client::new(&env, &token_id).balance(&contract_id),
++        800_000_000
++    );
++    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
++    assert_eq!(client.get_owed_balance(&token_id), 800_000_000);
++    assert_eq!(client.get_outstanding_earnings(&token_id), 800_000_000);
++    assert_eq!(client.get_surplus_balance(&token_id), 0);
++
++    let destination = Address::generate(&env);
++    // Even withdrawing 1 stroop must fail because available surplus is 0
++    client.withdraw_tokens(&admin, &sec_admin, &token_id, &1i128, &destination);
++}
++
++#[test]
++fn test_withdraw_tokens_caps_withdrawal_to_surplus_above_liabilities() {
++    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
++    let client = HamplardContractClient::new(&env, &contract_id);
++    let student = Address::generate(&env);
++
++    let price = 1_000_000_000i128;
++    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
++
++    register_and_approve_course(
++        &env,
++        &client,
++        &token_id,
++        &admin,
++        &instructor,
++        "COURSE-SURPLUS-TEST",
++        price,
++    );
++    let course_id = String::from_str(&env, "COURSE-SURPLUS-TEST");
++
++    // Student enrolls: 800_000_000 instructor earnings held in contract
++    client.enroll(&student, &course_id);
++
++    // Mint surplus of 500_000_000 directly to contract
++    token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500_000_000);
++
++    // Contract has 1_300_000_000 total balance: 800_000_000 liabilities + 500_000_000 surplus
++    assert_eq!(
++        token::Client::new(&env, &token_id).balance(&contract_id),
++        1_300_000_000
++    );
++    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
++    assert_eq!(client.get_surplus_balance(&token_id), 500_000_000);
++
++    let destination = Address::generate(&env);
++
++    // Withdrawing more than surplus (500_000_001) must panic
++    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        client.withdraw_tokens(&admin, &sec_admin, &token_id, &500_000_001, &destination);
++    }));
++    assert!(res.is_err(), "cannot withdraw more than available surplus");
++
++    // Withdrawing exact surplus (500_000_000) must succeed
++    client.withdraw_tokens(&admin, &sec_admin, &token_id, &500_000_000, &destination);
++    assert_eq!(
++        token::Client::new(&env, &token_id).balance(&destination),
++        500_000_000
++    );
++
++    // Contract balance is now 800_000_000, exactly matching liabilities
++    assert_eq!(
++        token::Client::new(&env, &token_id).balance(&contract_id),
++        800_000_000
++    );
++    assert_eq!(client.get_surplus_balance(&token_id), 0);
++
++    // Instructor can now withdraw full earnings without issue
++    client.withdraw_earnings(&instructor, &token_id, &800_000_000, &None);
++    assert_eq!(
++        token::Client::new(&env, &token_id).balance(&instructor),
++        800_000_000
++    );
++    assert_eq!(token::Client::new(&env, &token_id).balance(&contract_id), 0);
++    assert_eq!(client.get_total_liabilities(&token_id), 0);
++}
++
++#[test]
++#[should_panic(expected = "withdraw_tokens: cannot withdraw below tracked liabilities")]
++fn test_withdraw_tokens_cannot_drain_arbitration_fee_liabilities() {
++    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
++    let client = HamplardContractClient::new(&env, &contract_id);
++
++    let fee_per_case = 5_000_000i128;
++    let student = setup_arbitration(
++        &env,
++        &client,
++        &token_id,
++        &admin,
++        &instructor,
++        "COURSE-ARB-LIAB",
++        fee_per_case,
++    );
++    let course_id = String::from_str(&env, "COURSE-ARB-LIAB");
++
++    // Escalate dispute to arbitration: transfers 5_000_000 fee to contract
++    client.escalate_to_arbitration(&student, &course_id);
++
++    // Total liabilities include both instructor earnings from enrollment and arbitration fee
++    let arb_fee = client.get_total_arbitration_fees(&token_id);
++    assert_eq!(arb_fee, fee_per_case);
++
++    let surplus = client.get_surplus_balance(&token_id);
++    assert_eq!(surplus, 0);
++
++    // Admin attempts to sweep tokens including arbitration fee -> must panic
++    let destination = Address::generate(&env);
++    client.withdraw_tokens(&admin, &sec_admin, &token_id, &fee_per_case, &destination);
++}
++
++#[test]
++fn test_withdraw_tokens_accounting_lifecycle_with_refunds_and_arbitration() {
++    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
++    let client = HamplardContractClient::new(&env, &contract_id);
++    let student = Address::generate(&env);
++
++    let price = 1_000_000_000i128;
++    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
++
++    register_and_approve_course(
++        &env,
++        &client,
++        &token_id,
++        &admin,
++        &instructor,
++        "COURSE-ACCOUNTING",
++        price,
++    );
++    let course_id = String::from_str(&env, "COURSE-ACCOUNTING");
++
++    client.enroll(&student, &course_id);
++    // 800_000_000 credited to instructor
++    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
++
++    // Request and process refund
++    client.request_refund(&student, &course_id);
++    env.mock_all_auths_allowing_non_root_auth();
++    client.process_refund(&admin, &student, &course_id, &true, &None);
++
++    // After refund, instructor share was debited and refunded to student
++    assert_eq!(client.get_total_liabilities(&token_id), 0);
++    assert_eq!(client.get_owed_balance(&token_id), 0);
++    assert_eq!(client.get_outstanding_earnings(&token_id), 0);
++    assert_eq!(token::Client::new(&env, &token_id).balance(&contract_id), 0);
++}

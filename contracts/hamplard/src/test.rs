@@ -101,7 +101,6 @@ fn evidence_hash(env: &Env, value: &str) -> BytesN<32> {
     BytesN::from_array(env, &bytes)
 }
 
-
 fn get_enrollment_ref(
     env: &Env,
     client: &HamplardContractClient,
@@ -2552,7 +2551,7 @@ fn test_old_admin_rejected_for_all_admin_only_functions_after_transfer() {
     client.request_refund(&refund_student, &refund_course_id);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.process_refund(&admin, &refund_student, &refund_course_id, &true, &None::<i128>);
+        client.process_refund(&admin, &refund_student, &refund_course_id, &true, &None);
     }));
     assert!(res.is_err(), "old admin must be rejected by process_refund");
 
@@ -3071,9 +3070,7 @@ fn test_unpause_platform_rejects_double_unpause() {
 /// Read the remaining instance TTL of the contract.
 fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
     use soroban_sdk::testutils::storage::Instance as _;
-    env.as_contract(contract_id, || {
-        env.storage().instance().get_ttl()
-    })
+    env.as_contract(contract_id, || env.storage().instance().get_ttl())
 }
 
 #[test]
@@ -3085,9 +3082,7 @@ fn test_pause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.pause_platform(&admin);
 
@@ -3108,9 +3103,7 @@ fn test_unpause_platform_extends_instance_ttl() {
         l.sequence_number += 400_000;
     });
 
-    assert!(
-        instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD
-    );
+    assert!(instance_ttl(&env, &contract_id) < HamplardContract::INSTANCE_TTL_THRESHOLD);
 
     client.unpause_platform(&admin);
 
@@ -4737,7 +4730,7 @@ fn test_refund_lifecycle() {
     // Approve refund
     let initial_balance = token::Client::new(&env, &token_id).balance(&student);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let final_balance = token::Client::new(&env, &token_id).balance(&student);
     assert_eq!(final_balance - initial_balance, 1_000_000_000);
@@ -4802,7 +4795,7 @@ fn test_refund_rejection() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     let request = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(request.status, RefundStatus::Rejected);
@@ -5420,7 +5413,7 @@ fn test_process_refund_event_includes_admin() {
     client.enroll(&student, &course_id);
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let (event_student, event_course_id, event_approved, event_admin): (
         Address,
@@ -7548,7 +7541,7 @@ fn test_platform_counter_decrements_on_refund() {
         &student1,
         &String::from_str(&env, "COURSE-001"),
         &true,
-        &None::<i128>,
+        &None,
     );
 
     // Counter should decrement
@@ -9578,7 +9571,9 @@ fn test_mark_completed_accepts_zeroed_evidence_hash() {
     let evidence = Some(BytesN::from_array(&env, &[0u8; 32]));
     client.mark_completed(&admin, &student, &course_id, &evidence);
 
-    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
     assert_eq!(enrollment.evidence_hash, evidence);
     assert_eq!(client.has_completed(&student, &course_id), Some(true));
 }
@@ -11291,7 +11286,7 @@ fn test_process_refund_archives_enrollment_to_history() {
     // Request and approve the refund.
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     // The active enrollment must no longer exist.
     assert!(
@@ -11400,6 +11395,184 @@ fn test_re_enroll_succeeds_at_enrollment_start_ledger() {
     assert_eq!(enrollment.enrolled_at_ledger, enrollment_start);
 }
 
+// =============================================================================
+// ISSUE: withdraw_tokens accounting check against outstanding liabilities
+// =============================================================================
+
+#[test]
+#[should_panic(expected = "withdraw_tokens: cannot withdraw below tracked liabilities")]
+fn test_withdraw_tokens_cannot_drain_unwithdrawn_instructor_earnings() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    let price = 1_000_000_000i128;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARNINGS-PROTECT",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-EARNINGS-PROTECT");
+
+    // Student enrolls: platform fee is 20% (200_000_000), instructor gets 80% (800_000_000)
+    client.enroll(&student, &course_id);
+
+    // Verify contract balance is 800_000_000 and total liabilities is 800_000_000
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&contract_id),
+        800_000_000
+    );
+    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
+    assert_eq!(client.get_owed_balance(&token_id), 800_000_000);
+    assert_eq!(client.get_outstanding_earnings(&token_id), 800_000_000);
+    assert_eq!(client.get_surplus_balance(&token_id), 0);
+
+    let destination = Address::generate(&env);
+    // Even withdrawing 1 stroop must fail because available surplus is 0
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &1i128, &destination);
+}
+
+#[test]
+fn test_withdraw_tokens_caps_withdrawal_to_surplus_above_liabilities() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    let price = 1_000_000_000i128;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-SURPLUS-TEST",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-SURPLUS-TEST");
+
+    // Student enrolls: 800_000_000 instructor earnings held in contract
+    client.enroll(&student, &course_id);
+
+    // Mint surplus of 500_000_000 directly to contract
+    token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500_000_000);
+
+    // Contract has 1_300_000_000 total balance: 800_000_000 liabilities + 500_000_000 surplus
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&contract_id),
+        1_300_000_000
+    );
+    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
+    assert_eq!(client.get_surplus_balance(&token_id), 500_000_000);
+
+    let destination = Address::generate(&env);
+
+    // Withdrawing more than surplus (500_000_001) must panic
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.withdraw_tokens(&admin, &sec_admin, &token_id, &500_000_001, &destination);
+    }));
+    assert!(res.is_err(), "cannot withdraw more than available surplus");
+
+    // Withdrawing exact surplus (500_000_000) must succeed
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &500_000_000, &destination);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&destination),
+        500_000_000
+    );
+
+    // Contract balance is now 800_000_000, exactly matching liabilities
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&contract_id),
+        800_000_000
+    );
+    assert_eq!(client.get_surplus_balance(&token_id), 0);
+
+    // Instructor can now withdraw full earnings without issue
+    client.withdraw_earnings(&instructor, &token_id, &800_000_000, &None);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&instructor),
+        800_000_000
+    );
+    assert_eq!(token::Client::new(&env, &token_id).balance(&contract_id), 0);
+    assert_eq!(client.get_total_liabilities(&token_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "withdraw_tokens: cannot withdraw below tracked liabilities")]
+fn test_withdraw_tokens_cannot_drain_arbitration_fee_liabilities() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 5_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-LIAB",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-LIAB");
+
+    // Escalate dispute to arbitration: transfers 5_000_000 fee to contract
+    client.escalate_to_arbitration(&student, &course_id);
+
+    // Total liabilities include both instructor earnings from enrollment and arbitration fee
+    let arb_fee = client.get_total_arbitration_fees(&token_id);
+    assert_eq!(arb_fee, fee_per_case);
+
+    let surplus = client.get_surplus_balance(&token_id);
+    assert_eq!(surplus, 0);
+
+    // Admin attempts to sweep tokens including arbitration fee -> must panic
+    let destination = Address::generate(&env);
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &fee_per_case, &destination);
+}
+
+#[test]
+fn test_withdraw_tokens_accounting_lifecycle_with_refunds_and_arbitration() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    let price = 1_000_000_000i128;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ACCOUNTING",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-ACCOUNTING");
+
+    client.enroll(&student, &course_id);
+    // 800_000_000 credited to instructor
+    assert_eq!(client.get_total_liabilities(&token_id), 800_000_000);
+
+    // Request and process refund
+    client.request_refund(&student, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    // After refund, instructor share was debited and refunded to student
+    assert_eq!(client.get_total_liabilities(&token_id), 0);
+    assert_eq!(client.get_owed_balance(&token_id), 0);
+    assert_eq!(client.get_outstanding_earnings(&token_id), 0);
+    assert_eq!(token::Client::new(&env, &token_id).balance(&contract_id), 0);
+}
+
 // ============================================================
 // ISSUE #320 — REFUND RESUBMISSION AFTER REJECTION
 // ============================================================
@@ -11437,7 +11610,7 @@ fn test_reject_then_resubmit_inside_window_succeeds() {
 
     // Admin rejects
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
     let rejected = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(rejected.status, RefundStatus::Rejected);
 
@@ -11483,7 +11656,7 @@ fn test_reject_then_resubmit_outside_window_fails() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     // Advance past the window
     env.ledger().with_mut(|l| {
@@ -11549,12 +11722,13 @@ fn test_approved_request_blocks_second_request() {
     client.request_refund(&student, &course_id);
 
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let approved = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(approved.status, RefundStatus::Approved);
 
-    // Attempt a second request after approval must be blocked
+    // After approval the enrollment record is deleted; request_refund will
+    // panic with "enrollment not found" before reaching the refund-key check.
     client.request_refund(&student, &course_id);
 }
 
@@ -11588,7 +11762,7 @@ fn test_reject_resubmit_then_approve_pays_once() {
     // First request → reject
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
     assert_eq!(
         token::Client::new(&env, &token_id).balance(&student),
         balance_after_enroll,
@@ -11606,7 +11780,7 @@ fn test_reject_resubmit_then_approve_pays_once() {
 
     // Approve
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
 
     let balance_after_refund = token::Client::new(&env, &token_id).balance(&student);
     assert_eq!(
@@ -11649,7 +11823,7 @@ fn test_resubmit_exactly_at_window_boundary_allowed() {
     // Request, then reject
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     // Advance to exactly enrolled_at + window (the inclusive boundary)
     env.ledger().with_mut(|l| {
@@ -11692,7 +11866,7 @@ fn test_resubmit_one_ledger_past_window_rejected() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     // One ledger beyond the window
     env.ledger().with_mut(|l| {
@@ -11733,7 +11907,7 @@ fn test_different_student_unaffected_by_other_rejection() {
     // student_a requests and gets rejected
     client.request_refund(&student_a, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student_a, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student_a, &course_id, &false, &None);
 
     // student_b has no record yet — their fresh request must succeed
     client.request_refund(&student_b, &course_id);
