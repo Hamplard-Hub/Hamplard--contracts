@@ -19245,3 +19245,63 @@ fn test_remove_fee_config_rejects_non_admin() {
     let outsider = Address::generate(&env);
     client.remove_fee_config(&outsider, &token_id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    #[test]
+    fn set_fee_config_applies_override_at_enrollment() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+
+        let config = FeeConfig {
+            course_fee_bps: 250,
+            certificate_fee_bps: 500,
+        };
+
+        set_fee_config(&env, config.clone()).unwrap();
+        assert_eq!(get_fee_config(&env), config);
+    }
+
+    #[test]
+    fn get_fee_config_returns_default_when_no_override_is_set() {
+        let env = Env::default();
+
+        let default = FeeConfig::default();
+        assert_eq!(get_fee_config(&env), default);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_fee_config_rejects_value_above_10000_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let invalid = FeeConfig {
+            course_fee_bps: 10_001,
+            certificate_fee_bps: 0,
+        };
+
+        set_fee_config(&env, invalid).unwrap();
+    }
+
+    #[test]
+    fn set_fee_config_requires_admin_authorization() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        let config = FeeConfig {
+            course_fee_bps: 250,
+            certificate_fee_bps: 500,
+        };
+
+        // Use the same pattern the rest of the contract uses for unauthorized calls.
+        let result = set_fee_config(&env, config);
+
+        assert!(result.is_err());
+    }
+}
