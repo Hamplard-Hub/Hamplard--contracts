@@ -32,11 +32,11 @@ pub fn get_fee_config(env: &Env) -> FeeConfig {
 
 /// Sets the fee rates. Requires admin authorization at the call site.
 pub fn set_fee_config(env: &Env, config: FeeConfig) -> Result<(), ContractError> {
-    if config.course_fee_bps > BPS_DENOMOMM || config.certificate_fee_bps > BPS_DENOMOMM {
+    if config.course_fee_bps > BPS_DENOM || config.certificate_fee_bps > BPS_DENOM {
         return Err(ContractError::InvalidFee);
     }
     storage::set_fee_config(env, &config);
-    Ok(()
+    Ok(())
 }
 
 /// Computes the fee owed for a course purchase of the given amount.
