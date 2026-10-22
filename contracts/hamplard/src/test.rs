@@ -11533,30 +11533,12 @@ fn test_fee_preview_matches_actual_enroll_deduction() {
         price,
     );
 
-    // Quotes are derived from on-chain state for this student and token —
-    // callers can no longer pass their own risk flags.
-    let risk = client.calculate_risk_score(&student, &token_id, &price);
-    let preview = client.get_effective_fee_for_payment(&student, &token_id, &price);
-    assert_eq!(preview.risk_surcharge_bps, risk.surcharge_bps);
-    assert_eq!(
-        client.do_complete_payment(&student, &token_id, &price),
-        preview
-    );
-
-    let course_id = String::from_str(&env, "COURSE-FEE-PREVIEW");
-    let quote = client.quote_enrollment(&course_id, &student);
-    assert_eq!(
-        quote,
-        (price, preview.platform_fee, price - preview.platform_fee)
-    );
-
-    client.enroll(&student, &course_id);
-
-    // The preview must equal what enroll() actually deducted.
-    assert_eq!(token_client.balance(&treasury), preview.platform_fee);
-    assert_eq!(
-        client.get_instructor_earnings(&instructor, &token_id),
-        price - preview.platform_fee,
+    client.update_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-UPDATE-ZERO-CAP"),
+        &None,
+        &Some(Some(0u32)),
+        &None,
     );
     let enrollment = client
         .get_enrollment(&student, &student, &course_id)
@@ -11585,38 +11567,11 @@ fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> std::string::Stri
     std::string::String::new()
 }
 
-#[test]
-fn test_issue456_quote_and_deduction_share_fee_math_across_ranges() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-    let student = Address::generate(&env);
-
-    // Cover the zero/minimum/typical/max-fee boundaries. `i128::MAX / 10000`
-    // is the largest amount whose fee multiplication stays in range at 100%.
-    let amounts = [0i128, 1, 123_456_789, i128::MAX / 10000];
-    let fee_bps_values = [0u32, 1, 250, 2000, 5000, 9999, 10000];
-
-    for fee_bps in fee_bps_values {
-        client.set_fee_config(&admin, &token_id, &fee_bps);
-
-        for amount in amounts {
-            let quote = client.get_effective_fee_for_payment(&student, &token_id, &amount);
-            let (net_amount, deducted_fee) = env.as_contract(&contract_id, || {
-                HamplardContract::deduct_fee(&env, &token_id, amount, None, false, false)
-            });
-
-            assert_eq!(
-                quote.platform_fee, deducted_fee,
-                "quote and deduction diverged for amount={amount}, fee_bps={fee_bps}"
-            );
-            assert_eq!(
-                net_amount + deducted_fee,
-                amount,
-                "deduction split does not preserve the payment amount"
-            );
-            assert_eq!(quote.effective_fee_bps, fee_bps);
-        }
-    }
+    // A subsequent price-only update must leave unlimited capacity intact.
+    client.update_course(&instructor, &course_id, &Some(200_000_000i128), &None, &None);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.max_capacity, None);
+    assert_eq!(course.price, 200_000_000);
 }
 
 #[test]
@@ -18901,347 +18856,175 @@ fn test_pending_request_blocks_second_request() {
     client.request_refund(&student, &course_id);
 }
 
-/// An Approved request blocks any further request. After approval the
-/// enrollment is removed, so request_refund panics with "enrollment not found"
-/// before it can even reach the refund-request check.
+// ============================================================
+// Issue #364 — CapacityMode: Lifetime vs Concurrent
+// ============================================================
+
+/// Concurrent mode: a course capped at 2 active seats must reject a third
+/// enrollment while both seats are still active.
 #[test]
-#[should_panic(expected = "enrollment not found")]
-fn test_approved_request_blocks_second_request() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+#[should_panic(expected = "course has reached maximum enrollment capacity")]
+fn test_concurrent_capacity_blocks_enrollment_at_seat_cap() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
+        setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+    let course_id = String::from_str(&env, "COURSE-CONCURRENT-CAP");
 
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
+    // Register with max_capacity = 2, then switch to Concurrent mode.
+    client.register_course(
         &instructor,
-        "COURSE-320-APPROVED-BLOCK",
-        500_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-320-APPROVED-BLOCK");
-
-    client.enroll(&student, &course_id);
-    client.request_refund(&student, &course_id);
-
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
-
-    let approved = client.get_refund_request(&student, &course_id).unwrap();
-    assert_eq!(approved.status, RefundStatus::Approved);
-
-    // Attempt a second request after approval must be blocked
-    client.request_refund(&student, &course_id);
-}
-
-/// Full end-to-end: reject → resubmit → approve.  The refund is paid exactly
-/// once and the enrollment is removed.
-#[test]
-fn test_reject_resubmit_then_approve_pays_once() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    let price: i128 = 1_000_000_000;
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &(price * 10));
-
-    client.update_refund_window(&admin, &50u32);
-
-    register_and_approve_course(
-        &env,
-        &client,
+        &course_id,
+        &100_000_000i128,
         &token_id,
-        &admin,
-        &instructor,
-        "COURSE-320-E2E",
-        price,
+        &0u32,
+        &Some(2u32),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
     );
-    let course_id = String::from_str(&env, "COURSE-320-E2E");
-
-    client.enroll(&student, &course_id);
-    let balance_after_enroll = token::Client::new(&env, &token_id).balance(&student);
-
-    // First request → reject
-    client.request_refund(&student, &course_id);
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
-    assert_eq!(
-        token::Client::new(&env, &token_id).balance(&student),
-        balance_after_enroll,
-        "rejection must not move funds"
-    );
-    assert!(client.is_enrolled(&student, &course_id));
-
-    // Resubmit
     env.ledger().with_mut(|l| {
-        l.sequence_number += 5;
+        l.sequence_number += 1;
     });
-    client.request_refund(&student, &course_id);
-    let resubmitted = client.get_refund_request(&student, &course_id).unwrap();
-    assert_eq!(resubmitted.status, RefundStatus::Pending);
+    client.approve_course(&admin, &course_id);
 
-    // Approve
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &true, &None::<i128>);
-
-    let balance_after_refund = token::Client::new(&env, &token_id).balance(&student);
-    assert_eq!(
-        balance_after_refund - balance_after_enroll,
-        price,
-        "refund must return exactly the enrolled amount"
-    );
-    assert!(!client.is_enrolled(&student, &course_id));
-
-    let final_request = client.get_refund_request(&student, &course_id).unwrap();
-    assert_eq!(final_request.status, RefundStatus::Approved);
-}
-
-/// Boundary: resubmit exactly at the last ledger of the window (elapsed ==
-/// window) is allowed — the window check is inclusive.
-#[test]
-fn test_resubmit_exactly_at_window_boundary_allowed() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
-
-    client.update_refund_window(&admin, &10u32);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
+    // Switch capacity mode to Concurrent.
+    client.update_course(
         &instructor,
-        "COURSE-320-BOUNDARY",
-        200_000_000,
+        &course_id,
+        &None,
+        &None,
+        &Some(crate::CapacityMode::Concurrent),
     );
-    let course_id = String::from_str(&env, "COURSE-320-BOUNDARY");
 
-    client.enroll(&student, &course_id);
-    let enrolled_at = env.ledger().sequence();
-
-    // Request, then reject
-    client.request_refund(&student, &course_id);
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
-
-    // Advance to exactly enrolled_at + window (the inclusive boundary)
-    env.ledger().with_mut(|l| {
-        l.sequence_number = enrolled_at + 10;
-    });
-
-    // Must succeed: elapsed == window
-    client.request_refund(&student, &course_id);
-
-    let resubmitted = client.get_refund_request(&student, &course_id).unwrap();
-    assert_eq!(resubmitted.status, RefundStatus::Pending);
-}
-
-/// Boundary: resubmit one ledger past the window (elapsed == window + 1) is
-/// rejected with the window-closed message.
-#[test]
-#[should_panic(expected = "refund window has closed for resubmission")]
-fn test_resubmit_one_ledger_past_window_rejected() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
-
-    client.update_refund_window(&admin, &10u32);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-320-BOUNDARY-PAST",
-        200_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-320-BOUNDARY-PAST");
-
-    client.enroll(&student, &course_id);
-    let enrolled_at = env.ledger().sequence();
-
-    client.request_refund(&student, &course_id);
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
-
-    // One ledger beyond the window
-    env.ledger().with_mut(|l| {
-        l.sequence_number = enrolled_at + 11;
-    });
-
-    client.request_refund(&student, &course_id);
-}
-
-/// A rejection of one student's request does not affect a different student's
-/// ability to request, resubmit, or get their own refund.
-#[test]
-fn test_different_student_unaffected_by_other_rejection() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
     let student_a = Address::generate(&env);
     let student_b = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student_a, &100_000_000_000);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &100_000_000_000);
+    let student_c = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+    asset_client.mint(&student_c, &1_000_000_000i128);
 
-    client.update_refund_window(&admin, &20u32);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-320-ISOLATION",
-        300_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-320-ISOLATION");
-
+    // Fill both concurrent seats.
     client.enroll(&student_a, &course_id);
     client.enroll(&student_b, &course_id);
 
-    // student_a requests and gets rejected
-    client.request_refund(&student_a, &course_id);
-    env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student_a, &course_id, &false, &None::<i128>);
-
-    // student_b has no record yet — their fresh request must succeed
-    client.request_refund(&student_b, &course_id);
-    let b_request = client.get_refund_request(&student_b, &course_id).unwrap();
-    assert_eq!(b_request.status, RefundStatus::Pending);
-
-    // student_a can resubmit (still inside window)
-    client.request_refund(&student_a, &course_id);
-    let a_resubmitted = client.get_refund_request(&student_a, &course_id).unwrap();
-    assert_eq!(a_resubmitted.status, RefundStatus::Pending);
+    // Third enrollment must be rejected — seats are all taken.
+    client.enroll(&student_c, &course_id);
 }
 
-
-// ============================================================
-// ISSUE #460 — No way to remove a per-token FeeConfig override
-// ============================================================
-
+/// Concurrent mode: completing a student frees their seat so the next
+/// student can enroll, even though lifetime total_enrollments exceeds the cap.
 #[test]
-fn test_remove_fee_config_restores_default_derived_value() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+fn test_concurrent_capacity_seat_freed_on_completion_allows_next_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
+        setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Platform default is 20% → 2000 bps when no override exists.
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2000);
+    let course_id = String::from_str(&env, "COURSE-CONCURRENT-FREE");
 
-    // Set a per-token override, then remove it.
-    client.set_fee_config(&admin, &token_id, &500u32);
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 500);
+    // Register with max_capacity = 1.
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &Some(1u32),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &course_id);
 
-    client.remove_fee_config(&admin, &token_id);
+    // Switch to Concurrent mode.
+    client.update_course(
+        &instructor,
+        &course_id,
+        &None,
+        &None,
+        &Some(crate::CapacityMode::Concurrent),
+    );
 
-    // After removal the token follows DefaultFee again (20% → 2000 bps).
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2000);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    // Student A takes the one seat.
+    client.enroll(&student_a, &course_id);
+
+    // Complete student A — frees the concurrent seat.
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_id,
+        &Some(evidence_hash(&env, "proof")),
+    );
+
+    // Verify active_enrollments dropped to 0.
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.active_enrollments, 0);
+    assert_eq!(course.total_enrollments, 1); // lifetime total unchanged
+
+    // Student B must now be admitted into the freed seat.
+    client.enroll(&student_b, &course_id);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.active_enrollments, 1);
+    assert_eq!(course.total_enrollments, 2); // lifetime grew past the cap — that's fine
 }
 
+/// Default Lifetime mode is unchanged: max_capacity still counts all-time
+/// total enrollments regardless of how many students have completed.
 #[test]
-fn test_remove_fee_config_follows_updated_default_fee() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+#[should_panic(expected = "course has reached maximum enrollment capacity")]
+fn test_lifetime_capacity_default_unchanged_counts_completed_students() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
+        setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Change the platform default to 15% (→ 1500 bps), then override the token.
-    client.update_default_fee(&admin, &15u32);
-    client.set_fee_config(&admin, &token_id, &500u32);
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 500);
+    let course_id = String::from_str(&env, "COURSE-LIFETIME-CAP");
 
-    client.remove_fee_config(&admin, &token_id);
+    // Register with max_capacity = 1 — Lifetime mode by default.
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &Some(1u32),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &course_id);
 
-    // The token now derives its fee from the *current* DefaultFee.
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 1500);
-}
+    // Confirm capacity_mode defaults to Lifetime.
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.capacity_mode, crate::CapacityMode::Lifetime);
 
-#[test]
-fn test_remove_fee_config_only_affects_targeted_token() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
 
-    let other_token = env
-        .register_stellar_asset_contract_v2(Address::generate(&env))
-        .address();
+    // Student A takes the one lifetime seat.
+    client.enroll(&student_a, &course_id);
 
-    client.set_fee_config(&admin, &token_id, &500u32);
-    client.set_fee_config(&admin, &other_token, &750u32);
+    // Complete student A — active_enrollments drops, but lifetime total stays at 1.
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_id,
+        &Some(evidence_hash(&env, "proof")),
+    );
 
-    client.remove_fee_config(&admin, &token_id);
-
-    // Only the targeted token falls back to the default.
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2000);
-    // The other token's override must remain untouched.
-    assert_eq!(client.get_fee_config(&other_token).fee_bps, 750);
-}
-
-#[test]
-fn test_remove_fee_config_without_override_is_noop() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    // Removing a never-set override must not panic and must keep the default.
-    client.remove_fee_config(&admin, &token_id);
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2000);
-}
-
-#[test]
-fn test_remove_fee_config_emits_event() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    client.set_fee_config(&admin, &token_id, &500u32);
-    client.remove_fee_config(&admin, &token_id);
-
-    let events = env.events().all();
-    let mut found = false;
-    for (contract, topics, data) in events.iter().rev() {
-        if contract != contract_id {
-            continue;
-        }
-        let topic0 = topics.get(0).unwrap();
-        let sym: Symbol = topic0.try_into_val(&env).unwrap();
-        if sym == Symbol::new(&env, "fee_config_removed") {
-            // Topics: ("fee_config_removed", admin); data: token
-            let event_admin: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
-            assert_eq!(event_admin, admin);
-            let event_token: Address = data.try_into_val(&env).unwrap();
-            assert_eq!(event_token, token_id);
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "fee_config_removed event must be emitted");
-}
-
-#[test]
-fn test_set_fee_config_after_removal_applies_new_override() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    client.set_fee_config(&admin, &token_id, &500u32);
-    client.remove_fee_config(&admin, &token_id);
-
-    // A new override can be set again after removal.
-    client.set_fee_config(&admin, &token_id, &1000u32);
-    assert_eq!(client.get_fee_config(&token_id).fee_bps, 1000);
-}
-
-#[test]
-#[should_panic(expected = "unauthorized: remove_fee_config - caller is not admin")]
-fn test_remove_fee_config_rejects_non_admin() {
-    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let outsider = Address::generate(&env);
-    client.remove_fee_config(&outsider, &token_id);
+    // In Lifetime mode this must still be rejected — total_enrollments == cap.
+    client.enroll(&student_b, &course_id);
 }

@@ -676,20 +676,6 @@ pub enum CapacityMode {
     Lifetime,
     /// Cap concurrent active seats — seats freed on completion or refund.
     Concurrent,
-/// Lifecycle state of a student's enrollment in a course.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum EnrollmentStatus {
-    /// No enrollment record exists for this student/course pair.
-    None,
-    /// Enrolled and currently within the enrollment window.
-    Active,
-    /// Enrolled, not completed, and past the course's enrollment expiry.
-    Expired,
-    /// Enrollment has been marked completed.
-    Completed,
-    /// Enrollment was refunded and archived to enrollment history.
-    Refunded,
 }
 
 /// A course listing stored on-chain
@@ -3269,7 +3255,6 @@ impl HamplardContract {
                 CapacityMode::Concurrent => course.active_enrollments,
             };
             if count >= cap {
-                Self::emit_enrollment_failed(env, student, course_id, "CAPACITY_EXCEEDED");
                 panic!("course has reached maximum enrollment capacity");
             soroban_sdk::panic_with_error!(&env, Error::AlreadyEnrolled);
         }
