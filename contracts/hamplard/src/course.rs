@@ -58,6 +58,39 @@ impl CourseModule {
         }
     }
 
+    /// Applies a material change (price, content hash, co-instructors) to a course.
+    ///
+    /// Material changes to an Active course send it back to `Pending` so that
+    /// an admin must re-approve it before it is active again. Emits a
+    /// `re_review` event whenever a re-review is triggered.
+    pub fn apply_material_change(
+        env: &Env,
+        admin: Address,
+        course_id: u32,
+        field: MaterialField,
+    ) -> Result<Course, ContractError> {
+        admin.require_auth();
+
+        let mut course = match get_course(env, course_id) {
+            Some(course) => course,
+            None => return Err(ContractError::CourseNotFound),
+        };
+
+        if course.status == CourseStatus::Inactive {
+            return Err(ContractError::InvalidState);
+        }
+
+        if course.status == CourseStatus::Active {
+            course.status = CourseStatus::Pending;
+            save_course(env, &course);
+            emit_re_review(env, course_id, field);
+        } else {
+            save_course(env, &course);
+        }
+
+        Ok(course)
+    }
+
     pub fn deactivate_course(
         env: &Env,
         admin: Address,
