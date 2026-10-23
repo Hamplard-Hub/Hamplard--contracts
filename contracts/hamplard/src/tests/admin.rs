@@ -1,10 +1,10 @@
 use crate::{setup_active_course, setup_contract, setup_contract_no_auth};
 use hamplard_lib::{ContractError, DataKey};
-use soroban_sdk:{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 #[test]
 fn test_initialize_sets_admin_and_token() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_contract(&env);
@@ -28,7 +28,7 @@ fn test_initialize_sets_admin_and_token() {
 
 #[test]
 fn test_initialize_twice_fails() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_contract(&env);
@@ -39,7 +39,7 @@ fn test_initialize_twice_fails() {
 
 #[test]
 fn test_initialize_requires_admin_auth() {
-    let env = Env&::default();
+    let env = Env::default();
     let ctx = setup_contract_no_auth(&env);
 
     let result = ctx.client.try_initialize(&ctx.admin, &ctx.token);
@@ -47,8 +47,21 @@ fn test_initialize_requires_admin_auth() {
 }
 
 #[test]
+fn test_require_multi_admin_before_init_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deliberately skip initialisation: use a bare contract client.
+    let ctx = setup_contract_no_auth(&env);
+    let caller = Address::generate(&env);
+
+    let result = ctx.client.try_pause(&caller);
+    assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+}
+
+#[test]
 fn test_admin_can_pause_and_unpause() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_active_course(&env);
@@ -74,7 +87,7 @@ fn test_non_admin_cannot_pause() {
 
 #[test]
 fn test_admin_can_transfer_admin_role() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_active_course(&env);
@@ -92,7 +105,7 @@ fn test_admin_can_transfer_admin_role() {
 
 #[test]
 fn test_non_admin_cannot_transfer_admin_role() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_active_course(&env);
@@ -117,7 +130,7 @@ fn test_admin_can_set_course_fee() {
 
 #[test]
 fn test_non_admin_cannot_set_course_fee() {
-    let env = Env&::default();
+    let env = Env::default();
     env.mock_all_auths();
 
     let ctx = setup_active_course(&env);
@@ -152,7 +165,7 @@ fn test_non_admin_cannot_withdraw_funds() {
     let recipient = Address::generate(&env);
 
     let result = ctx.client.try_withdraw(&stranger, &recipient, &100);
-    assert_eq!(result, Err(0k(ContractError::Unauthorized)));
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 }
 
 #[test]
