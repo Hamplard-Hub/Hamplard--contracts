@@ -2709,19 +2709,18 @@ fn test_init_emits_initialized_event_once() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #34)")]
-fn test_enroll_with_non_whitelisted_token_fails() {
-    let (env, contract_id, _, admin, sec_admin, _, instructor) = setup();
+fn test_register_course_with_non_whitelisted_token_fails() {
+    let (env, contract_id, _, _, _, _, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Create a second token that has NOT been whitelisted
+    // A real token contract (7 decimals) that was never whitelisted, so the
+    // revert must come from the whitelist check and not the decimals check.
     let evil_token_admin = Address::generate(&env);
     let evil_token_id = env
-        .register_stellar_asset_contract_v2(evil_token_admin.clone())
+        .register_stellar_asset_contract_v2(evil_token_admin)
         .address();
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &evil_token_id).mint(&student, &100_000_000_000);
+    assert!(!client.is_token_approved(&evil_token_id));
 
-    // Register a course that uses the non-whitelisted token
     client.register_course(
         &instructor,
         &String::from_str(&env, "COURSE-EVIL-TOKEN"),
@@ -2732,13 +2731,59 @@ fn test_enroll_with_non_whitelisted_token_fails() {
         &BytesN::from_array(&env, &[1u8; 32]),
         &soroban_sdk::Vec::new(&env),
     );
-    client.approve_course(&admin, &String::from_str(&env, "COURSE-EVIL-TOKEN"));
-    env.ledger().with_mut(|l| {
-        l.sequence_number += 1;
-    });
+}
 
-    // Enrollment must fail because the token is not whitelisted
-    client.enroll(&student, &String::from_str(&env, "COURSE-EVIL-TOKEN"), &i128::MAX);
+#[test]
+fn test_register_course_succeeds_once_token_whitelisted() {
+    let (env, contract_id, _, admin, _, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let late_token_admin = Address::generate(&env);
+    let late_token_id = env
+        .register_stellar_asset_contract_v2(late_token_admin)
+        .address();
+
+    client.add_approved_token(&admin, &late_token_id);
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-LATE-TOKEN"),
+        &500_000_000,
+        &late_token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    assert!(client
+        .get_course(&String::from_str(&env, "COURSE-LATE-TOKEN"))
+        .is_some());
+}
+
+#[test]
+#[should_panic]
+fn test_enroll_with_non_whitelisted_token_fails() {
+    let (env, contract_id, token_id, admin, _, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // The course is registered and approved while its token is whitelisted.
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-DELISTED",
+        500_000_000,
+    );
+
+    // The whitelist can change after registration, so enroll() keeps its own
+    // check. This covers the enroll-time half; the registration-time half is
+    // test_register_course_with_non_whitelisted_token_fails().
+    client.remove_approved_token(&admin, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+    client.enroll(&student, &String::from_str(&env, "COURSE-DELISTED"), &i128::MAX);
 }
 
 #[test]

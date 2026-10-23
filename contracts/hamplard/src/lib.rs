@@ -1500,7 +1500,9 @@ impl HamplardContract {
     /// - `instructor`       — instructor's Stellar address (must sign)
     /// - `course_id`        — unique ID matching the backend DB record
     /// - `price`            — enrollment price in USDC stroops
-    /// - `token`            — USDC Stellar Asset Contract address
+    /// - `token`            — USDC Stellar Asset Contract address; must already
+    ///   be on the enrollment whitelist (`add_approved_token`), otherwise
+    ///   registration reverts
     /// - `platform_fee_pct` — optional fee override; pass 0 to follow the live
     ///   per-token fee (`FeeConfig(token)` / `DefaultFee`). A non-zero value
     ///   must be at least the token's current fee and is charged at enrollment
@@ -1544,6 +1546,18 @@ impl HamplardContract {
         // This ensures fee calculations are accurate
         const EXPECTED_TOKEN_DECIMALS: u32 = 7;
         if token_decimals != EXPECTED_TOKEN_DECIMALS {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+        }
+
+        // #392 — The token must already be on the enrollment whitelist.
+        // validate_enrollment() keeps the same check at enroll time because the
+        // whitelist can change afterwards, but without it here an instructor
+        // could register and get approved for a course no student can enroll in.
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::ApprovedToken(token.clone()))
+        {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
