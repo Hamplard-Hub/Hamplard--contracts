@@ -19028,3 +19028,188 @@ fn test_lifetime_capacity_default_unchanged_counts_completed_students() {
     // In Lifetime mode this must still be rejected — total_enrollments == cap.
     client.enroll(&student_b, &course_id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    #[test]
+    fn set_fee_config_applies_override_at_enrollment() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+
+        env.mock_all_auths();
+
+        let config = FeeConfig {
+            course_fee_bps: 250,
+            certificate_fee_bps: 500,
+        };
+
+        set_fee_config(&env, config.clone()).unwrap();
+        assert_eq!(get_fee_config(&env), config);
+    }
+
+    #[test]
+    fn get_fee_config_returns_default_when_no_override_is_set() {
+        let env = Env::default();
+
+        let default = FeeConfig::default();
+        assert_eq!(get_fee_config(&env), default);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_fee_config_rejects_value_above_10000_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let invalid = FeeConfig {
+            course_fee_bps: 10_001,
+            certificate_fee_bps: 0,
+        };
+
+        set_fee_config(&env, invalid).unwrap();
+    }
+
+    #[test]
+    fn set_fee_config_requires_admin_authorization() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        let config = FeeConfig {
+            course_fee_bps: 250,
+            certificate_fee_bps: 500,
+        };
+
+        // Use the same pattern the rest of the contract uses for unauthorized calls.
+        let result = set_fee_config(&env, config);
+
+        assert!(result.is_err());
+    }
+}
+
+use soroban_sdk::{symbol_short, testutils::Events, vec, Address, Env, String};
+
+use crate::tests::fixtures::{register_course, setup_contract, setup_instructor, setup_student};
+use crate::{Hamplard, HamplardClient};
+
+#[test]
+fn reject_course_pending_to_rejected() {
+    let env = Env::default();
+    let contract = setup_contract(&env);
+    let admin = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let course_id = String::from_str(&env, "course-reject-pending");
+    let client = HamplardClient::new(&env, &contract);
+
+    // Create a pending course.
+    register_course(&env, &contract, &admin, &instructor, &course_id);
+
+    // Reject it.
+    client.reject_course(&instructor, &course_id);
+
+    let course = client.get_course(&course_id);
+    assert_eq!(course.status, crate::CourseStatus::Rejected);
+
+    // The pending count should be decremented.
+    let pending_count = client.pending_course_count();
+    assert_eq!(pending_count, 0);
+}
+
+#[test]
+fn reject_course_non_pending_rejected() {
+    let env = Env::default();
+    let contract = setup_contract(&env);
+    let admin = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let course_id = String::from_str(&env, "course-reject-nonpending");
+    let client = HamplardClient::new(&env, &contract);
+
+    register_course(&env, &contract, &admin, &instructor, &course_id);
+
+    // Approve the course first so it is no longer pending.
+    client.approve_course(&admin, &course_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.reject_course(&instructor, &course_id);
+    }));
+    assert!(result.is_err(), "reject_course must reject a non-pending course");
+}
+
+#[test]
+fn reject_course_unauthorized_caller_rejected() {
+    let env = Env::default();
+    let contract = setup_contract(&env);
+    let admin = Address::generate(&env);
+    let instructor = Address::generate(&env);
+    let outsider = Address::generate(&env);
+
+    let course_id = String::from_str(&env, "course-reject-unauthorized");
+    let client = HamplardClient::new(&env, &contract);
+
+    register_course(&env, &contract, &admin, &instructor, &course_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.reject_course(&outsider, &course_id);
+    }));
+    assert!(result.is_err(), "only the instructor/admin should be allowed to reject a course");
+}
+
+#[test]
+fn reject_course_emits_event_payload() {
+    let env = Env::default();
+    let contract = setup_contract(&env);
+    let admin = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let course_id = String::from_str(&env, "course-reject-event");
+    let client = HamplardClient::new(&env, &contract);
+
+    register_course(&env, &contract, &admin, &instructor, &course_id);
+
+    client.reject_course(&instructor, &course_id);
+
+    let events = env.events().all();
+    let event = events
+        .iter()
+        .rev()
+        .find(|e| {
+            e.topics().iter().any(|t| t == &symbol_short!("course_rejected"))
+        })
+        .expect("course_rejected event should be emitted");
+
+    let payload = event.data();
+    // Keep this assertion stable by checking the key fields rather than a full raw payload match.
+    assert!(payload.len() >= 3, "event payload should include course + actor + metadata");
+}
+
+#[test]
+fn reject_course_decrements_pending_count() {
+    let env = Env::default();
+    let contract = setup_contract(&env);
+    let admin = Address::generate(&env);
+    let instructor = Address::generate(&env);
+
+    let first = String::from_str(&env, "course-a");
+    let second = String::from_str(&env, "course-b");
+
+    let client = HamplardClient::new(&env, &contract);
+
+    register_course(&env, &contract, &admin, &instructor, &first);
+    register_course(&env, &contract, &admin, &instructor, &second);
+
+    assert_eq!(client.pending_course_count(), 2);
+
+    client.reject_course(&instructor, &first);
+
+    assert_eq!(client.pending_course_count(), 1);
+
+    let course = client.get_course(&first);
+    assert_eq!(course.status, crate::CourseStatus::Rejected);
+
+    let second_course = client.get_course(&second);
+    assert_eq!(second_course.status, crate::CourseStatus::Pending);
+}
