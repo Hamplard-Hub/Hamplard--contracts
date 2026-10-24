@@ -40,3 +40,11 @@ pub fn fees_withdrawn(env: &Env, to: address, amount: i128) {
         (to, amount),
     );
 }
+
+/// Event emitted when a material change to an Active course triggers admin re-review.
+pub fn re_review_triggered(env: &Env, course_id: Symbol, instructor: address, field: Symbol) {
+    env.events().publish(
+        (Symbol::new(env, "re_review"),),
+        (course_id, instructor, field),
+    );
+}

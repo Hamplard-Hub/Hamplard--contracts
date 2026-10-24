@@ -13,10 +13,25 @@ pub struct Course {
     pub capacity: u32,
     pub enrolled: u32,
     pub active: bool,
+    /// Lifecycle status: true while awaiting admin (re-)review.
+    /// Set when a material field changes on an Active course.
+    pub pending_review: bool,
+}
+
+/// Fields considered material for admin re-review of an Active course.
+///
+/// Material changes: `price` (via `update_course`), `content_hash`
+/// (via `update_content_hash`), and `co_instructors` / revenue split
+/// (via `set_co_instructors`, only before first enrollment).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Contracttype)]
+pub enum MaterialField {
+    Price,
+    ContentHash,
+    CoInstructors,
 }
 
 /// Enrollment record for a student in a course.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq)
 #[derive(Contracttype)]
 pub struct Enrollment {
     pub student: Address,
@@ -27,7 +42,7 @@ pub struct Enrollment {
 }
 
 /// Certificate issued upon course completion.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq)
 #[derive(Contracttype)]
 pub struct Certificate {
     pub student: Address,
@@ -37,7 +52,7 @@ pub struct Certificate {
 }
 
 /// Contract configuration values.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq)
 #[derive(Contracttype)]
 pub struct Config {
     pub fee_bps: u32,
@@ -46,7 +61,7 @@ pub struct Config {
 }
 
 /// Paginated result wrapper for list readers.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq)
 #[derive(Contracttype)]
 pub struct Page<T> {
     pub items: Vec<T>,
@@ -54,7 +69,7 @@ pub struct Page<T> {
 }
 
 /// Storage keys for persistent entries.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq)
 #[derive(Contracttype)]
 pub enum DataKey {
     Config,
@@ -109,6 +124,15 @@ pub struct ConfigUpdated {
     pub treasury: Address,
 }
 
+/// Event emitted when a material change on an Active course triggers
+/// admin re-review. The course is marked `pending_review` and is not
+/// enrollable until an admin re-approves it.
+#[derive(Clone, Debug, Eq, Contracttype)]
+pub struct ReviewRequired {
+    pub course_id: Symbol,
+    pub field: MaterialField,
+}
+
 /// Error codes returned by the contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Contracttype)]
 #[repr(u32)]
@@ -127,4 +151,6 @@ pub enum Error {
     NotCompleted = 12,
     Paused = 13,
     InvalidFee = 14,
+    PendingReview = 15,
+    CoInstructorsLocked = 16,
 }
