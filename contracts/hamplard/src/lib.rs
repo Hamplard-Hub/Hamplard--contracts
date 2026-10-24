@@ -15,14 +15,6 @@
 //! | Co-instructor     | `Course::co_instructors`   | Passive revenue share; no privileged entrypoint is callable by this role     |
 //! | Student           | Any caller                 | Enroll, request refunds, challenge revocations, escalate disputes, waitlist  |
 //! | Treasury          | `DataKey::Treasury`        | Passive recipient of the platform fee share; cannot initiate any action      |
-//! | Role              | Who                    | Capabilities                                                          |
-//! |-------------------|------------------------|-----------------------------------------------------------------------|
-//! | Admin             | `DataKey::Admin`       | Fund-moving & config operations, archive courses, issue & revoke certificates, multi-sig co-approval |
-//! | Moderator         | `DataKey::Moderator`   | Approve/reject/pause courses, block/unblock students, mark completions |
-//! | Secondary Admin   | `DataKey::SecondaryAdmin` | Required alongside Admin for multi-sig operations (archive, treasury update, admin transfer) |
-//! | Instructor        | Course `instructor` field | Register courses, pause/unpause own courses, withdraw earnings, transfer course (with admin co-approval) |
-//! | Student           | Any caller             | Enroll in active courses (must sign), batch-enroll (unless blocked by admin)  |
-//! | Treasury          | `DataKey::Treasury`    | Passive recipient of platform fee share; cannot initiate any action   |
 //!
 //! ## Privileged Operations — Admin (single signature)
 //! Each entrypoint below calls `require_auth()` on, and checks, the stored Admin

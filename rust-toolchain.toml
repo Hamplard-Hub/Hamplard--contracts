@@ -1,12 +1,11 @@
 # Pinned toolchain for reproducible builds.
 # soroban-sdk =22.0.11 needs >= 1.84.0; the locked dependencies need a newer
-# compiler, so the pin uses the release the lockfile is known to build with.
+# compiler (crates such as zeroize_derive 1.5.0 and proptest 1.12.0 require
+# the edition2024 feature / Rust 1.85+), so the pin is bumped to a release
+# that can parse the lockfile dependencies.
 # Update this version together with soroban-sdk.
 [toolchain]
-channel    = "1.96.0"
+channel    = "1.88.0"
 targets    = ["wasm32v1-none"]
 components = ["rustc", "cargo", "rustfmt", "clippy", "rust-src"]
-
-[toolchain]
-channel = "1.99.1"
-profile = "minimal"
+profile    = "minimal"
