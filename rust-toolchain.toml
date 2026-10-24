@@ -3,7 +3,7 @@
 # exactly this release, so keep the pin in step with that rustup line.
 # Update this version together with soroban-sdk and the workflow rustup lines.
 [toolchain]
-channel    = "1.99.1"
+channel    = "1.84.0"
 targets    = ["wasm32v1-none"]
 components = ["rustc", "cargo", "rustfmt", "clippy", "rust-src"]
 profile    = "minimal"
