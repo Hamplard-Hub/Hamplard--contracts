@@ -121,6 +121,9 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                {
                   "i128": {
                     "hi": 0,
                     "lo": 5000000
@@ -469,6 +472,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -481,6 +496,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1497,6 +1520,9 @@
                           "vec": [
                             {
                               "symbol": "ArbitrationFeeConfig"
+                            },
+                            {
+                              "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                             }
                           ]
                         },

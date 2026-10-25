@@ -341,6 +341,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -353,6 +365,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1394,5 +1414,62 @@
       ]
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "EnrollmentFailed"
+              },
+              {
+                "string": "COURSE-001"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "course_id"
+                  },
+                  "val": {
+                    "string": "COURSE-001"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "ledger_sequence"
+                  },
+                  "val": {
+                    "u32": 1
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "reason"
+                  },
+                  "val": {
+                    "u32": 10
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "student"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": true
+    }
+  ]
 }

@@ -286,7 +286,7 @@
                   "string": "COURSE-UNIQUE-REF"
                 },
                 {
-                  "string": "evidence"
+                  "bytes": "65766964656e6365000000000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -681,6 +681,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -693,6 +705,14 @@
                       },
                       "val": {
                         "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1434,7 +1454,7 @@
                             "symbol": "evidence_hash"
                           },
                           "val": {
-                            "string": "evidence"
+                            "bytes": "65766964656e6365000000000000000000000000000000000000000000000000"
                           }
                         },
                         {

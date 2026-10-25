@@ -1,0 +1,12 @@
+# Pinned toolchain for reproducible builds.
+# soroban-sdk =22.0.11 needs >= 1.84.0; the locked dependencies need a newer
+# compiler, so the pin uses the release the lockfile is known to build with.
+# Update this version together with soroban-sdk.
+[toolchain]
+channel    = "1.96.0"
+targets    = ["wasm32v1-none"]
+components = ["rustc", "cargo", "rustfmt", "clippy", "rust-src"]
+
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"

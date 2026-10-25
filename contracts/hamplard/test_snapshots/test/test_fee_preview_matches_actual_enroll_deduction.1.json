@@ -453,6 +453,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -465,6 +477,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {

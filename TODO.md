@@ -8,7 +8,7 @@
 - [x] Add `RiskFeeApplied` event data struct
 
 ## Step 2: Add admin configuration functions
-- [x] `set_fee_config_for_token` / `get_fee_config_for_token`
+- [x] `set_fee_config` / `get_fee_config`
 - [x] `set_arbitration_fee_config`
 - [x] `set_risk_fee_config`
 
@@ -20,7 +20,7 @@
 
 ## Step 4: Implement arbitration escalation
 - [x] `escalate_to_arbitration` function
-- [x] Require `fee_amount >= fee_per_case`
+- [x] Transfer the exact `fee_per_case` for the course token
 - [x] Transfer fee into fee pool
 - [x] Publish escalation event
 

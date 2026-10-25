@@ -353,7 +353,7 @@
                   "string": "COURSE-PREREQ-A"
                 },
                 {
-                  "string": "evidence"
+                  "bytes": "65766964656e6365000000000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -488,6 +488,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -500,6 +512,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -716,6 +736,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -728,6 +760,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1197,7 +1237,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "evidence"
+                        "bytes": "65766964656e6365000000000000000000000000000000000000000000000000"
                       }
                     },
                     {
@@ -2611,5 +2651,62 @@
       ]
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "EnrollmentFailed"
+              },
+              {
+                "string": "COURSE-PREREQ-B"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "course_id"
+                  },
+                  "val": {
+                    "string": "COURSE-PREREQ-B"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "ledger_sequence"
+                  },
+                  "val": {
+                    "u32": 2
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "reason"
+                  },
+                  "val": {
+                    "u32": 8
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "student"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": true
+    }
+  ]
 }

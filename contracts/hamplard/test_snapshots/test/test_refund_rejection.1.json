@@ -284,7 +284,8 @@
                 },
                 {
                   "bool": false
-                }
+                },
+                "void"
               ]
             }
           },
@@ -419,6 +420,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -431,6 +444,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1260,6 +1281,12 @@
                       "val": {
                         "string": "COURSE-REJECT"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "refund_amount"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

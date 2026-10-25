@@ -1,0 +1,47 @@
+name: WASM Size
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  WASM_PATH: target/wasm32v1-none/release/hamplard.wasm
+  MAX_WASM_SIZE: "150000"
+
+jobs:
+  wasm-size:
+    name: Build and enforce WASM size budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/stellar-cli"
+          curl -fsSL \
+            https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/stellar-cli"
+          echo "$RUNNER_TEMP/stellar-cli" >> "$GITHUB_PATH"
+
+      - name: Build optimized contract
+        run: stellar contract build --package hamplard --optimize
+
+      - name: Enforce WASM size budget
+        run: |
+          size=$(stat -c%s "$WASM_PATH")
+          echo "WASM size: ${size} bytes (budget: ${MAX_WASM_SIZE} bytes)"
+          if [ "$size" -gt "$MAX_WASM_SIZE" ]; then
+            echo "::error::WASM size ${size} bytes exceeds budget ${MAX_WASM_SIZE} bytes"
+            exit 1
+          fi
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hamplard-wasm
+          path: ${{ env.WASM_PATH }}
+          if-no-files-found: error

@@ -261,7 +261,7 @@
                   "string": "COURSE-AUTH-2"
                 },
                 {
-                  "string": "some_evidence_hash"
+                  "bytes": "736f6d655f65766964656e63655f686173680000000000000000000000000000"
                 }
               ]
             }
@@ -420,6 +420,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -432,6 +444,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -849,7 +869,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "some_evidence_hash"
+                        "bytes": "736f6d655f65766964656e63655f686173680000000000000000000000000000"
                       }
                     },
                     {

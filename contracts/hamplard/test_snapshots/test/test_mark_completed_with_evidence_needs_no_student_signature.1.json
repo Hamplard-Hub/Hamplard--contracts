@@ -262,7 +262,7 @@
                   "string": "COURSE-EVIDENCE-ONLY"
                 },
                 {
-                  "string": "sha256:9f86d081884c7d65"
+                  "bytes": "7368613235363a39663836643038313838346337643635000000000000000000"
                 }
               ]
             }
@@ -397,6 +397,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -409,6 +421,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -826,7 +846,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "sha256:9f86d081884c7d65"
+                        "bytes": "7368613235363a39663836643038313838346337643635000000000000000000"
                       }
                     },
                     {

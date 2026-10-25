@@ -261,7 +261,7 @@
                   "string": "COURSE-CERT-ID-LEN"
                 },
                 {
-                  "string": "hash"
+                  "bytes": "6861736800000000000000000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -421,6 +421,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -433,6 +445,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -850,7 +870,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "hash"
+                        "bytes": "6861736800000000000000000000000000000000000000000000000000000000"
                       }
                     },
                     {

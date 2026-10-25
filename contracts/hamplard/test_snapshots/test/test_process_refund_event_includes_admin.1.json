@@ -284,7 +284,8 @@
                 },
                 {
                   "bool": true
-                }
+                },
+                "void"
               ]
             }
           },
@@ -443,6 +444,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -455,6 +468,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -598,7 +619,7 @@
                         "symbol": "total_enrollments"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1185,6 +1206,17 @@
                       },
                       "val": {
                         "string": "COURSE-REFUND-ATTR"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "refund_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 500000000
+                        }
                       }
                     },
                     {
@@ -2295,6 +2327,57 @@
                 "hi": 0,
                 "lo": 400000000
               }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "refund_issued"
+              },
+              {
+                "string": "COURSE-REFUND-ATTR"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                },
+                {
+                  "string": "COURSE-REFUND-ATTR"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 500000000
+                  }
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 100000000
+                  }
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 400000000
+                  }
+                },
+                {
+                  "u32": 1
+                }
+              ]
             }
           }
         }

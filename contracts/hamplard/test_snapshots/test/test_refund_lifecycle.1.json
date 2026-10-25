@@ -310,7 +310,8 @@
                 },
                 {
                   "bool": true
-                }
+                },
+                "void"
               ]
             }
           },
@@ -472,6 +473,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -484,6 +497,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -627,7 +648,7 @@
                         "symbol": "total_enrollments"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1214,6 +1235,17 @@
                       },
                       "val": {
                         "string": "COURSE-REFUND"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "refund_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 1000000000
+                        }
                       }
                     },
                     {

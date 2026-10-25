@@ -261,7 +261,7 @@
                   "string": "COURSE-BULK-CHALLENGE"
                 },
                 {
-                  "string": "completion-evidence"
+                  "bytes": "636f6d706c6574696f6e2d65766964656e636500000000000000000000000000"
                 }
               ]
             }
@@ -751,6 +751,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -763,6 +775,14 @@
                       },
                       "val": {
                         "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1231,7 +1251,7 @@
                         "symbol": "evidence_hash"
                       },
                       "val": {
-                        "string": "completion-evidence"
+                        "bytes": "636f6d706c6574696f6e2d65766964656e636500000000000000000000000000"
                       }
                     },
                     {

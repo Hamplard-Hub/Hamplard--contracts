@@ -261,7 +261,7 @@
                   "string": "COURSE-REENROLL-005"
                 },
                 {
-                  "string": "evidence-1"
+                  "bytes": "65766964656e63652d3100000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -360,7 +360,7 @@
                   "string": "COURSE-REENROLL-005"
                 },
                 {
-                  "string": "evidence-2"
+                  "bytes": "65766964656e63652d3200000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -590,6 +590,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "capacity_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Lifetime"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "categories"
                       },
                       "val": {
@@ -602,6 +614,14 @@
                       },
                       "val": {
                         "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "co_instructors"
+                      },
+                      "val": {
+                        "vec": []
                       }
                     },
                     {
@@ -1344,7 +1364,7 @@
                             "symbol": "evidence_hash"
                           },
                           "val": {
-                            "string": "evidence-1"
+                            "bytes": "65766964656e63652d3100000000000000000000000000000000000000000000"
                           }
                         },
                         {
@@ -1467,7 +1487,7 @@
                             "symbol": "evidence_hash"
                           },
                           "val": {
-                            "string": "evidence-2"
+                            "bytes": "65766964656e63652d3200000000000000000000000000000000000000000000"
                           }
                         },
                         {
