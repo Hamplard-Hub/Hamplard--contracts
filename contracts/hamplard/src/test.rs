@@ -19258,3 +19258,94 @@ fn reject_course_decrements_pending_count() {
     let second_course = client.get_course(&second);
     assert_eq!(second_course.status, crate::CourseStatus::Pending);
 }
+// =============================================================================
+// list_courses_by_status(): page through courses of a single status
+// =============================================================================
+
+#[test]
+fn test_list_courses_by_status_active_only_and_paginated() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // A, B, C, D active; E pending; F rejected; G paused.
+    for id in ["CBS-A", "CBS-B", "CBS-C", "CBS-D", "CBS-G"] {
+        register_and_approve_course(&env, &client, &token_id, &admin, &instructor, id, 100_000_000);
+    }
+    for id in ["CBS-E", "CBS-F"] {
+        client.register_course(
+            &instructor,
+            &String::from_str(&env, id),
+            &100_000_000,
+            &token_id,
+            &0u32,
+            &None,
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &soroban_sdk::Vec::new(&env),
+        );
+    }
+    client.reject_course(
+        &admin,
+        &String::from_str(&env, "CBS-F"),
+        &String::from_str(&env, "no"),
+    );
+    client.pause_course(&instructor, &String::from_str(&env, "CBS-G"));
+
+    let active = client.list_courses_by_status(&CourseStatus::Active, &0u32, &u32::MAX);
+    assert_eq!(active.len(), 4);
+    assert_eq!(active.get(0).unwrap(), String::from_str(&env, "CBS-A"));
+    assert_eq!(active.get(3).unwrap(), String::from_str(&env, "CBS-D"));
+
+    // Offset applies to the filtered set.
+    let page = client.list_courses_by_status(&CourseStatus::Active, &1u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), String::from_str(&env, "CBS-B"));
+    assert_eq!(page.get(1).unwrap(), String::from_str(&env, "CBS-C"));
+
+    let tail = client.list_courses_by_status(&CourseStatus::Active, &3u32, &2u32);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.get(0).unwrap(), String::from_str(&env, "CBS-D"));
+
+    assert_eq!(
+        client
+            .list_courses_by_status(&CourseStatus::Active, &4u32, &2u32)
+            .len(),
+        0
+    );
+    assert_eq!(
+        client
+            .list_courses_by_status(&CourseStatus::Active, &0u32, &0u32)
+            .len(),
+        0
+    );
+
+    let pending = client.list_courses_by_status(&CourseStatus::Pending, &0u32, &10u32);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.get(0).unwrap(), String::from_str(&env, "CBS-E"));
+    let rejected = client.list_courses_by_status(&CourseStatus::Rejected, &0u32, &10u32);
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected.get(0).unwrap(), String::from_str(&env, "CBS-F"));
+    let paused = client.list_courses_by_status(&CourseStatus::Paused, &0u32, &10u32);
+    assert_eq!(paused.len(), 1);
+}
+
+#[test]
+fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client
+            .list_courses_by_status(&CourseStatus::Active, &0u32, &10u32)
+            .len(),
+        0
+    );
+
+    for i in 0..55u32 {
+        let id = std::format!("CBS-BULK-{}", i);
+        register_and_approve_course(&env, &client, &token_id, &admin, &instructor, &id, 100_000_000);
+    }
+    let page = client.list_courses_by_status(&CourseStatus::Active, &0u32, &u32::MAX);
+    assert_eq!(page.len(), 50);
+    let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
+    assert_eq!(rest.len(), 5);
+}
