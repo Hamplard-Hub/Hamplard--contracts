@@ -7222,6 +7222,54 @@ impl HamplardContract {
         page
     }
 
+    /// Return a page of course IDs whose current status equals `status`.
+    ///
+    /// Lets clients page through only enrollable (`Active`) courses without
+    /// fetching every course record. `offset` is the zero-based index into the
+    /// *filtered* result set (not the full catalog), and `limit` is clamped to
+    /// `MAX_PAGE_SIZE`, so the returned page is always bounded. Scanning stops
+    /// as soon as the page is full.
+    ///
+    /// Returns an empty list when `offset` is beyond the last matching course.
+    pub fn list_courses_by_status(
+        env: Env,
+        status: CourseStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<String> {
+        let catalog: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseList)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let limit = limit.min(Self::MAX_PAGE_SIZE);
+        let mut page = Vec::new(&env);
+        if limit == 0 {
+            return page;
+        }
+
+        let mut matched: u32 = 0;
+        for course_id in catalog.iter() {
+            let course: Option<Course> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Course(course_id.clone()));
+            if let Some(course) = course {
+                if course.status == status {
+                    if matched >= offset {
+                        page.push_back(course_id);
+                        if page.len() >= limit {
+                            break;
+                        }
+                    }
+                    matched += 1;
+                }
+            }
+        }
+        page
+    }
+
     /// Get the current platform fee percentage (Admin only)
     pub fn get_platform_fee(env: Env, admin: Address) -> u32 {
         admin.require_auth();
