@@ -18816,7 +18816,7 @@ fn test_reject_then_resubmit_inside_window_succeeds() {
 
     // Admin rejects
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
     let rejected = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(rejected.status, RefundStatus::Rejected);
 
@@ -18862,7 +18862,7 @@ fn test_reject_then_resubmit_outside_window_fails() {
 
     client.request_refund(&student, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
-    client.process_refund(&admin, &student, &course_id, &false, &None::<i128>);
+    client.process_refund(&admin, &student, &course_id, &false, &None);
 
     // Advance past the window
     env.ledger().with_mut(|l| {

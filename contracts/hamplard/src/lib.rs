@@ -36,7 +36,8 @@
 //! - `process_refund` — approves a pending refund; if the enrollment already has a
 //!   certificate issued, the certificate is revoked with reason `REFUNDED` and a
 //!   `certificate_revoked` event is emitted, so no refunded enrollment can leave
-//!   behind a certificate that verifies as valid
+//!   behind a certificate that verifies as valid. Refund requests are rejected for
+//!   free (price 0) enrollments, since there is no economic value to refund.
 //! - `bulk_revoke_course_certificates` — flags every certificate of a course as revoked in one transaction
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
@@ -4322,6 +4323,18 @@ impl HamplardContract {
                 .set(&outstanding_key, &new_outstanding);
         }
 
+        // Decrement total outstanding instructor earnings for this token
+        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
+        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
+        let new_outstanding = current_outstanding.saturating_sub(withdraw_amount);
+        if new_outstanding == 0 {
+            env.storage().instance().remove(&outstanding_key);
+        } else {
+            env.storage()
+                .instance()
+                .set(&outstanding_key, &new_outstanding);
+        }
+
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(
             &env.current_contract_address(),
@@ -5965,10 +5978,7 @@ impl HamplardContract {
     /// Get the current total active paid enrollments platform-wide.
     /// Free-course enrollments are excluded.
     pub fn get_total_active_enrollments(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::TotalActiveEnrollments)
-            .unwrap_or(0)
+        Self::read_total_active_enrollments(&env)
     }
 
     fn write_total_active_enrollments(env: &Env, count: u32) {
@@ -8103,6 +8113,18 @@ impl HamplardContract {
         } else {
             env.storage().persistent().set(&lifetime_key, &new_lifetime);
         }
+
+        // Decrement total outstanding instructor earnings for this token
+        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
+        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
+        let new_outstanding = current_outstanding.saturating_sub(amount);
+        if new_outstanding == 0 {
+            env.storage().instance().remove(&outstanding_key);
+        } else {
+            env.storage()
+                .instance()
+                .set(&outstanding_key, &new_outstanding);
+        }
     }
 
     /// Load an instructor's reputation stats, apply `f`, and persist the result.
@@ -8755,6 +8777,14 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("overflow computing total arbitration fees"));
         env.storage().instance().set(&arb_key, &new_arb);
 
+        // Track total outstanding arbitration fees for this token
+        let arb_key = DataKey2::TotalArbitrationFees(course.token.clone());
+        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
+        let new_arb = current_arb
+            .checked_add(config.fee_per_case)
+            .unwrap_or_else(|| panic!("overflow computing total arbitration fees"));
+        env.storage().instance().set(&arb_key, &new_arb);
+
         env.events().publish(
             (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
             (caller, course_id, config.fee_per_case),
@@ -8832,6 +8862,16 @@ impl HamplardContract {
         }
 
         Self::persist(&env, &case_key, &case);
+
+        // Decrement total outstanding arbitration fees for this token
+        let arb_key = DataKey2::TotalArbitrationFees(case.token.clone());
+        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
+        let new_arb = current_arb.saturating_sub(case.fee_paid);
+        if new_arb == 0 {
+            env.storage().instance().remove(&arb_key);
+        } else {
+            env.storage().instance().set(&arb_key, &new_arb);
+        }
 
         // Decrement total outstanding arbitration fees for this token
         let arb_key = DataKey2::TotalArbitrationFees(case.token.clone());
