@@ -22,6 +22,9 @@ jobs:
 
       # Toolchain pinned (see issue #487 dependencies) so CI results are
       # reproducible and independent of the runner's preinstalled Rust.
+      # The rust-toolchain.toml file is the single source of truth for the
+      # pinned version; rustup reads it automatically, so we only need to
+      # install the components it requests.
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.99.1 --profile minimal --no-self-update

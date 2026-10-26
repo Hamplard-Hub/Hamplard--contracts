@@ -47,6 +47,19 @@ fn test_initialize_requires_admin_auth() {
 }
 
 #[test]
+fn test_require_multi_admin_before_init_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deliberately skip initialisation: use a bare contract client.
+    let ctx = setup_contract_no_auth(&env);
+    let caller = Address::generate(&env);
+
+    let result = ctx.client.try_pause(&caller);
+    assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+}
+
+#[test]
 fn test_admin_can_pause_and_unpause() {
     let env = Env::default();
     env.mock_all_auths();
