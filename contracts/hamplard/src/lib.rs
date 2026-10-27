@@ -8461,7 +8461,7 @@ impl HamplardContract {
 
     /// Computes the risk score and total surcharge (bps) for a payment.
     /// Surcharges only apply when risk pricing is enabled and a
-    /// `RiskFeeConfig` is available (stored override or the default).
+    /// `RiskFeeConfig` is stored.
     fn risk_score_internal(
         env: &Env,
         payment_amount: i128,
@@ -8482,39 +8482,6 @@ impl HamplardContract {
             is_new_customer,
             is_btc_eth,
         );
-        if !enabled {
-            return RiskScore {
-                score: 0,
-                surcharge_bps: 0,
-            };
-        }
-
-        // Use the same config source as `calculate_risk_score()` /
-        // `get_risk_fee_config()`: a stored override if present, otherwise
-        // the default RiskFeeConfig. This keeps quotes and charges in sync
-        // when risk pricing is enabled without a stored config.
-        let config = Self::get_risk_fee_config(env);
-
-        let mut score: u32 = 0;
-        let mut surcharge_bps: u32 = 0;
-
-        // Large payment surcharge
-        if payment_amount > config.large_payment_threshold {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.large_payment_surcharge_bps);
-        }
-
-        // New customer surcharge
-        if is_new_customer {
-            score = score.saturating_add(40);
-            surcharge_bps = surcharge_bps.saturating_add(config.new_customer_surcharge_bps);
-        }
-
-        // BTC/ETH surcharge
-        if is_btc_eth {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.btc_eth_surcharge_bps);
-        }
 
         RiskScore {
             score,

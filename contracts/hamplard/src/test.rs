@@ -19349,3 +19349,51 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_issue656_risk_score_internal_delegates_solely_to_risk_surcharge() {
+    let (env, contract_id, token_id, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let threshold = 10_000_000i128;
+
+    // 1. Enabled without stored RiskFeeConfig yields (0, 0) consistently across
+    //    calculate_risk_score, get_effective_fee_for_payment, and risk_score_internal.
+    client.set_risk_config_enabled(&admin, &true);
+    let no_cfg = client.calculate_risk_score(&student, &token_id, &(threshold * 200_000));
+    assert_eq!(
+        no_cfg,
+        RiskScore {
+            score: 0,
+            surcharge_bps: 0
+        }
+    );
+
+    // 2. Stored RiskFeeConfig applies boundary and combination rules identically.
+    client.set_risk_fee_config(&admin, &300, &threshold, &400, &500);
+    assert_eq!(
+        client.calculate_risk_score(&student, &token_id, &threshold),
+        RiskScore {
+            score: 0,
+            surcharge_bps: 0
+        }
+    );
+    assert_eq!(
+        client.calculate_risk_score(&student, &token_id, &(threshold + 1)),
+        RiskScore {
+            score: 30,
+            surcharge_bps: 300
+        }
+    );
+
+    let all_flags = env.as_contract(&contract_id, || {
+        HamplardContract::risk_score_internal(&env, threshold + 1, true, true)
+    });
+    assert_eq!(
+        all_flags,
+        RiskScore {
+            score: 100,
+            surcharge_bps: 1200
+        }
+    );
+}
