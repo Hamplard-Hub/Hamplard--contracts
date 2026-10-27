@@ -19349,3 +19349,51 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_issue655_single_fee_breakdown_and_course_override_floor() {
+    let (env, contract_id, token_id, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let amount = 1_000_000_000i128;
+
+    // Base token fee 5% (500 bps)
+    client.set_fee_config(&admin, &token_id, &500u32);
+
+    // 1. Without course override floor: 5% platform fee
+    let (net_no_floor, fee_no_floor, breakdown_no_floor) = env.as_contract(&contract_id, || {
+        HamplardContract::calculate_enrollment_split(&env, &token_id, amount, None, false, false)
+    });
+    assert_eq!(fee_no_floor, 50_000_000);
+    assert_eq!(net_no_floor, 950_000_000);
+    assert_eq!(
+        breakdown_no_floor,
+        Some(RiskFeeApplied {
+            payment_amount: amount,
+            base_fee_bps: 500,
+            risk_surcharge_bps: 0,
+            effective_fee_bps: 500,
+            platform_fee: 50_000_000,
+        })
+    );
+
+    // 2. Course override floor higher than live effective fee (15% = 1500 bps)
+    let (net_floor, fee_floor, breakdown_floor) = env.as_contract(&contract_id, || {
+        HamplardContract::calculate_enrollment_split(
+            &env,
+            &token_id,
+            amount,
+            Some(1500u32),
+            false,
+            false,
+        )
+    });
+    assert_eq!(fee_floor, 150_000_000);
+    assert_eq!(net_floor, 850_000_000);
+    assert_eq!(breakdown_floor.unwrap().platform_fee, 150_000_000);
+
+    // 3. Zero/negative payment returns (0, 0, None)
+    let zero_split = env.as_contract(&contract_id, || {
+        HamplardContract::calculate_enrollment_split(&env, &token_id, 0, Some(1500u32), true, true)
+    });
+    assert_eq!(zero_split, (0, 0, None));
+}
