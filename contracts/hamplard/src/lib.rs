@@ -444,6 +444,7 @@ pub enum Error {
     WaitlistError = 48,
     UpgradeError = 49,
     InconsistentState = 50,
+    TokenNotApproved = 51,
 }
 mod types;
 mod storage;
@@ -464,13 +465,6 @@ soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamp
     Symbol, Vec,
 };
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum HamplardError {
-    CourseNotActive = 1,
-    TokenNotApproved = 2,
-}
 /// Number of ledgers to extend the instance TTL by on user activity.
 const INSTANCE_TTL_EXTEND: u32 = 100_000;
 /// Threshold below which the instance TTL is extended.
@@ -8711,7 +8705,7 @@ impl HamplardContract {
         }
 
         if course.status != CourseStatus::Active {
-            soroban_sdk::panic_with_error!(&env, HamplardError::CourseNotActive);
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotActive);
         }
 
         if !env
@@ -8719,7 +8713,7 @@ impl HamplardContract {
             .instance()
             .has(&DataKey::ApprovedToken(course.token.clone()))
         {
-            soroban_sdk::panic_with_error!(&env, HamplardError::TokenNotApproved);
+            soroban_sdk::panic_with_error!(&env, Error::TokenNotApproved);
         }
 
         // Reject duplicate open cases for the same (caller, course_id) pair.
