@@ -575,8 +575,6 @@ pub struct RiskFeeApplied {
     pub risk_surcharge_bps: u32,
     pub effective_fee_bps: u32,
     pub platform_fee: i128,
-    pub course_id: String,
-    pub student: Address,
 }
 
 #[contractevent]
@@ -8558,11 +8556,6 @@ impl HamplardContract {
         // Cap at 100% (10000 bps)
         let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps).min(10000);
 
-        // Compute platform fee: amount * effective_bps / 10000
-        let platform_fee = payment_amount
-            .checked_mul(effective_fee_bps as i128)
-            .map(|v| v / 10000)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
         // Compute platform fee: amount * effective_bps / 10000. Both the
         // quote and the charge use this helper, so overflow always panics
         // with the same message instead of silently quoting a zero fee.
@@ -8645,18 +8638,6 @@ impl HamplardContract {
             return (0, 0, None);
         }
 
-        let breakdown =
-            Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
-        // An explicit registration-time override is a floor on the live fee.
-        let platform_fee = if let Some(override_bps) = course_fee_override_bps {
-            let floor = amount
-                .checked_mul(override_bps as i128)
-                .map(|v| v / 10000)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-            breakdown.platform_fee.max(floor)
-        } else {
-            breakdown.platform_fee
-        };
         let breakdown = Self::compute_fee_breakdown(
             env,
             token,
