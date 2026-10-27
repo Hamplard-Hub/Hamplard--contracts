@@ -1,7 +1,6 @@
 # Pinned toolchain for reproducible builds.
-# soroban-sdk =22.0.11 needs >= 1.84.0. CI (.github/workflows/test.yml) installs
-# exactly this release, so keep the pin in step with that rustup line.
-# Update this version together with soroban-sdk and the workflow rustup lines.
+# soroban-sdk =22.0.11 needs >= 1.84.0.
+# Update this version together with soroban-sdk.
 [toolchain]
 channel    = "1.84.0"
 targets    = ["wasm32v1-none"]
