@@ -19349,3 +19349,62 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_issue657_error_codes_do_not_collide() {
+    assert_eq!(Error::AlreadyInitialized as u32, 1);
+    assert_eq!(Error::Unauthorized as u32, 2);
+    assert_eq!(Error::CourseNotActive as u32, 20);
+    assert_eq!(Error::TokenNotApproved as u32, 51);
+    assert_ne!(
+        Error::CourseNotActive as u32,
+        Error::AlreadyInitialized as u32
+    );
+    assert_ne!(Error::TokenNotApproved as u32, Error::Unauthorized as u32);
+}
+
+#[test]
+fn test_issue657_escalate_to_arbitration_inactive_course_returns_course_not_active_error() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 5_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-657-PAUSED",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-657-PAUSED");
+
+    client.pause_course(&instructor, &course_id);
+
+    let res = client.try_escalate_to_arbitration(&student, &course_id);
+    assert_eq!(res, Err(Ok(Error::CourseNotActive)));
+}
+
+#[test]
+fn test_issue657_escalate_to_arbitration_unapproved_token_returns_token_not_approved_error() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 5_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-657-UNAPPROVED",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-657-UNAPPROVED");
+
+    client.remove_approved_token(&admin, &token_id);
+
+    let res = client.try_escalate_to_arbitration(&student, &course_id);
+    assert_eq!(res, Err(Ok(Error::TokenNotApproved)));
+}
