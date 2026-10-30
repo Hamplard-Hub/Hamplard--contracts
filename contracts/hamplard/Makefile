@@ -5,8 +5,7 @@ CONTRACT_NAME = hamplard
 WASM_PATH     = target/wasm32v1-none/release/$(CONTRACT_NAME).wasm
 WASM_OPT      = target/wasm32v1-none/release/$(CONTRACT_NAME).optimized.wasm
 
-.PHONY: test build optimize deploy-testnet clean fmt fmt-check check lint snapshots
-.PHONY: test build optimize deploy-testnet deploy-and-init-testnet clean fmt check
+.PHONY: test build optimize deploy-testnet deploy-and-init-testnet clean fmt fmt-check check lint snapshots
 
 test:
 	cargo test
@@ -19,6 +18,10 @@ optimize: build
 	@echo "Optimized: $(WASM_OPT)"
 
 deploy-testnet: optimize
+	@if [ -z "$(STELLAR_ACCOUNT)" ]; then \
+		echo "Error: STELLAR_ACCOUNT must be set to deploy to $(NETWORK)" >&2; \
+		exit 1; \
+	fi
 	stellar contract deploy \
 		--wasm $(WASM_OPT) \
 		--source $(STELLAR_ACCOUNT) \
@@ -39,7 +42,7 @@ check:
 lint:
 	cargo clippy --all-targets -- -D warnings
 
-snapsorts:
+snapshots:
 	cargo clean
 	cargo test
 
