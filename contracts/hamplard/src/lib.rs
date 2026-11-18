@@ -2971,6 +2971,11 @@ impl HamplardContract {
             panic!("too many co-instructors (maximum is 10)");
         }
 
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        let secondary_admin: Option<Address> =
+            env.storage().instance().get(&DataKey::SecondaryAdmin);
+        let treasury = Self::read_treasury(&env);
+
         let mut co_instructors: Vec<CoInstructor> = Vec::new(&env);
         let mut total_share_bps: u32 = 0;
 
@@ -2988,6 +2993,18 @@ impl HamplardContract {
 
             if address == env.current_contract_address() {
                 panic!("contract address cannot be a co-instructor");
+            }
+
+            if admin.as_ref() == Some(&address) {
+                panic!("admin cannot be a co-instructor");
+            }
+
+            if secondary_admin.as_ref() == Some(&address) {
+                panic!("secondary admin cannot be a co-instructor");
+            }
+
+            if address == treasury {
+                panic!("treasury cannot be a co-instructor");
             }
 
             for existing in co_instructors.iter() {
