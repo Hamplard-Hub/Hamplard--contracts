@@ -4470,6 +4470,202 @@ fn test_verify_certificate_false_does_not_mutate_state() {
 }
 
 #[test]
+fn test_get_certificate_status_not_found() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let missing_id = String::from_str(&env, "CERT-STATUS-MISSING");
+    assert_eq!(
+        client.get_certificate_status(&missing_id),
+        CertificateStatus::NotFound
+    );
+    assert!(!client.verify_certificate(&missing_id));
+}
+
+#[test]
+fn test_get_certificate_status_valid_and_revoked() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-STATUS-001",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-STATUS-001");
+    let cert_id = String::from_str(&env, "CERT-STATUS-001");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-STATUS-001"),
+        &None,
+        &None,
+    );
+
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Valid
+    );
+    assert!(client.verify_certificate(&cert_id));
+
+    // Revoke — enters pending challenge period
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ACADEMIC_DISHONESTY"),
+    );
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Valid
+    );
+    assert!(client.verify_certificate(&cert_id));
+
+    // Advance to revocation deadline — revocation becomes permanent
+    let cert = client.get_certificate(&admin, &cert_id);
+    let deadline = cert.revocation_deadline.unwrap();
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline;
+    });
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Revoked
+    );
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_get_certificate_status_expired() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-STATUS-002",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-STATUS-002");
+    let cert_id = String::from_str(&env, "CERT-STATUS-002");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof")),
+    );
+
+    let expiry_ledger = env.ledger().sequence() + 500;
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Expiring Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-STATUS-002"),
+        &Some(expiry_ledger),
+        &None,
+    );
+
+    // Before expiry
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Valid
+    );
+    assert!(client.verify_certificate(&cert_id));
+
+    // At expiry ledger
+    env.ledger().with_mut(|l| {
+        l.sequence_number = expiry_ledger;
+    });
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Expired
+    );
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_get_certificate_status_revoked_takes_precedence_over_expired() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-STATUS-003",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-STATUS-003");
+    let cert_id = String::from_str(&env, "CERT-STATUS-003");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof")),
+    );
+
+    let expiry_ledger = env.ledger().sequence() + 100;
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Expiring & Revoked Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-STATUS-003"),
+        &Some(expiry_ledger),
+        &None,
+    );
+
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "FRAUD"));
+    let cert = client.get_certificate(&admin, &cert_id);
+    let deadline = cert.revocation_deadline.unwrap();
+
+    // Advance past both expiry and revocation deadline
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline.max(expiry_ledger) + 1;
+    });
+
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Revoked
+    );
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
 fn test_enroll_at_capacity_succeeds() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
