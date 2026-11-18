@@ -46,7 +46,7 @@
 //! - `get_treasury` / `get_pending_treasury` — public views of the effective treasury and any scheduled update
 //! - `update_content_hash` — updates the content commitment hash for a course (admin or instructor)
 //!
-//! - `init` — one-time bootstrap by the deployer/admin; writes the admin pair,
+//! - `__constructor` — one-time atomic bootstrap at deployment; writes the admin pair,
 //!   treasury, fee, refund window and revocation challenge period
 //! - `set_high_value_course_threshold` — sets the price above which course
 //!   approval needs two different admins/approvers
@@ -1291,18 +1291,23 @@ impl HamplardContract {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
-    /// Initialise the contract.
-    /// Called once by the deployer immediately after deployment.
+    /// Initialise the contract atomically at deployment time.
+    /// Runs as the Soroban `__constructor`, preventing any front-running
+    /// between contract deployment and initialisation.
     /// Emits `initialized` so indexers can discover the initial configuration.
     ///
     /// # Arguments
-    /// - `admin`                    — admin address (approves courses, issues certificates)
-    /// - `treasury`                 — platform treasury address (receives platform fee share)
-    /// - `default_fee_pct`          — default platform fee percentage (e.g. 20 = 20%)
-    /// - `refund_window_ledgers`    — number of ledger sequences after enrollment during which a
-    ///                                refund request is accepted; requests after this window are
-    ///                                automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
-    pub fn init(
+    /// - `admin`                       — admin address (approves courses, issues certificates)
+    /// - `secondary_admin`             — secondary admin address for multi-sig operations
+    /// - `treasury`                    — platform treasury address (receives platform fee share)
+    /// - `default_fee_pct`             — default platform fee percentage (e.g. 20 = 20%)
+    /// - `max_courses_per_instructor`  — max active courses per instructor
+    /// - `refund_window_ledgers`       — number of ledger sequences after enrollment during which a
+    ///                                   refund request is accepted; requests after this window are
+    ///                                   automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
+    /// - `revocation_challenge_period` — ledger sequences during which a certificate revocation
+    ///                                   can be challenged
+    pub fn __constructor(
         env: Env,
         admin: Address,
         secondary_admin: Address,
