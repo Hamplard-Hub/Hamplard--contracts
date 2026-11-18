@@ -444,6 +444,7 @@ pub enum Error {
     WaitlistError = 48,
     UpgradeError = 49,
     InconsistentState = 50,
+    InvalidMaxCoursesLimit = 51,
 }
 mod types;
 mod storage;
@@ -1316,6 +1317,10 @@ impl HamplardContract {
 
         if env.storage().instance().has(&DataKey::Admin) {
             soroban_sdk::panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+
+        if max_courses_per_instructor == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidMaxCoursesLimit);
         }
 
         if default_fee_pct > 100 {
@@ -5633,6 +5638,9 @@ impl HamplardContract {
     pub fn update_max_courses_limit(env: Env, admin: Address, new_max: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "update_max_courses_limit");
+        if new_max == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidMaxCoursesLimit);
+        }
         let old_max: u32 = env
             .storage()
             .instance()

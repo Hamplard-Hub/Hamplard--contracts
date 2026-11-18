@@ -240,6 +240,33 @@ fn test_init_success() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #51)")]
+fn test_init_rejects_zero_max_courses_per_instructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin, &sec_admin, &treasury, &20u32, &0u32, &1000u32, &17_280u32,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #51)")]
+fn test_update_max_courses_limit_rejects_zero() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.update_max_courses_limit(&admin, &0u32);
+}
+
+#[test]
 fn test_admin_instance_ttl_extended_on_admin_ops() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
