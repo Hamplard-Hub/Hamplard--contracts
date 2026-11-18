@@ -2416,6 +2416,60 @@ fn test_update_treasury_same_address_rejected() {
     client.update_treasury(&admin, &sec_admin, &treasury);
 }
 
+#[test]
+fn test_update_treasury_rejects_overwriting_pending_update() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    let pending = client.get_pending_treasury().unwrap();
+
+    // A second proposal while one is pending is rejected...
+    env.ledger().with_mut(|l| l.sequence_number += 10);
+    assert!(client.try_update_treasury(&admin, &sec_admin, &second).is_err());
+
+    // ...and leaves the original proposal and its timer untouched.
+    assert_eq!(client.get_pending_treasury().unwrap(), pending);
+    assert_eq!(client.get_treasury(), treasury);
+}
+
+#[test]
+fn test_update_treasury_allowed_after_cancel() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    client.cancel_treasury_update(&admin, &sec_admin);
+    assert_eq!(client.get_pending_treasury(), None);
+
+    client.update_treasury(&admin, &sec_admin, &second);
+    assert_eq!(client.get_pending_treasury().unwrap().address, second);
+    assert_eq!(client.get_treasury(), treasury);
+}
+
+#[test]
+fn test_update_treasury_applies_matured_update_before_scheduling_next() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::TREASURY_UPDATE_DELAY_LEDGERS;
+    });
+
+    // The matured update is not lost: it becomes the treasury and the new
+    // proposal is scheduled behind it.
+    client.update_treasury(&admin, &sec_admin, &second);
+    assert_eq!(client.get_treasury(), first);
+    assert_eq!(client.get_pending_treasury().unwrap().address, second);
+}
+
 // ============================================================
 // INPUT LENGTH VALIDATION TESTS (#20)
 // ============================================================
