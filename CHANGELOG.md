@@ -7,6 +7,7 @@
 - `Course` gains two fields, `total_refunded: i128` and `refund_count: u32`, updated by both refund paths (`process_refund` and `archive_course`) so admins can read per-course refund rates on-chain via `get_course`. `Course` is a `#[contracttype]` struct, so courses stored before this change lack the new keys and will not deserialize against the new type; redeploy fresh, or migrate existing `Course` / `ArchivedCourse` entries before upgrading a live contract.
 ### Changed
 
+- `admin_proposed` event data is now `(new_admin, new_secondary_admin, admin1, admin2, ledger_seq)`. It previously omitted the proposed secondary admin, so monitors could not see half of the proposed key change. Indexers that decode the old 4-tuple must be updated.
 - `set_risk_fee_config` now panics if any surcharge exceeds 10000 bps, or if the platform default fee plus all three surcharges exceeds 10000 bps. Previously such values were accepted and silently capped at payment time.
 
 ### Breaking change

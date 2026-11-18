@@ -5261,7 +5261,13 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "admin_proposed"), new_admin.clone()),
-            (new_admin, admin1, admin2, env.ledger().sequence()),
+            (
+                new_admin,
+                new_secondary_admin,
+                admin1,
+                admin2,
+                env.ledger().sequence(),
+            ),
         );
     }
 

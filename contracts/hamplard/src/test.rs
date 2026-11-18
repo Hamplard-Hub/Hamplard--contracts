@@ -6292,11 +6292,20 @@ fn test_multi_sig_admin_events_record_both_actors() {
     let new_admin = Address::generate(&env);
     let new_sec_admin = Address::generate(&env);
     client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec_admin);
-    let (event_new_admin, event_admin1, event_admin2): (Address, Address, Address) =
-        last_event_val(&env, &contract_id, "admin_proposed")
-            .try_into_val(&env)
-            .unwrap();
+    let proposed_at = env.ledger().sequence();
+    let (event_new_admin, event_new_sec_admin, event_admin1, event_admin2, event_ledger): (
+        Address,
+        Address,
+        Address,
+        Address,
+        u32,
+    ) = last_event_val(&env, &contract_id, "admin_proposed")
+        .try_into_val(&env)
+        .unwrap();
     assert_eq!(event_new_admin, new_admin);
+    // Both halves of the proposed key change are visible to monitors (#428).
+    assert_eq!(event_new_sec_admin, new_sec_admin);
+    assert_eq!(event_ledger, proposed_at);
     assert!(
         (event_admin1 == admin && event_admin2 == sec_admin)
             || (event_admin1 == sec_admin && event_admin2 == admin)
