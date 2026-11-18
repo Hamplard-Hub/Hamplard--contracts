@@ -7163,11 +7163,17 @@ impl HamplardContract {
     /// A certificate with a pending revocation (revoked == true but
     /// revocation_deadline in the future) is still considered valid until
     /// the challenge period expires.
+    ///
+    /// When invoked in an on-chain transaction and the certificate is valid,
+    /// its persistent storage TTL is extended. Note that read-only RPC
+    /// simulations do not persist TTL extensions; verifiers or keepers should
+    /// submit `extend_certificate_ttl` on-chain to keep certificates live.
     pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
+        let key = DataKey::Certificate(certificate_id);
         if let Some(cert) = env
             .storage()
             .persistent()
-            .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
+            .get::<DataKey, Certificate>(&key)
         {
             if cert.revoked {
                 // Revocation is permanent only after the challenge period expires
@@ -7176,6 +7182,11 @@ impl HamplardContract {
                         return false;
                     }
                     // Within challenge period — still valid (pending revocation)
+                    env.storage().persistent().extend_ttl(
+                        &key,
+                        Self::PERSISTENT_TTL_THRESHOLD,
+                        Self::PERSISTENT_TTL_EXTEND_TO,
+                    );
                     return true;
                 }
                 // Revoked without a deadline (legacy or direct revocation)
@@ -7186,10 +7197,39 @@ impl HamplardContract {
                     return false;
                 }
             }
+            env.storage().persistent().extend_ttl(
+                &key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
             true
         } else {
             false
         }
+    }
+
+    /// Permissionlessly extend the persistent storage TTL of an existing
+    /// certificate entry.
+    ///
+    /// Anyone (student, issuer, verifier, or keeper) can call this function
+    /// to keep a certificate live in persistent state and prevent archival
+    /// after the initial ~6.3M-ledger (~1 year) TTL window.
+    ///
+    /// Panics with `Error::CertificateError` if the certificate does not exist
+    /// in live persistent storage.
+    pub fn extend_certificate_ttl(env: Env, certificate_id: String) {
+        let key = DataKey::Certificate(certificate_id);
+        if !env.storage().persistent().has(&key) {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 
     /// Return a page of registered course IDs from the on-chain catalog.

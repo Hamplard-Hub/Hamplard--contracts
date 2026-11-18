@@ -88,6 +88,8 @@ Enrollment is **price-protected**: `enroll()`, `batch_enroll()` and `re_enroll()
 **3. On-Chain Certificates**
 After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent, verifiable record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. Certificates can be revoked by the admin if issued in error, subject to a challenge window.
 
+> **Keeping Certificates Live (TTL):** Certificate entries are stored in Soroban persistent storage with an initial TTL of ~6.3M ledgers (~1 year). Read-only RPC simulations of `verify_certificate(certificate_id)` do not persist TTL extensions on-chain. To prevent archival, anyone (verifiers, students, issuers, or keeper bots) can call the permissionless `extend_certificate_ttl(certificate_id)` entrypoint on-chain to renew a certificate's TTL, or submit `verify_certificate(certificate_id)` as an on-chain transaction (which also extends the TTL for valid certificates).
+
 **4. Refunds**
 Both admins can jointly issue refunds by archiving a course and specifying which students to refund. Refunds return the full enrollment amount to students with incomplete enrollments. This provides dispute resolution and quality control mechanisms without requiring a time window.
 
@@ -353,7 +355,8 @@ Initialises the contract once. The admin must sign.
 | `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
 | `is_enrolled(student, course_id)` | `bool` |
 | `has_completed(student, course_id)` | `Option<bool>` |
-| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired |
+| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired (extends TTL when called on-chain for a valid cert) |
+| `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
 | `get_platform_fee(admin)` | `u32` — current default fee percentage (admin only) |
 | `get_instructor_earnings(instructor, token)` | `i128` — withdrawable balance |
 
