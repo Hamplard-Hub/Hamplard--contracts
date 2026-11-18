@@ -5191,6 +5191,46 @@ fn test_transfer_admin_rejects_same_new_admin_and_secondary() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_transfer_admin_rejects_treasury_as_new_admin() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_sec = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &treasury, &new_sec);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_transfer_admin_rejects_treasury_as_new_secondary_admin() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &treasury);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_transfer_admin_rejects_contract_address_as_new_admin() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_sec = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &contract_id, &new_sec);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_transfer_admin_rejects_contract_address_as_new_secondary_admin() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &contract_id);
+}
+
+#[test]
 fn test_certificate_expiry_behavior() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
