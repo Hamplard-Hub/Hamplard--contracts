@@ -48,3 +48,11 @@ pub fn re_review_triggered(env: &Env, course_id: Symbol, instructor: address, fi
         (course_id, instructor, field),
     );
 }
+
+/// Event emitted when a pending admin transfer is cancelled.
+pub fn admin_transfer_cancelled(env: &Env, admin1: address, admin2: address) {
+    env.events().publish(
+        (Symbol::new(env, "adm_xfer_cancel"),),
+        (admin1, admin2),
+    );
+}
