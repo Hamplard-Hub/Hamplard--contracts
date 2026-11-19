@@ -195,6 +195,47 @@ fn test_non_admin_cannot_register_course() {
 }
 
 #[test]
+fn test_pause_blocks_withdraw_earnings() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+    let recipient = Address::generate(&env);
+
+    ctx.client.pause(&ctx.admin);
+
+    let result = ctx.client.try_withdraw(&ctx.admin, &recipient, &100);
+    assert_eq!(result, Err(Ok(ContractError::PlatformPaused)));
+}
+
+#[test]
+fn test_pause_blocks_escalate_to_arbitration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+
+    ctx.client.pause(&ctx.admin);
+
+    let result = ctx.client.try_escalate_to_arbitration(&ctx.admin, &ctx.course_id);
+    assert_eq!(result, Err(Ok(ContractError::PlatformPaused)));
+}
+
+#[test]
+fn test_pause_blocks_course_registration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_contract(&env);
+    let title = String::from_str(&env, "Intro to Soroban");
+
+    ctx.client.pause(&ctx.admin);
+
+    let result = ctx.client.try_register_course(&ctx.admin, &title, &100);
+    assert_eq!(result, Err(Ok(ContractError::PlatformPaused)));
+}
+
+#[test]
 fn test_admin_can_deactivate_course() {
     let env = Env::default();
     env.mock_all_auths();

@@ -4,7 +4,7 @@ use soroban_sdk::testutils::{AddressAsPayment, Env as TestEnv};
 use crate::{HamplardContract, HamplardContractClient};
 
 /// Default token amount minted to each test account.
-pub const DEFAULT_BALANCE: i128 = 1 _000_000;
+pub const DEFAULT_BALANCE: i128 = 1_000_000;
 
 /// Default course price.
 pub const DEFAULT_PRICE: i128 = 100;
@@ -13,7 +13,7 @@ pub const DEFAULT_PRICE: i128 = 100;
 pub const DEFAULT_CAPACITY: u32 = 10;
 
 /// Default course duration (seconds).
-pub const DEFAULT_DURATION: u64 = 864_00;
+pub const DEFAULT_DURATION: u64 = 86_400;
 
 /// A fully initialized hamplard test environment.
 pub struct TestContext {
@@ -47,7 +47,7 @@ pub fn setup() -> TestContext {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // Approve the contract to spend the user's tokens.
-    approve_token(&env, &token, &user, &contract_id, i128::max);
+    approve_token(&env, &token, &user, &contract_id, i128::MAX);
 
     TestContext {
         env,
@@ -84,7 +84,7 @@ pub fn setup_enrolled() -> (TestContext, u32) {
 /// Deploys a minimal mock token contract that supports mint and approve.
 fn deploy_token(env: &Env, admin: &Address, user: &Address) -> Address {
     let token_id = env.register_stellar_asset(&admin.clone(), "test");
-    let token_client = sorban_sdk::token::Client::new(env, &token_id);
+    let token_client = soroban_sdk::token::Client::new(env, &token_id);
     token_client.mint(admin, &DEFAULT_BALANCE.clone());
     token_client.mint(user, &DEFAULT_BALANCE.clone());
     token_id
@@ -92,12 +92,12 @@ fn deploy_token(env: &Env, admin: &Address, user: &Address) -> Address {
 
 /// Approves the contract to spend tokens on behalf of `owner`.
 fn approve_token(env: &Env, token: &Address, owner: &Address, spender: &Address, amount: i128) {
-    let token_client = soroban_sdk:token::Client::new(env, token);
+    let token_client = soroban_sdk::token::Client::new(env, token);
     token_client.approve(owner, spender, &amount, &1000);
 }
 
 /// Adds funds to an account and approves the contract.
-pub fun fund_and_approve(ctx: &TestContext, account: &Address, amount: i128) {
+pub fn fund_and_approve(ctx: &TestContext, account: &Address, amount: i128) {
     let token_client = soroban_sdk::token::Client::new(&ctx.env, &ctx.token);
     token_client.mint(account, &amount);
     token_client.approve(account, &ctx.contract_id, &amount, &1000);
@@ -105,7 +105,7 @@ pub fun fund_and_approve(ctx: &TestContext, account: &Address, amount: i128) {
 
 /// Returns the token balance of `account`.
 pub fn token_balance(ctx: &TestContext, account: &Address) -> i128 {
-    let token_client = soroban_sdk:token::Client::new(&ctx.env, &ctx.token);
+    let token_client = soroban_sdk::token::Client::new(&ctx.env, &ctx.token);
     token_client.balance(account)
 }
 
@@ -115,7 +115,7 @@ pub fn assert_addr_eq(actual: &Address, expected: &Address) {
 }
 
 /// Asserts that an invocation failed with the expected error.
-pub fn assert_error_contains<result>(result: Result<result, InvokeErrors>, expected: &str) {
+pub fn assert_error_contains<T>(result: Result<T, InvokeError>, expected: &str) {
     match result {
         Ok(_) => panic!("expected error containing {}, but call succeeded", expected),
         Err(err) => {
