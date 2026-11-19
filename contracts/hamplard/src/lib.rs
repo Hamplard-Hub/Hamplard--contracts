@@ -4707,6 +4707,9 @@ impl HamplardContract {
         if certificate_id.len() > Self::MAX_COURSE_ID_LEN {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
         }
+        if course_title.len() == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
+        }
         if course_title.len() > Self::MAX_COURSE_TITLE_LEN {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
         }

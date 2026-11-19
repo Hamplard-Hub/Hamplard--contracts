@@ -1185,6 +1185,47 @@ fn test_certificate_requires_completion() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_issue_certificate_empty_course_title_rejected() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EMPTY-TITLE-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EMPTY-TITLE-001");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence")),
+    );
+
+    // Empty course_title must be rejected with InvalidCertificateInput (#41)
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &String::from_str(&env, "CERT-EMPTY-TITLE"),
+        &String::from_str(&env, ""),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-EMPTY-TITLE-001"),
+        &None,
+        &None,
+    );
+}
+
+#[test]
 fn test_revoke_certificate() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
