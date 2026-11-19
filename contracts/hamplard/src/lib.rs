@@ -757,10 +757,15 @@ pub struct Course {
     /// `update_content_hash()`.
     pub content_hash: BytesN<32>,
     /// Optional maximum number of certificates that can be issued for this course.
-    /// When set, enforces a hard limit on certificate issuance to prevent credential dilution.
+    /// When set, the cap applies to *live* certificates: `certificates_issued - certificates_revoked`.
+    /// Revoking a certificate therefore frees one slot so it can be reissued to another student.
     pub max_certificates: Option<u32>,
-    /// Number of certificates issued for this course
+    /// Gross number of certificates ever issued for this course (never decremented).
     pub certificates_issued: u32,
+    /// Number of those certificates that have since been revoked (via `revoke_certificate`
+    /// or `bulk_revoke_course_certificates`). The live (net-active) count is
+    /// `certificates_issued - certificates_revoked`.
+    pub certificates_revoked: u32,
     /// Course IDs that must be completed (with an issued, non-revoked
     /// certificate) before a student may enroll in this course. Empty
     /// means no prerequisites. Configured via `set_prerequisite_courses`.
@@ -1716,6 +1721,7 @@ impl HamplardContract {
             content_hash,
             max_certificates: None,
             certificates_issued: 0,
+            certificates_revoked: 0,
             prerequisite_course_ids: Vec::new(&env),
             archived_at_ledger: None,
             categories,
@@ -2904,9 +2910,13 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
 
-        // Validate: if setting a limit, ensure it's at least as high as current issuance
+        // Validate: if setting a limit, it must be at least as high as the current
+        // live (net-active) certificate count — issued minus already-revoked.
         if let Some(limit) = max_certs {
-            if limit < course.certificates_issued {
+            let live_certs = course
+                .certificates_issued
+                .saturating_sub(course.certificates_revoked);
+            if limit < live_certs {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
             }
         }
@@ -4756,9 +4766,13 @@ impl HamplardContract {
         // the current price exceeds the student's stated maximum.
         Self::assert_price_within_limit(course.price, max_price);
 
-        // Check per-course certificate limit
+        // Check per-course certificate limit against *live* certificates
+        // (issued minus revoked).  Revocations free a slot so it can be reused.
         if let Some(max_certs) = course.max_certificates {
-            if course.certificates_issued >= max_certs {
+            let live_certs = course
+                .certificates_issued
+                .saturating_sub(course.certificates_revoked);
+            if live_certs >= max_certs {
                 soroban_sdk::panic_with_error!(&env, Error::MaxCertificatesReached);
             }
         }
@@ -5002,6 +5016,29 @@ impl HamplardContract {
         cert.revocation_deadline = Some(deadline);
 
         Self::persist(&env, &certificate_key, &cert);
+
+        // Update the course counters: increment certificates_revoked and
+        // decrement certificates_issued so the live (net-active) count stays
+        // accurate and a freed slot can be reissued to another student.
+        // We load the course here rather than up-front so we don't pay the
+        // storage cost when the cert is already revoked (early-return above).
+        let course_key = DataKey::Course(cert.course_id.clone());
+        if let Some(mut course) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&course_key)
+        {
+            course.certificates_revoked = course
+                .certificates_revoked
+                .checked_add(1)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, Error::ArithmeticOverflow));
+            course.certificates_issued = course
+                .certificates_issued
+                .checked_sub(1)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, Error::ArithmeticOverflow));
+            course.last_updated_ledger = current_ledger;
+            Self::persist(env, &course_key, &course);
+        }
 
         env.events().publish(
             (
