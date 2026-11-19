@@ -216,3 +216,18 @@ fn test_non_admin_cannot_deactivate_course() {
     let result = ctx.client.try_deactivate_course(&stranger, &ctx.course_id);
     assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 }
+
+#[test]
+fn test_accept_admin_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_contract(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.client.transfer_admin(&ctx.admin, &new_admin);
+    ctx.client.accept_admin(&new_admin);
+
+    let ttl = env.storage().instance().get_ttl();
+    assert!(ttl >= crate::INSTANCE_TTL_THRESHOLD);
+}
