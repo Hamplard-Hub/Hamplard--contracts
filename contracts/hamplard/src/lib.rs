@@ -872,6 +872,20 @@ pub struct Certificate {
     pub revocation_deadline: Option<u32>,
 }
 
+/// Verification status of an on-chain certificate returned by `get_certificate_status`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CertificateStatus {
+    /// No certificate exists with the given ID.
+    NotFound,
+    /// Certificate exists, is not permanently revoked, and has not expired.
+    Valid,
+    /// Certificate has been permanently revoked.
+    Revoked,
+    /// Certificate has passed its `expires_at_ledger` sequence.
+    Expired,
+}
+
 /// Pending platform treasury update with effective ledger sequence
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -7217,9 +7231,32 @@ impl HamplardContract {
         }
     }
 
-    /// Verify a certificate — returns true if it exists, has not been
-    /// permanently revoked, and has not expired.
+    /// Return the verification status of a certificate without exposing private
+    /// certificate data.
     ///
+    /// Returns:
+    /// - `CertificateStatus::NotFound` if no certificate exists for `certificate_id`
+    /// - `CertificateStatus::Revoked` if the certificate has been permanently revoked
+    ///   (either directly or after its `revocation_deadline` challenge period elapsed)
+    /// - `CertificateStatus::Expired` if the certificate has reached or passed its
+    ///   `expires_at_ledger` sequence
+    /// - `CertificateStatus::Valid` otherwise (including while a revocation is still
+    ///   pending within its challenge period, provided the certificate has not expired)
+    pub fn get_certificate_status(env: Env, certificate_id: String) -> CertificateStatus {
+        let Some(cert) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
+        else {
+            return CertificateStatus::NotFound;
+        };
+
+        if cert.revoked {
+            match cert.revocation_deadline {
+                // Revocation is permanent once the challenge period has elapsed,
+                // or immediately if no deadline was recorded (legacy/direct revocation).
+                Some(deadline) if env.ledger().sequence() < deadline => {}
+                _ => return CertificateStatus::Revoked,
     /// A certificate with a pending revocation (revoked == true but
     /// revocation_deadline in the future) is still considered valid until
     /// the challenge period expires.
@@ -7252,10 +7289,11 @@ impl HamplardContract {
                 // Revoked without a deadline (legacy or direct revocation)
                 return false;
             }
-            if let Some(expiry) = cert.expires_at_ledger {
-                if env.ledger().sequence() >= expiry {
-                    return false;
-                }
+        }
+
+        if let Some(expiry) = cert.expires_at_ledger {
+            if env.ledger().sequence() >= expiry {
+                return CertificateStatus::Expired;
             }
             env.storage().persistent().extend_ttl(
                 &key,
@@ -7266,6 +7304,18 @@ impl HamplardContract {
         } else {
             false
         }
+
+        CertificateStatus::Valid
+    }
+
+    /// Verify a certificate — returns true if it exists, has not been
+    /// permanently revoked, and has not expired.
+    ///
+    /// A certificate with a pending revocation (revoked == true but
+    /// revocation_deadline in the future) is still considered valid until
+    /// the challenge period expires.
+    pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
+        Self::get_certificate_status(env, certificate_id) == CertificateStatus::Valid
     }
 
     /// Permissionlessly extend the persistent storage TTL of an existing
