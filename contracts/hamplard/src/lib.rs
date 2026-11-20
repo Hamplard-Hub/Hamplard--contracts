@@ -5273,6 +5273,28 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
         }
 
+        let contract_addr = env.current_contract_address();
+        if new_admin == contract_addr || new_secondary_admin == contract_addr {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
+        }
+
+        let treasury = Self::read_treasury(&env);
+        if new_admin == treasury || new_secondary_admin == treasury {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
+        }
+
+        if let Some(pending_treasury) = env
+            .storage()
+            .instance()
+            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
+        {
+            if new_admin == pending_treasury.address
+                || new_secondary_admin == pending_treasury.address
+            {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
+            }
+        }
+
         // #176 — Enforce minimum cooldown between consecutive transfer_admin() calls.
         // After a key compromise, rapid re-rotation confuses incident response
         // and makes recovery harder. The cooldown gives defenders a predictable
