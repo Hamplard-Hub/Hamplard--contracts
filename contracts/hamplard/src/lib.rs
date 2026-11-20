@@ -1320,6 +1320,7 @@ impl HamplardContract {
         revocation_challenge_period: u32,
     ) {
         admin.require_auth();
+        secondary_admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
             soroban_sdk::panic_with_error!(&env, Error::AlreadyInitialized);

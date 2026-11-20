@@ -16879,7 +16879,7 @@ fn test_targeted_auth_enroll_requires_only_student() {
 }
 
 #[test]
-fn test_targeted_auth_init_requires_only_admin() {
+fn test_targeted_auth_init_requires_both_admins() {
     let env = Env::default();
     let contract_id = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -16901,11 +16901,23 @@ fn test_targeted_auth_init_requires_only_admin() {
         args: args.into_val(&env),
         sub_invokes: &[],
     };
-    let auth = MockAuth {
+    let admin_auth = MockAuth {
         address: &admin,
         invoke: &invoke,
     };
+    let sec_admin_auth = MockAuth {
+        address: &secondary_admin,
+        invoke: &invoke,
+    };
 
+    client.mock_auths(&[admin_auth, sec_admin_auth]).init(
+        &admin,
+        &secondary_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
     env.mock_auths(&[auth]).register_at(
         &contract_id,
         HamplardContract,
@@ -16920,7 +16932,48 @@ fn test_targeted_auth_init_requires_only_admin() {
         ),
     );
 
-    assert_only_auths(&env, &[admin.clone()]);
+    assert_only_auths(&env, &[admin.clone(), secondary_admin.clone()]);
+}
+
+#[test]
+#[should_panic]
+fn test_init_rejects_missing_secondary_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let secondary_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let args = (
+        admin.clone(),
+        secondary_admin.clone(),
+        treasury.clone(),
+        20u32,
+        50u32,
+        1000u32,
+        17_280u32,
+    );
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "init",
+        args: args.into_val(&env),
+        sub_invokes: &[],
+    };
+    let admin_auth = MockAuth {
+        address: &admin,
+        invoke: &invoke,
+    };
+
+    client.mock_auths(&[admin_auth]).init(
+        &admin,
+        &secondary_admin,
+        &treasury,
+        &20u32,
+        &50u32,
+        &1000u32,
+        &17_280u32,
+    );
 }
 
 #[test]
