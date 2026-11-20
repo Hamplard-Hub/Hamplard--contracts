@@ -12,6 +12,7 @@
 
 ### Breaking change
 
+- The `admin_transferred` event data is now `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)` (was `(previous_admin, new_admin, ledger_seq)`), so the event fully describes the admin key rotation. Indexers decoding the old 3-tuple must be updated. (#429)
 - `Enrollment.evidence_hash` and `mark_completed(..., evidence_hash)` now use `Option<BytesN<32>>` instead of `Option<String>`. Evidence is stored as a fixed 32-byte hash to reduce on-chain storage cost and keep verification deterministic.
 - `set_arbitration_fee_config` now takes a `token` argument, and `get_arbitration_fee_config` is keyed by token. Arbitration fees are stored under `DataKey2::ArbitrationFeeConfig(token)`.
 - Contract failures now return stable `Error` codes instead of string panic messages. Clients should match on `HostError: Error(Contract, #N)` and the code table in `README.md`.

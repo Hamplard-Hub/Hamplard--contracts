@@ -375,7 +375,8 @@
 //! - `course_completed`: Admin marks a course as completed for a student
 //! - `certificate_issued`: Certificate is issued to a student
 //! - `certificate_revoked`: Certificate is revoked
-//! - `admin_transferred`: Admin role is transferred to a new address
+//! - `admin_transferred`: Admin pair is rotated; data is
+//!   `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)`
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
@@ -5293,6 +5294,14 @@ impl HamplardContract {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig));
 
+        // Capture the outgoing secondary admin before it is overwritten so the
+        // emitted event fully describes the key rotation (#429).
+        let previous_secondary_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::SecondaryAdmin)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig));
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage()
             .instance()
@@ -5311,7 +5320,13 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "admin_transferred"), new_admin.clone()),
-            (previous_admin, new_admin.clone(), ledger_sequence),
+            (
+                previous_admin,
+                new_admin.clone(),
+                previous_secondary_admin,
+                new_secondary_admin,
+                ledger_sequence,
+            ),
         );
     }
 

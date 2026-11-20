@@ -3205,9 +3205,12 @@ fn test_admin_transferred_event_emitted_once_with_full_schema() {
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "admin_transferred") {
             transfer_events += 1;
-            let (prev, new, seq): (Address, Address, u32) = data.try_into_val(&env).unwrap();
+            let (prev, new, prev_sec, new_sec_ev, seq): (Address, Address, Address, Address, u32) =
+                data.try_into_val(&env).unwrap();
             assert_eq!(prev, admin);
             assert_eq!(new, new_admin);
+            assert_eq!(prev_sec, sec_admin);
+            assert_eq!(new_sec_ev, new_sec);
             assert!(seq >= ledger_before);
         }
     }

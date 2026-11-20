@@ -488,7 +488,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
-| `admin_transferred`           | `new_admin`                                 | Admin role transferred                    |
+| `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 
 See `contracts/hamplard/src/lib.rs` for the complete event list, including waitlist, freeze, blocklist, approver, and configuration events.
 
