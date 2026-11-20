@@ -15504,6 +15504,81 @@ fn test_set_co_instructors_locked_after_enrollment() {
 }
 
 #[test]
+#[should_panic(expected = "admin cannot be a co-instructor")]
+fn test_set_co_instructors_rejects_admin() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-ADMIN",
+        100_000_000,
+    );
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-ADMIN",
+        &[(admin, 1_000)],
+    );
+}
+
+#[test]
+#[should_panic(expected = "secondary admin cannot be a co-instructor")]
+fn test_set_co_instructors_rejects_secondary_admin() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-SEC-ADMIN",
+        100_000_000,
+    );
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-SEC-ADMIN",
+        &[(sec_admin, 1_000)],
+    );
+}
+
+#[test]
+#[should_panic(expected = "treasury cannot be a co-instructor")]
+fn test_set_co_instructors_rejects_treasury() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-TREASURY",
+        100_000_000,
+    );
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-TREASURY",
+        &[(treasury, 1_000)],
+    );
+}
+
+#[test]
 fn test_refund_debits_each_co_instructor_share() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
