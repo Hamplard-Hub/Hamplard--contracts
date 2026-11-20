@@ -4488,7 +4488,7 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::StudentBlocked);
         }
 
-        let course = Self::get_course_internal(&env, &course_id)
+        let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
         // Validate course is in a valid state for completion (Active or Paused, not Archived)
@@ -4555,9 +4555,6 @@ impl HamplardContract {
         );
 
         // Update active enrollments count on course
-        let mut course = Self::get_course_internal(&env, &course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-            .unwrap_or_else(|| panic!("course not found"));
 
         // #361 — Guard against a price change between the price the student
         // approved and execution: revert before any payment is attempted when
