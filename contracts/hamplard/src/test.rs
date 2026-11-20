@@ -5344,6 +5344,84 @@ fn test_certificate_expiry_behavior() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_issue_certificate_past_expiry_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-PAST-EXP");
+    let cert_id = String::from_str(&env, "CERT-PAST-EXP");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-PAST-EXP",
+        100_000_000,
+    );
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 100;
+    });
+
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Past Expiry Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-PAST-EXP"),
+        &Some(99u32),
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_issue_certificate_current_ledger_expiry_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-CUR-EXP");
+    let cert_id = String::from_str(&env, "CERT-CUR-EXP");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CUR-EXP",
+        100_000_000,
+    );
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 100;
+    });
+
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Current Expiry Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CUR-EXP"),
+        &Some(100u32),
+        &None,
+    );
+}
+
+#[test]
 fn test_freeze_instructor_lifecycle() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);

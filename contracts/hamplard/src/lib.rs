@@ -4745,6 +4745,11 @@ impl HamplardContract {
         if enrollment_reference.len() > Self::MAX_COURSE_ID_LEN {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
         }
+        if let Some(expiry) = expires_at_ledger {
+            if expiry <= env.ledger().sequence() {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
+            }
+        }
 
         // Check if student is blocked
         if Self::is_student_blocked_internal(&env, &student) {
