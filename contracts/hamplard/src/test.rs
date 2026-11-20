@@ -24,7 +24,19 @@ fn setup() -> (Env, Address, Address, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let instructor = Address::generate(&env);
+    let student = Address::generate(&env);
+
+    // Deploy and atomically initialize contract via __constructor
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ), // 20% fee, 50 courses max, 1000-ledger refund window, 17280-ledger revocation challenge period
+    );
 
     // Deploy mock USDC token
     let token_admin = Address::generate(&env);
@@ -33,20 +45,10 @@ fn setup() -> (Env, Address, Address, Address, Address, Address, Address) {
         .address();
     let token_client = token::StellarAssetClient::new(&env, &token_id);
 
-    let admin = Address::generate(&env);
-    let sec_admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let instructor = Address::generate(&env);
-    let student = Address::generate(&env);
-
     // Fund student with 10,000 USDC (100_000_000_000 stroops)
     token_client.mint(&student, &100_000_000_000);
 
-    // Init contract
     let client = HamplardContractClient::new(&env, &contract_id);
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
-    ); // 20% fee, 50 courses max, 1000-ledger refund window, 17280-ledger revocation challenge period
     client.add_approved_token(&admin, &token_id);
 
     (
@@ -237,6 +239,33 @@ fn test_init_success() {
 
     // Platform fee should be 20%
     assert_eq!(client.get_platform_fee(&admin), 20);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #51)")]
+fn test_init_rejects_zero_max_courses_per_instructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HamplardContract, ());
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin, &sec_admin, &treasury, &20u32, &0u32, &1000u32, &17_280u32,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #51)")]
+fn test_update_max_courses_limit_rejects_zero() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.update_max_courses_limit(&admin, &0u32);
 }
 
 #[test]
@@ -2416,6 +2445,60 @@ fn test_update_treasury_same_address_rejected() {
     client.update_treasury(&admin, &sec_admin, &treasury);
 }
 
+#[test]
+fn test_update_treasury_rejects_overwriting_pending_update() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    let pending = client.get_pending_treasury().unwrap();
+
+    // A second proposal while one is pending is rejected...
+    env.ledger().with_mut(|l| l.sequence_number += 10);
+    assert!(client.try_update_treasury(&admin, &sec_admin, &second).is_err());
+
+    // ...and leaves the original proposal and its timer untouched.
+    assert_eq!(client.get_pending_treasury().unwrap(), pending);
+    assert_eq!(client.get_treasury(), treasury);
+}
+
+#[test]
+fn test_update_treasury_allowed_after_cancel() {
+    let (env, contract_id, _token_id, admin, sec_admin, treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    client.cancel_treasury_update(&admin, &sec_admin);
+    assert_eq!(client.get_pending_treasury(), None);
+
+    client.update_treasury(&admin, &sec_admin, &second);
+    assert_eq!(client.get_pending_treasury().unwrap().address, second);
+    assert_eq!(client.get_treasury(), treasury);
+}
+
+#[test]
+fn test_update_treasury_applies_matured_update_before_scheduling_next() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    client.update_treasury(&admin, &sec_admin, &first);
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::TREASURY_UPDATE_DELAY_LEDGERS;
+    });
+
+    // The matured update is not lost: it becomes the treasury and the new
+    // proposal is scheduled behind it.
+    client.update_treasury(&admin, &sec_admin, &second);
+    assert_eq!(client.get_treasury(), first);
+    assert_eq!(client.get_pending_treasury().unwrap().address, second);
+}
+
 // ============================================================
 // INPUT LENGTH VALIDATION TESTS (#20)
 // ============================================================
@@ -2641,14 +2724,31 @@ fn test_archive_paused_course_succeeds() {
 // ============================================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
 fn test_init_cannot_be_called_twice() {
     let (env, contract_id, _, admin, sec_admin, treasury, _) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-    // Second init call must be rejected
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let args = soroban_sdk::vec![
+        &env,
+        admin.into_val(&env),
+        sec_admin.into_val(&env),
+        treasury.into_val(&env),
+        20u32.into_val(&env),
+        50u32.into_val(&env),
+        1000u32.into_val(&env),
+        17_280u32.into_val(&env),
+    ];
+    // Neither `init` nor `__constructor` can be invoked after deployment.
+    let init_res = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &contract_id,
+        &Symbol::new(&env, "init"),
+        args.clone(),
     );
+    assert!(init_res.is_err());
+    let ctor_res = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        &contract_id,
+        &Symbol::new(&env, "__constructor"),
+        args,
+    );
+    assert!(ctor_res.is_err());
 }
 
 // ============================================================
@@ -2660,15 +2760,15 @@ fn test_init_emits_initialized_event_once() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
-    let client = HamplardContractClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
     let sec_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
 
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ),
     );
 
     let mut count = 0u32;
@@ -3151,9 +3251,12 @@ fn test_admin_transferred_event_emitted_once_with_full_schema() {
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "admin_transferred") {
             transfer_events += 1;
-            let (prev, new, seq): (Address, Address, u32) = data.try_into_val(&env).unwrap();
+            let (prev, new, prev_sec, new_sec_ev, seq): (Address, Address, Address, Address, u32) =
+                data.try_into_val(&env).unwrap();
             assert_eq!(prev, admin);
             assert_eq!(new, new_admin);
+            assert_eq!(prev_sec, sec_admin);
+            assert_eq!(new_sec_ev, new_sec);
             assert!(seq >= ledger_before);
         }
     }
@@ -7922,21 +8025,23 @@ fn test_init_sets_refund_window() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
+    let admin = Address::generate(&env);
+    let sec_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Use a non-default window so we can distinguish from the fallback 1000
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &500u32, &17_280u32,
+        ),
+    );
     let token_admin = Address::generate(&env);
     let token_id = env
         .register_stellar_asset_contract_v2(token_admin)
         .address();
 
-    let admin = Address::generate(&env);
-    let sec_admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-
     let client = HamplardContractClient::new(&env, &contract_id);
-    // Use a non-default window so we can distinguish from the fallback 1000
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &500u32, &17_280u32,
-    );
 
     assert_eq!(client.get_refund_window(), 500u32);
 }
@@ -11143,21 +11248,23 @@ fn test_approve_course_immediately_after_init_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-
     let admin = Address::generate(&env);
     let sec_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let instructor = Address::generate(&env);
 
-    let client = HamplardContractClient::new(&env, &contract_id);
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ),
     );
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let client = HamplardContractClient::new(&env, &contract_id);
     client.add_approved_token(&admin, &token_id);
 
     client.update_min_review_delay(&admin, &10u32);
@@ -11183,21 +11290,23 @@ fn test_approve_course_after_init_governance_window_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-
     let admin = Address::generate(&env);
     let sec_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let instructor = Address::generate(&env);
 
-    let client = HamplardContractClient::new(&env, &contract_id);
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ),
     );
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let client = HamplardContractClient::new(&env, &contract_id);
     client.add_approved_token(&admin, &token_id);
 
     // Register a course
@@ -11234,22 +11343,24 @@ fn test_approve_course_at_init_governance_window_boundary() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-
     let admin = Address::generate(&env);
     let sec_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let instructor = Address::generate(&env);
 
-    let client = HamplardContractClient::new(&env, &contract_id);
     let init_ledger = env.ledger().sequence();
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ),
     );
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let client = HamplardContractClient::new(&env, &contract_id);
     client.add_approved_token(&admin, &token_id);
 
     // Set governance delay
@@ -11287,24 +11398,21 @@ fn test_approve_course_init_ledger_stored_correctly() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(HamplardContract, ());
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-
     let admin = Address::generate(&env);
     let sec_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
 
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    // Capture ledger before and after init
+    // Capture ledger before and after constructor registration
     let ledger_before = env.ledger().sequence();
-    client.init(
-        &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+    let contract_id = env.register(
+        HamplardContract,
+        (
+            &admin, &sec_admin, &treasury, &20u32, &50u32, &1000u32, &17_280u32,
+        ),
     );
     let ledger_after = env.ledger().sequence();
+
+    let client = HamplardContractClient::new(&env, &contract_id);
 
     // Init succeeded and stored platform state.
     assert_eq!(client.get_platform_fee(&admin), 20);
@@ -13331,6 +13439,134 @@ fn test_issue_certificate_extends_enrollment_ttl() {
         .get_enrollment(&student, &student, &course_id)
         .unwrap();
     assert!(enrollment.certificate_issued);
+}
+
+// =============================================================================
+// ISSUE #412: Permissionless certificate TTL extension
+// =============================================================================
+
+fn certificate_ttl(env: &Env, contract_id: &Address, cert_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Certificate(cert_id.clone()))
+    })
+}
+
+#[test]
+fn test_extend_certificate_ttl_keeps_certificate_live() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-CERT-BUMP");
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-BUMP",
+        100_000_000,
+    );
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    let cert_id = String::from_str(&env, "CERT-BUMP-001");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-BUMP"),
+        &None,
+        &None,
+    );
+
+    // Advance ledger so certificate TTL drops below PERSISTENT_TTL_THRESHOLD
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        certificate_ttl(&env, &contract_id, &cert_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    // Permissionless bump: works with no auths mocked
+    env.mock_auths(&[]);
+    client.extend_certificate_ttl(&cert_id);
+
+    assert_eq!(
+        certificate_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+
+    // Advance past the original ~6.3M-ledger window; certificate must still verify
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 6_000_000;
+    });
+    assert!(client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_extend_certificate_ttl_missing_certificate_errors() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let res = client.try_extend_certificate_ttl(&String::from_str(&env, "CERT-DOES-NOT-EXIST"));
+    assert_eq!(res, Err(Ok(Error::CertificateError)));
+}
+
+#[test]
+fn test_verify_certificate_extends_ttl_for_valid_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-VERIFY-TTL");
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-TTL",
+        100_000_000,
+    );
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    let cert_id = String::from_str(&env, "CERT-VERIFY-TTL-001");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-TTL"),
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        certificate_ttl(&env, &contract_id, &cert_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    assert!(client.verify_certificate(&cert_id));
+    assert_eq!(
+        certificate_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
 }
 
 // =============================================================================
@@ -16645,8 +16881,7 @@ fn test_targeted_auth_enroll_requires_only_student() {
 #[test]
 fn test_targeted_auth_init_requires_both_admins() {
     let env = Env::default();
-    let contract_id = env.register(HamplardContract, ());
-    let client = HamplardContractClient::new(&env, &contract_id);
+    let contract_id = Address::generate(&env);
     let admin = Address::generate(&env);
     let secondary_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
@@ -16662,7 +16897,7 @@ fn test_targeted_auth_init_requires_both_admins() {
     );
     let invoke = MockAuthInvoke {
         contract: &contract_id,
-        fn_name: "init",
+        fn_name: "__constructor",
         args: args.into_val(&env),
         sub_invokes: &[],
     };
@@ -16683,6 +16918,18 @@ fn test_targeted_auth_init_requires_both_admins() {
         &50u32,
         &1000u32,
         &17_280u32,
+    env.mock_auths(&[auth]).register_at(
+        &contract_id,
+        HamplardContract,
+        (
+            &admin,
+            &secondary_admin,
+            &treasury,
+            &20u32,
+            &50u32,
+            &1000u32,
+            &17_280u32,
+        ),
     );
 
     assert_only_auths(&env, &[admin.clone(), secondary_admin.clone()]);

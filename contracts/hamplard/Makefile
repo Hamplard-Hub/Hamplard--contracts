@@ -19,13 +19,9 @@ optimize: build
 	@echo "Optimized: $(WASM_OPT)"
 
 deploy-testnet: optimize
-	stellar contract deploy \
-		--wasm $(WASM_OPT) \
-		--source $(STELLAR_ACCOUNT) \
-		--network $(NETWORK)
-
-deploy-and-init-testnet: optimize
 	NETWORK="$(NETWORK)" sh ./scripts/deploy-testnet.sh "$(WASM_OPT)"
+
+deploy-and-init-testnet: deploy-testnet
 
 fmt:
 	cargo fmt

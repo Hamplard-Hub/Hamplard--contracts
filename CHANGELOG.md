@@ -7,10 +7,12 @@
 - `Course` gains two fields, `total_refunded: i128` and `refund_count: u32`, updated by both refund paths (`process_refund` and `archive_course`) so admins can read per-course refund rates on-chain via `get_course`. `Course` is a `#[contracttype]` struct, so courses stored before this change lack the new keys and will not deserialize against the new type; redeploy fresh, or migrate existing `Course` / `ArchivedCourse` entries before upgrading a live contract.
 ### Changed
 
+- `update_treasury` now panics if a treasury update is already pending instead of silently replacing it and restarting the timer; call `cancel_treasury_update` first. A matured update is applied (`treasury_activated`) before the new proposal is scheduled.
 - `set_risk_fee_config` now panics if any surcharge exceeds 10000 bps, or if the platform default fee plus all three surcharges exceeds 10000 bps. Previously such values were accepted and silently capped at payment time.
 
 ### Breaking change
 
+- The `admin_transferred` event data is now `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)` (was `(previous_admin, new_admin, ledger_seq)`), so the event fully describes the admin key rotation. Indexers decoding the old 3-tuple must be updated. (#429)
 - `Enrollment.evidence_hash` and `mark_completed(..., evidence_hash)` now use `Option<BytesN<32>>` instead of `Option<String>`. Evidence is stored as a fixed 32-byte hash to reduce on-chain storage cost and keep verification deterministic.
 - `set_arbitration_fee_config` now takes a `token` argument, and `get_arbitration_fee_config` is keyed by token. Arbitration fees are stored under `DataKey2::ArbitrationFeeConfig(token)`.
 - Contract failures now return stable `Error` codes instead of string panic messages. Clients should match on `HostError: Error(Contract, #N)` and the code table in `README.md`.

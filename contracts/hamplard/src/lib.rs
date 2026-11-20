@@ -46,7 +46,7 @@
 //! - `get_treasury` / `get_pending_treasury` — public views of the effective treasury and any scheduled update
 //! - `update_content_hash` — updates the content commitment hash for a course (admin or instructor)
 //!
-//! - `init` — one-time bootstrap by the deployer/admin; writes the admin pair,
+//! - `__constructor` — one-time atomic bootstrap at deployment; writes the admin pair,
 //!   treasury, fee, refund window and revocation challenge period
 //! - `set_high_value_course_threshold` — sets the price above which course
 //!   approval needs two different admins/approvers
@@ -375,7 +375,8 @@
 //! - `course_completed`: Admin marks a course as completed for a student
 //! - `certificate_issued`: Certificate is issued to a student
 //! - `certificate_revoked`: Certificate is revoked
-//! - `admin_transferred`: Admin role is transferred to a new address
+//! - `admin_transferred`: Admin pair is rotated; data is
+//!   `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)`
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
@@ -444,6 +445,7 @@ pub enum Error {
     WaitlistError = 48,
     UpgradeError = 49,
     InconsistentState = 50,
+    InvalidMaxCoursesLimit = 51,
 }
 mod types;
 mod storage;
@@ -1291,18 +1293,23 @@ impl HamplardContract {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
-    /// Initialise the contract.
-    /// Called once by the deployer immediately after deployment.
+    /// Initialise the contract atomically at deployment time.
+    /// Runs as the Soroban `__constructor`, preventing any front-running
+    /// between contract deployment and initialisation.
     /// Emits `initialized` so indexers can discover the initial configuration.
     ///
     /// # Arguments
-    /// - `admin`                    — admin address (approves courses, issues certificates)
-    /// - `treasury`                 — platform treasury address (receives platform fee share)
-    /// - `default_fee_pct`          — default platform fee percentage (e.g. 20 = 20%)
-    /// - `refund_window_ledgers`    — number of ledger sequences after enrollment during which a
-    ///                                refund request is accepted; requests after this window are
-    ///                                automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
-    pub fn init(
+    /// - `admin`                       — admin address (approves courses, issues certificates)
+    /// - `secondary_admin`             — secondary admin address for multi-sig operations
+    /// - `treasury`                    — platform treasury address (receives platform fee share)
+    /// - `default_fee_pct`             — default platform fee percentage (e.g. 20 = 20%)
+    /// - `max_courses_per_instructor`  — max active courses per instructor
+    /// - `refund_window_ledgers`       — number of ledger sequences after enrollment during which a
+    ///                                   refund request is accepted; requests after this window are
+    ///                                   automatically rejected (e.g. 17_280 ≈ 1 day at 5s/ledger)
+    /// - `revocation_challenge_period` — ledger sequences during which a certificate revocation
+    ///                                   can be challenged
+    pub fn __constructor(
         env: Env,
         admin: Address,
         secondary_admin: Address,
@@ -1317,6 +1324,10 @@ impl HamplardContract {
 
         if env.storage().instance().has(&DataKey::Admin) {
             soroban_sdk::panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+
+        if max_courses_per_instructor == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidMaxCoursesLimit);
         }
 
         if default_fee_pct > 100 {
@@ -5294,6 +5305,14 @@ impl HamplardContract {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig));
 
+        // Capture the outgoing secondary admin before it is overwritten so the
+        // emitted event fully describes the key rotation (#429).
+        let previous_secondary_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::SecondaryAdmin)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig));
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage()
             .instance()
@@ -5312,7 +5331,13 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "admin_transferred"), new_admin.clone()),
-            (previous_admin, new_admin.clone(), ledger_sequence),
+            (
+                previous_admin,
+                new_admin.clone(),
+                previous_secondary_admin,
+                new_secondary_admin,
+                ledger_sequence,
+            ),
         );
     }
 
@@ -5320,6 +5345,11 @@ impl HamplardContract {
     /// Emits `treasury_updated` immediately so the pending change is
     /// auditable in real time, even though it only takes effect
     /// `TREASURY_UPDATE_DELAY_LEDGERS` ledgers later (see `TreasuryUpdate`).
+    ///
+    /// Panics if an earlier update is still pending: a pending update is never
+    /// silently replaced, so monitors can rely on it. Call
+    /// `cancel_treasury_update` first. An update whose delay has elapsed is
+    /// applied (`treasury_activated`) before the new proposal is checked.
     pub fn update_treasury(env: Env, admin1: Address, admin2: Address, new_treasury: Address) {
         admin1.require_auth();
         admin2.require_auth();
@@ -5342,6 +5372,13 @@ impl HamplardContract {
 
         if new_treasury == secondary_admin {
             soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury);
+        }
+
+        // Apply a matured update first so it is never overwritten, then refuse
+        // to replace one that is still pending (cancel it first).
+        Self::read_treasury(&env);
+        if env.storage().instance().has(&DataKey::PendingTreasury) {
+            panic!("pending treasury update exists; cancel it first");
         }
 
         let current_treasury: Address = env
@@ -5634,6 +5671,9 @@ impl HamplardContract {
     pub fn update_max_courses_limit(env: Env, admin: Address, new_max: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "update_max_courses_limit");
+        if new_max == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidMaxCoursesLimit);
+        }
         let old_max: u32 = env
             .storage()
             .instance()
@@ -7164,11 +7204,17 @@ impl HamplardContract {
     /// A certificate with a pending revocation (revoked == true but
     /// revocation_deadline in the future) is still considered valid until
     /// the challenge period expires.
+    ///
+    /// When invoked in an on-chain transaction and the certificate is valid,
+    /// its persistent storage TTL is extended. Note that read-only RPC
+    /// simulations do not persist TTL extensions; verifiers or keepers should
+    /// submit `extend_certificate_ttl` on-chain to keep certificates live.
     pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
+        let key = DataKey::Certificate(certificate_id);
         if let Some(cert) = env
             .storage()
             .persistent()
-            .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
+            .get::<DataKey, Certificate>(&key)
         {
             if cert.revoked {
                 // Revocation is permanent only after the challenge period expires
@@ -7177,6 +7223,11 @@ impl HamplardContract {
                         return false;
                     }
                     // Within challenge period — still valid (pending revocation)
+                    env.storage().persistent().extend_ttl(
+                        &key,
+                        Self::PERSISTENT_TTL_THRESHOLD,
+                        Self::PERSISTENT_TTL_EXTEND_TO,
+                    );
                     return true;
                 }
                 // Revoked without a deadline (legacy or direct revocation)
@@ -7187,10 +7238,39 @@ impl HamplardContract {
                     return false;
                 }
             }
+            env.storage().persistent().extend_ttl(
+                &key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
             true
         } else {
             false
         }
+    }
+
+    /// Permissionlessly extend the persistent storage TTL of an existing
+    /// certificate entry.
+    ///
+    /// Anyone (student, issuer, verifier, or keeper) can call this function
+    /// to keep a certificate live in persistent state and prevent archival
+    /// after the initial ~6.3M-ledger (~1 year) TTL window.
+    ///
+    /// Panics with `Error::CertificateError` if the certificate does not exist
+    /// in live persistent storage.
+    pub fn extend_certificate_ttl(env: Env, certificate_id: String) {
+        let key = DataKey::Certificate(certificate_id);
+        if !env.storage().persistent().has(&key) {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 
     /// Return a page of registered course IDs from the on-chain catalog.

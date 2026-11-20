@@ -7,18 +7,20 @@ use soroban_sdk::{
 fn setup() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let id = env.register(HamplardContract, ());
-    let client = HamplardContractClient::new(&env, &id);
     let admin = Address::generate(&env);
-    client.init(
-        &admin,
-        &Address::generate(&env),
-        &Address::generate(&env),
-        &20,
-        &50,
-        &1_000,
-        &17_280,
+    let id = env.register(
+        HamplardContract,
+        (
+            &admin,
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &20u32,
+            &50u32,
+            &1_000u32,
+            &17_280u32,
+        ),
     );
+    let client = HamplardContractClient::new(&env, &id);
     let token = env
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
