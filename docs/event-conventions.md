@@ -55,7 +55,7 @@ compliance. The slot layout follows the canonical schema above.
 | 6 | `platform_paused` | `(admin, ledger_seq)` |
 | 7 | `platform_unpaused` | `(admin, ledger_seq)` |
 | 8 | `tokens_withdrawn` | `(admin1, admin2, token, amount, destination, ledger_seq)` |
-| 9 | `admin_proposed` | `(new_admin, admin1, admin2, ledger_seq)` |
+| 9 | `admin_proposed` | `(new_admin, new_secondary_admin, admin1, admin2, ledger_seq)` |
 | 10 | `default_fee_updated` | `(admin, ledger_seq, new_fee_pct)` |
 | 11 | `token_whitelisted` | `(admin, token, ledger_seq)` |
 | 12 | `token_removed_from_whitelist` | `(admin, token, ledger_seq)` |
