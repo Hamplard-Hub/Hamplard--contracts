@@ -78,6 +78,10 @@ pub enum DataKey {
     Certificate(Address, Symbol),
     CourseCount,
     StudentCourses(Address),
+    /// Pending primary admin transfer target.
+    PendingAdmin,
+    /// Pending secondary admin transfer target.
+    PendingSecondaryAdmin,
 }
 
 /// Event emitted when a course is created.
@@ -122,6 +126,13 @@ pub struct CertificateRevoked {
 pub struct ConfigUpdated {
     pub fee_bps: u32,
     pub treasury: Address,
+}
+
+/// Event emitted when a pending admin transfer is cancelled.
+#[derive(Clone, Debug, Eq, Contracttype)]
+pub struct AdminTransferCancelled {
+    pub pending_admin: Option<Address>,
+    pub pending_secondary_admin: Option<Address>,
 }
 
 /// Event emitted when a material change on an Active course triggers

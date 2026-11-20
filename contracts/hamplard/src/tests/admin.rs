@@ -104,6 +104,21 @@ fn test_admin_can_transfer_admin_role() {
 }
 
 #[test]
+fn test_non_admin_cannot_cancel_admin_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+    let stranger = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.client.transfer_admin(&ctx.admin, &new_admin);
+
+    let result = ctx.client.try_cancel_admin_transfer(&stranger, &new_admin);
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+}
+
+#[test]
 fn test_non_admin_cannot_transfer_admin_role() {
     let env = Env::default();
     env.mock_all_auths();
@@ -203,6 +218,40 @@ fn test_admin_can_deactivate_course() {
 
     ctx.client.deactivate_course(&ctx.admin, &ctx.course_id);
     assert!(!ctx.client.is_course_active(&ctx.course_id));
+}
+
+#[test]
+fn test_admin_can_cancel_pending_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.client.transfer_admin(&ctx.admin, &new_admin);
+    ctx.client.cancel_admin_transfer(&ctx.admin, &new_admin);
+
+    let stored_admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .expect("admin should be set");
+    assert_eq!(stored_admin, ctx.admin);
+}
+
+#[test]
+fn test_accept_fails_after_cancel() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.client.transfer_admin(&ctx.admin, &new_admin);
+    ctx.client.cancel_admin_transfer(&ctx.admin, &new_admin);
+
+    let result = ctx.client.try_accept_admin(&new_admin);
+    assert!(result.is_err());
 }
 
 #[test]
