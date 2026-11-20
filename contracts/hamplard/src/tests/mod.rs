@@ -6,6 +6,9 @@
 //
 /// Snapshot names are kept stable by keeping the original test function
 /// names and module paths where possible.
+//
+/// `pause` covers platform-pause enforcement on fund-moving entrypoints
+/// (`withdraw_earnings`, `escalate_to_arbitration`) in addition to enrollment.
 
 noindex {
     // Test helpers intentionally use unwrap/expect for concise failure output.
@@ -19,4 +22,5 @@ noindex {
     mod certification;
     mod token;
     mod admin;
+    mod pause;
 }
