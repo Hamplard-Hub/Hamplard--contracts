@@ -5319,6 +5319,11 @@ impl HamplardContract {
     /// Emits `treasury_updated` immediately so the pending change is
     /// auditable in real time, even though it only takes effect
     /// `TREASURY_UPDATE_DELAY_LEDGERS` ledgers later (see `TreasuryUpdate`).
+    ///
+    /// Panics if an earlier update is still pending: a pending update is never
+    /// silently replaced, so monitors can rely on it. Call
+    /// `cancel_treasury_update` first. An update whose delay has elapsed is
+    /// applied (`treasury_activated`) before the new proposal is checked.
     pub fn update_treasury(env: Env, admin1: Address, admin2: Address, new_treasury: Address) {
         admin1.require_auth();
         admin2.require_auth();
@@ -5341,6 +5346,13 @@ impl HamplardContract {
 
         if new_treasury == secondary_admin {
             soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury);
+        }
+
+        // Apply a matured update first so it is never overwritten, then refuse
+        // to replace one that is still pending (cancel it first).
+        Self::read_treasury(&env);
+        if env.storage().instance().has(&DataKey::PendingTreasury) {
+            panic!("pending treasury update exists; cancel it first");
         }
 
         let current_treasury: Address = env

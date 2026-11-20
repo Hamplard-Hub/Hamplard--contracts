@@ -335,7 +335,7 @@ Initialises the contract once. The admin must sign.
 |---|---|---|
 | `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` | Both admins | Propose a new admin pair |
 | `accept_admin(new_admin, new_secondary_admin)` | Both new admins | Accept the proposed admin pair |
-| `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update |
+| `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update; rejected while another is pending (`cancel_treasury_update` first) |
 | `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger |
 | `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency token sweep |
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
