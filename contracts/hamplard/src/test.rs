@@ -13418,6 +13418,134 @@ fn test_issue_certificate_extends_enrollment_ttl() {
 }
 
 // =============================================================================
+// ISSUE #412: Permissionless certificate TTL extension
+// =============================================================================
+
+fn certificate_ttl(env: &Env, contract_id: &Address, cert_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Certificate(cert_id.clone()))
+    })
+}
+
+#[test]
+fn test_extend_certificate_ttl_keeps_certificate_live() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-CERT-BUMP");
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-BUMP",
+        100_000_000,
+    );
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    let cert_id = String::from_str(&env, "CERT-BUMP-001");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-BUMP"),
+        &None,
+        &None,
+    );
+
+    // Advance ledger so certificate TTL drops below PERSISTENT_TTL_THRESHOLD
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        certificate_ttl(&env, &contract_id, &cert_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    // Permissionless bump: works with no auths mocked
+    env.mock_auths(&[]);
+    client.extend_certificate_ttl(&cert_id);
+
+    assert_eq!(
+        certificate_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+
+    // Advance past the original ~6.3M-ledger window; certificate must still verify
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 6_000_000;
+    });
+    assert!(client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_extend_certificate_ttl_missing_certificate_errors() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let res = client.try_extend_certificate_ttl(&String::from_str(&env, "CERT-DOES-NOT-EXIST"));
+    assert_eq!(res, Err(Ok(Error::CertificateError)));
+}
+
+#[test]
+fn test_verify_certificate_extends_ttl_for_valid_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-VERIFY-TTL");
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-TTL",
+        100_000_000,
+    );
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &None);
+
+    let cert_id = String::from_str(&env, "CERT-VERIFY-TTL-001");
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-TTL"),
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 400_000;
+    });
+    assert!(
+        certificate_ttl(&env, &contract_id, &cert_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+
+    assert!(client.verify_certificate(&cert_id));
+    assert_eq!(
+        certificate_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
+// =============================================================================
 // ISSUE #237: list_courses() must not overflow when limit is u32::MAX
 // =============================================================================
 
