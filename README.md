@@ -88,6 +88,8 @@ Enrollment is **price-protected**: `enroll()`, `batch_enroll()` and `re_enroll()
 **3. On-Chain Certificates**
 After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent, verifiable record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. Certificates can be revoked by the admin if issued in error, subject to a challenge window.
 
+> **Keeping Certificates Live (TTL):** Certificate entries are stored in Soroban persistent storage with an initial TTL of ~6.3M ledgers (~1 year). Read-only RPC simulations of `verify_certificate(certificate_id)` do not persist TTL extensions on-chain. To prevent archival, anyone (verifiers, students, issuers, or keeper bots) can call the permissionless `extend_certificate_ttl(certificate_id)` entrypoint on-chain to renew a certificate's TTL, or submit `verify_certificate(certificate_id)` as an on-chain transaction (which also extends the TTL for valid certificates).
+
 **4. Refunds**
 Both admins can jointly issue refunds by archiving a course and specifying which students to refund. Refunds return the full enrollment amount to students with incomplete enrollments. This provides dispute resolution and quality control mechanisms without requiring a time window.
 
@@ -134,13 +136,13 @@ This keeps the contract small, cheap to call, and focused on what blockchains ar
 
 | Role | Address | Permissions |
 |------|---------|-------------|
-| **Admin** | Set at `init` | Single-admin configuration and moderation; co-signs every multi-sig operation |
-| **Secondary Admin** | Set at `init` | Must co-sign multi-sig operations: archive, treasury update, admin transfer, token sweep, admin expiry, and upgrades |
+| **Admin** | Set at `__constructor` | Single-admin configuration and moderation; co-signs every multi-sig operation |
+| **Secondary Admin** | Set at `__constructor` | Must co-sign multi-sig operations: archive, treasury update, admin transfer, token sweep, admin expiry, and upgrades |
 | **Approver** | Granted by an admin | Approve or reject pending courses |
 | **Instructor** | Set per course (`Course.instructor`) | Register courses, manage their own courses, withdraw earnings, co-sign course transfers |
 | **Co-instructor** | `Course.co_instructors` | Passive recipient of a configured revenue share; no privileged entrypoints |
 | **Student** | Any address | Enroll, request refunds, challenge revocations, escalate arbitration, join waitlists |
-| **Treasury** | Set at `init` | Receives the platform fee share (passive recipient only) |
+| **Treasury** | Set at `__constructor` | Receives the platform fee share (passive recipient only) |
 
 ---
 
@@ -271,15 +273,15 @@ Archiving requires the course to be in `Paused`, `Pending`, or `Rejected` status
 
 ## Contract Functions
 
-### `init`
+### `__constructor`
 
 ```rust
-init(admin, secondary_admin, treasury, default_fee_pct,
-     max_courses_per_instructor, refund_window_ledgers,
-     revocation_challenge_period)
+__constructor(admin, secondary_admin, treasury, default_fee_pct,
+              max_courses_per_instructor, refund_window_ledgers,
+              revocation_challenge_period)
 ```
 
-Initialises the contract once. The admin must sign.
+Initialises the contract atomically at deployment time. The admin must sign.
 
 ### Course management
 
@@ -335,7 +337,7 @@ Initialises the contract once. The admin must sign.
 |---|---|---|
 | `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` | Both admins | Propose a new admin pair |
 | `accept_admin(new_admin, new_secondary_admin)` | Both new admins | Accept the proposed admin pair |
-| `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update |
+| `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update; rejected while another is pending (`cancel_treasury_update` first) |
 | `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger |
 | `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency token sweep |
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
@@ -353,7 +355,8 @@ Initialises the contract once. The admin must sign.
 | `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
 | `is_enrolled(student, course_id)` | `bool` |
 | `has_completed(student, course_id)` | `Option<bool>` |
-| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired |
+| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired (extends TTL when called on-chain for a valid cert) |
+| `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
 | `get_platform_fee(admin)` | `u32` — current default fee percentage (admin only) |
 | `get_instructor_earnings(instructor, token)` | `i128` — withdrawable balance |
 
@@ -398,7 +401,7 @@ proportions, so no recipient keeps revenue for an enrollment that was refunded.
 
 The platform fee percentage can be:
 
-- **Global default** (set at `init`, updatable by admin)
+- **Global default** (set at `__constructor`, updatable by admin)
 - **Per-token configuration** via `set_fee_config(token, fee_bps)`
 - **Per-course override** captured at registration as a floor on the live fee
 
@@ -488,7 +491,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
-| `admin_transferred`           | `new_admin`                                 | Admin role transferred                    |
+| `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 
 See `contracts/hamplard/src/lib.rs` for the complete event list, including waitlist, freeze, blocklist, approver, and configuration events.
 
@@ -506,7 +509,7 @@ Clients should match on `N`; the numeric values are part of the public interface
 
 | Code | Name | Meaning |
 |---:|---|---|
-| 1 | `AlreadyInitialized` | `init` has already been called |
+| 1 | `AlreadyInitialized` | Contract has already been initialized |
 | 2 | `Unauthorized` | Caller is missing the required role or authorization |
 | 3 | `AdminExpired` | The admin role has reached its configured expiry |
 | 4 | `InvalidAdminConfig` | Invalid admin pair, proposal, or transfer state |
@@ -653,20 +656,20 @@ export DEFAULT_FEE_PCT=20
 export MAX_COURSES_PER_INSTRUCTOR=10
 export REFUND_WINDOW_LEDGERS=17280
 export REVOCATION_CHALLENGE_PERIOD=17280
-make -C contracts/hamplard deploy-and-init-testnet
-# Prints the initialized contract ID and configuration
+make -C contracts/hamplard deploy-testnet
+# Deploys and initializes the contract atomically, then prints the contract ID and configuration
 ```
 
-### Initialize after deployment
+### Deploy and initialize manually with `stellar contract deploy`
 
 Run the following from `contracts/hamplard`:
 
 ```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/hamplard.optimized.wasm \
   --source my-account \
   --network testnet \
-  -- init \
+  -- \
   --admin <ADMIN_ADDRESS> \
   --secondary_admin <SECONDARY_ADMIN_ADDRESS> \
   --treasury <TREASURY_ADDRESS> \
@@ -712,7 +715,7 @@ stellar contract invoke \
 
 - **Authorization**: Every write function calls `require_auth()` on the relevant party. Instructors cannot approve their own courses. Students cannot issue their own certificates. Only admins can revoke certificates.
 - **Dual-admin model**: The contract is initialised with two distinct admin addresses — `admin` and `secondary_admin` — so there is no single-address point of failure. Sensitive operations require **both** admin signatures (`require_multi_admin`): `archive_course`, `withdraw_tokens`, `update_treasury`, `transfer_admin`, `set_admin_expiry`, and the contract upgrade functions (`propose_upgrade`, `cancel_upgrade`, `upgrade_contract`, `set_upgrade_timelock`). Routine operations (approving courses, issuing certificates, fee configuration) need only one admin.
-- **Two-step admin transfer with cooldown**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `init` also enforces that admin, secondary admin, and treasury are all distinct addresses.
+- **Two-step admin transfer with cooldown**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `__constructor` also enforces that admin, secondary admin, and treasury are all distinct addresses.
 - **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` sets a ledger sequence after which every admin operation panics with "admin role has expired" — a dead-man's switch that can be read via `get_admin_expiry()` and cleared by passing `None`.
 - **Scoped approvers**: Admins can delegate course moderation via `add_approver` / `remove_approver`. Approvers may approve and reject courses, but have no access to treasury, fee, or admin-transfer functions — and unlike the admin role, approver authority does not expire.
 - **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` reverses it. Frozen instructors cannot operate while the platform keeps student funds safe.
@@ -721,7 +724,7 @@ stellar contract invoke \
 - **Price protection**: `enroll()`, `batch_enroll()` and `re_enroll()` require a `max_price` and revert if the course's current price exceeds it, so a price change between a student's quote and execution cannot charge them more than they approved.
 - **Atomic payment split**: Both the platform and instructor transfers happen in the same transaction. There is no intermediate escrow that could be exploited.
 - **Certificate immutability**: Revoked certificates are flagged — not deleted. This preserves the audit trail and prevents a revocation from being hidden. Revocation is permanent only after the challenge period elapses.
-- **Fee validation**: Platform fee percentage is validated to be ≤ 100 at both `init` and `register_course` time.
+- **Fee validation**: Platform fee percentage is validated to be ≤ 100 at both `__constructor` and `register_course` time.
 - **Event schema stability**: Event topics and data layouts are part of the public interface. Off-chain indexers must be updated in lockstep with any contract change to the events table above.
 
 ---
