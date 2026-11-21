@@ -6730,11 +6730,9 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("refund split underflow"));
 
         let token_client = token::Client::new(env, &course.token);
-        let treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| panic!("treasury not set"));
+        // Apply any matured pending treasury update so the refund uses the
+        // effective treasury, not a stale one. (#326)
+        let treasury: Address = Self::read_treasury(env);
 
         // Refund platform fee from treasury, proportional to the request when
         // a partial amount is specified.
@@ -8228,11 +8226,9 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("refund split underflow"));
 
         let token_client = token::Client::new(env, &course.token);
-        let treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| panic!("treasury not set"));
+        // Apply any matured pending treasury update so the refund uses the
+        // effective treasury, not a stale one. (#326)
+        let treasury: Address = Self::read_treasury(env);
 
         if platform_refund > 0 {
             token_client.transfer(&treasury, student, &platform_refund);
