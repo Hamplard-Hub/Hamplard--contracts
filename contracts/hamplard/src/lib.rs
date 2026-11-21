@@ -828,6 +828,8 @@ pub struct Enrollment {
     pub enrollment_ref: String,
     /// Ledger sequence when the enrollment was marked completed, if any (#166)
     pub completed_at_ledger: Option<u32>,
+    /// Content hash of the course active at the time of enrollment (#370)
+    pub content_hash: BytesN<32>,
 }
 
 /// An on-chain certificate of completion
@@ -3699,6 +3701,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
             completed_at_ledger: None,
+            content_hash: course.content_hash.clone(),
         };
 
         Self::persist(
@@ -3909,6 +3912,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
             completed_at_ledger: None,
+            content_hash: course.content_hash.clone(),
         };
 
         Self::persist(
@@ -4205,6 +4209,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: new_enrollment_ref,
             completed_at_ledger: None,
+            content_hash: course.content_hash.clone(),
         };
 
         Self::persist(&env, &enrollment_key, &new_enrollment);

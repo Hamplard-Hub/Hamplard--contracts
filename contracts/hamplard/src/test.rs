@@ -20080,3 +20080,39 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_enrollment_records_content_hash_snapshot() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-HASH-SNAP");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-HASH-SNAP",
+        100_000_000,
+    );
+
+    let initial_hash = client.get_course(&course_id).unwrap().content_hash;
+
+    let student1 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student1, &100_000_000);
+    client.enroll(&student1, &course_id, &100_000_000);
+
+    let updated_hash = BytesN::from_array(&env, &[0x42u8; 32]);
+    client.update_content_hash(&instructor, &course_id, &updated_hash);
+
+    let student2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student2, &100_000_000);
+    client.enroll(&student2, &course_id, &100_000_000);
+
+    let enrollment1 = client.get_enrollment(&student1, &student1, &course_id).unwrap();
+    assert_eq!(enrollment1.content_hash, initial_hash);
+
+    let enrollment2 = client.get_enrollment(&student2, &student2, &course_id).unwrap();
+    assert_eq!(enrollment2.content_hash, updated_hash);
+}
