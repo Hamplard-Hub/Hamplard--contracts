@@ -1137,6 +1137,9 @@ pub enum DataKey2 {
     /// Contract-held reserve, per token, that funds the platform-fee share of
     /// refunds so they never need a signature from the treasury account
     RefundReserve(Address),
+    /// Net cumulative platform fees collected for a token (incremented on
+    /// enrollment fee collection, decremented on refunds).
+    PlatformFeesCollected(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -3612,6 +3615,7 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
                     (
                         Symbol::new(&env, "platform_fee_transferred"),
@@ -3862,6 +3866,7 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
                     (
                         Symbol::new(env, "platform_fee_transferred"),
@@ -4168,6 +4173,7 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                Self::increment_platform_fees_collected(&env, &course.token, platform_amount);
             }
 
             if instructor_amount > 0 {
@@ -4462,6 +4468,16 @@ impl HamplardContract {
         env.storage()
             .instance()
             .get(&DataKey2::TotalArbitrationFees(token))
+            .unwrap_or(0)
+    }
+
+    /// Get net cumulative platform fees collected for a token.
+    /// Incremented when platform fees are collected on enrollment and
+    /// decremented when platform fees are refunded.
+    pub fn get_platform_fees_collected(env: Env, token: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey2::PlatformFeesCollected(token))
             .unwrap_or(0)
     }
 
@@ -6740,6 +6756,7 @@ impl HamplardContract {
         // a partial amount is specified.
         if platform_refund > 0 {
             token_client.transfer(&treasury, &request.student, &platform_refund);
+            Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
         }
 
         // Refund instructor share from contract-held earnings, again using the
@@ -6854,6 +6871,29 @@ impl HamplardContract {
         }
         env.storage().persistent().set(&key, &(balance - amount));
         token::Client::new(env, token).transfer(&env.current_contract_address(), student, &amount);
+        Self::decrement_platform_fees_collected(env, token, amount);
+    }
+
+    /// Increment net cumulative platform fees collected for `token`.
+    fn increment_platform_fees_collected(env: &Env, token: &Address, amount: i128) {
+        let key = DataKey2::PlatformFeesCollected(token.clone());
+        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let updated = current
+            .checked_add(amount)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, Error::ArithmeticOverflow));
+        env.storage().instance().set(&key, &updated);
+    }
+
+    /// Decrement net cumulative platform fees collected for `token`.
+    fn decrement_platform_fees_collected(env: &Env, token: &Address, amount: i128) {
+        let key = DataKey2::PlatformFeesCollected(token.clone());
+        let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let updated = current.saturating_sub(amount);
+        if updated == 0 {
+            env.storage().instance().remove(&key);
+        } else {
+            env.storage().instance().set(&key, &updated);
+        }
     }
 
     /// Get a refund request record by student and course ID
@@ -8236,6 +8276,7 @@ impl HamplardContract {
 
         if platform_refund > 0 {
             token_client.transfer(&treasury, student, &platform_refund);
+            Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
         }
         if instructor_refund > 0 {
             Self::debit_instructor_shares(env, course, instructor_refund);
