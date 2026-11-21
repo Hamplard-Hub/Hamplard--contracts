@@ -20080,3 +20080,29 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+#[should_panic]
+fn test_set_enrollment_start_ledger_rejected_course_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-REJECTED-ENROLL-START");
+
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(&admin, &course_id, &String::from_str(&env, "rejected"));
+
+    client.set_enrollment_start_ledger(
+        &instructor,
+        &course_id,
+        &Some(env.ledger().sequence() + 10),
+    );
+}
