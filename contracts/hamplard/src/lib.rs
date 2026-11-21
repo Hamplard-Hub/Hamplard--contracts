@@ -1891,6 +1891,14 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
         }
 
+        // #379 — Reject approval when the instructor is frozen.  An Active
+        // course whose instructor is frozen is unenrollable, so approving it
+        // into that state would leave it permanently stuck.  Approval must be
+        // retried after the instructor is unfrozen.
+        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
+        }
+
         // Issue 167: High-value course co-signature
         let threshold: Option<i128> = env
             .storage()
