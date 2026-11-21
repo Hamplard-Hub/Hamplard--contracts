@@ -3978,9 +3978,46 @@ fn test_instructor_earnings_accumulate_and_withdraw() {
     );
     assert_eq!(token_client.balance(&instructor), 0);
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), instructor_share);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #40)")]
+fn test_withdraw_earnings_zero_amount_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARN-ZERO",
+    );
+
+    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+}
+
+#[test]
+fn test_withdraw_earnings_zero_amount_leaves_balance_intact() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let share = enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARN-ZERO-INTACT",
+    );
+
+    let res = client.try_withdraw_earnings(&instructor, &token_id, &0, &None);
+    assert!(res.is_err());
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), share);
+    assert_eq!(token_client.balance(&instructor), 0);
 }
 
 #[test]
@@ -4058,11 +4095,11 @@ fn test_double_withdrawal_prevented() {
     );
     client.enroll(&student, &String::from_str(&env, "COURSE-EARN-DBL"), &i128::MAX);
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     let balance_after_first = token_client.balance(&instructor);
 
     // Second full withdrawal is a no-op (zero balance)
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), balance_after_first);
 }
 
@@ -4072,7 +4109,7 @@ fn test_zero_balance_withdrawal_is_safe() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
 }
 
@@ -4114,7 +4151,7 @@ fn test_withdraw_earnings_to_custom_destination() {
     );
 
     let cold = Address::generate(&env);
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(cold.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(cold.clone()));
 
     assert_eq!(token_client.balance(&cold), share);
     assert_eq!(token_client.balance(&instructor), 0);
@@ -4159,7 +4196,7 @@ fn test_withdraw_earnings_none_defaults_to_instructor() {
         "COURSE-DEST-3",
     );
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), share);
 }
 
@@ -4177,7 +4214,7 @@ fn test_withdraw_earnings_event_includes_destination() {
     );
 
     let cold = Address::generate(&env);
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(cold.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(cold.clone()));
 
     let mut found = false;
     for (contract, topics, data) in env.events().all().iter() {
@@ -4220,12 +4257,12 @@ fn test_withdraw_earnings_only_instructor_auth_required() {
             address: &instructor,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
-                fn_name: "withdraw_earnings",
-                args: (instructor.clone(), token_id.clone(), 0i128, dest.clone()).into_val(&env),
+                fn_name: "withdraw_all_earnings",
+                args: (instructor.clone(), token_id.clone(), dest.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .withdraw_earnings(&instructor, &token_id, &0, &dest);
+        .withdraw_all_earnings(&instructor, &token_id, &dest);
 
     assert_eq!(token::Client::new(&env, &token_id).balance(&cold), share);
 }
@@ -4252,12 +4289,12 @@ fn test_withdraw_earnings_destination_auth_is_not_enough() {
             address: &attacker,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
-                fn_name: "withdraw_earnings",
-                args: (instructor.clone(), token_id.clone(), 0i128, dest.clone()).into_val(&env),
+                fn_name: "withdraw_all_earnings",
+                args: (instructor.clone(), token_id.clone(), dest.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .try_withdraw_earnings(&instructor, &token_id, &0, &dest);
+        .try_withdraw_all_earnings(&instructor, &token_id, &dest);
 
     assert!(res.is_err());
     assert_eq!(token::Client::new(&env, &token_id).balance(&attacker), 0);
@@ -4277,7 +4314,7 @@ fn test_withdraw_earnings_rejects_contract_as_destination() {
         "COURSE-DEST-7",
     );
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(contract_id.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(contract_id.clone()));
 }
 
 #[test]
@@ -17043,7 +17080,7 @@ fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
     );
 
     client.freeze_instructor(&admin, &instructor);
-    let frozen_withdrawal = client.try_withdraw_earnings(&instructor, &token_id, &0, &None);
+    let frozen_withdrawal = client.try_withdraw_all_earnings(&instructor, &token_id, &None);
     assert!(
         frozen_withdrawal.is_err(),
         "frozen instructors must not be able to withdraw"
@@ -17054,7 +17091,7 @@ fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
     );
 
     client.unfreeze_instructor(&admin, &instructor);
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
 
     assert_eq!(
         token::Client::new(&env, &token_id).balance(&instructor),
