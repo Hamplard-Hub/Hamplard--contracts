@@ -6741,6 +6741,84 @@ fn test_get_enrollment_history_unauthorized_access() {
     client.get_enrollment_history(&random_user, &student, &course_id);
 }
 
+// #374 — Student and admin can read enrollment even when the course entry is absent.
+
+/// Student can call get_enrollment() when no course entry exists (simulates
+/// a course archived by TTL).
+#[test]
+fn test_get_enrollment_student_succeeds_without_course_entry() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-ENTRY-374",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-NO-ENTRY-374");
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    // Simulate the course entry being removed (TTL expiry).
+    env.storage()
+        .persistent()
+        .remove(&crate::DataKey::Course(course_id.clone()));
+
+    // Student must still be able to read their own enrollment.
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .expect("enrollment should still be readable");
+    assert_eq!(enrollment.student, student);
+}
+
+/// Admin can call get_enrollment() and get_enrollment_history() when no
+/// course entry exists.
+#[test]
+fn test_get_enrollment_admin_succeeds_without_course_entry() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-ENTRY-ADM-374",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-NO-ENTRY-ADM-374");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "374-ev")),
+    );
+    client.re_enroll(&student, &course_id, &i128::MAX);
+
+    // Drop the course entry.
+    env.storage()
+        .persistent()
+        .remove(&crate::DataKey::Course(course_id.clone()));
+
+    // Admin can read enrollment.
+    assert!(client
+        .get_enrollment(&admin, &student, &course_id)
+        .is_some());
+
+    // Admin can read enrollment history.
+    let history = client.get_enrollment_history(&admin, &student, &course_id);
+    assert!(!history.is_empty());
+}
+
 #[test]
 fn test_multi_sig_admin_events_record_both_actors() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
