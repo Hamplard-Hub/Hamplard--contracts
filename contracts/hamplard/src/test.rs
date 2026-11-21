@@ -20080,3 +20080,94 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+// ============================================================
+// #323 — InstructorStats.total_students decremented on refund
+// ============================================================
+
+#[test]
+fn test_instructor_stats_total_students_decremented_on_process_refund() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    asset_client.mint(&student, &1_000_000_000);
+
+    let price = 500_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-323A",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-323A");
+
+    // Enroll; total_students should be 1.
+    client.enroll(&student, &course_id, &i128::MAX);
+    let stats_before = client.get_instructor_stats(&instructor);
+    assert_eq!(stats_before.total_students, 1, "stats should show 1 student after enrollment");
+
+    // Fund the refund reserve so the platform-fee share can be returned.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Request and approve the refund.
+    client.request_refund(&student, &course_id);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    // After refund, total_students must be back to 0.
+    let stats_after = client.get_instructor_stats(&instructor);
+    assert_eq!(
+        stats_after.total_students,
+        0,
+        "total_students should be decremented after refund is approved"
+    );
+}
+
+#[test]
+fn test_instructor_stats_total_students_decremented_on_archive_refund() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    asset_client.mint(&student, &1_000_000_000);
+
+    let price = 500_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-323B",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-323B");
+
+    // Enroll; total_students should be 1.
+    client.enroll(&student, &course_id, &i128::MAX);
+    let stats_before = client.get_instructor_stats(&instructor);
+    assert_eq!(stats_before.total_students, 1, "stats should show 1 student after enrollment");
+
+    // Pause course so it can be archived.
+    client.pause_course(&admin, &course_id);
+
+    // Fund the refund reserve so the platform-fee share can be returned.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Archive the course, refunding the enrolled student.
+    let students = soroban_sdk::vec![&env, student.clone()];
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
+
+    // After archive-refund, total_students must be back to 0.
+    let stats_after = client.get_instructor_stats(&instructor);
+    assert_eq!(
+        stats_after.total_students,
+        0,
+        "total_students should be decremented after archive refund"
+    );
+}

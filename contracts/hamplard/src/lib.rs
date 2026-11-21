@@ -2434,6 +2434,13 @@ impl HamplardContract {
 
                         Self::dec_total_active(&env);
 
+                        // Decrement total_students in InstructorStats so
+                        // archive-refunded enrollments no longer count toward
+                        // the instructor's reputation. (#323)
+                        Self::update_instructor_stats(&env, &course.instructor, |s| {
+                            s.total_students = s.total_students.saturating_sub(1);
+                        });
+
                         Self::emit_refund_issued(
                             &env,
                             &course_id,
@@ -6798,6 +6805,12 @@ impl HamplardContract {
                 .instance()
                 .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
         }
+
+        // Decrement total_students in InstructorStats so refunded enrollments
+        // no longer count toward the instructor's reputation. (#323)
+        Self::update_instructor_stats(env, &course.instructor, |s| {
+            s.total_students = s.total_students.saturating_sub(1);
+        });
 
         request.status = RefundStatus::Approved;
         request.refund_amount = Some(actual_refund_amount);
