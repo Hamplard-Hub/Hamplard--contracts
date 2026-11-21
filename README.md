@@ -495,7 +495,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 
 ### `student_enrolled` is the single enrollment event
 
-`enroll`, `batch_enroll` and `re_enroll` emit exactly one event per paid
+`enroll` and `batch_enroll` emit exactly one event per paid
 enrollment. Topics: `("student_enrolled", course_id)`. Data:
 `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)`,
 where `payouts` is a `Vec<(Address, i128)>` of every instructor recipient
