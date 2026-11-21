@@ -7848,6 +7848,59 @@ fn test_enrollment_expiry_none_allows_completion_at_any_time() {
 }
 
 #[test]
+fn test_set_enrollment_expiry_does_not_apply_retroactively() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_before = Address::generate(&env);
+    let student_after = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_before, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_after, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-SNAPSHOT",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-SNAPSHOT");
+
+    // Initial expiry is 100 ledgers; student_before snapshots 100 ledgers
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+    client.enroll(&student_before, &course_id, &i128::MAX);
+
+    // Instructor shortens expiry to 10 ledgers; only student_after snapshots 10 ledgers
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(10u32));
+    client.enroll(&student_after, &course_id, &i128::MAX);
+
+    // Advance 20 ledgers: student_after is expired, student_before is still within 100 ledgers
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 20;
+    });
+
+    assert!(client
+        .try_mark_completed(
+            &admin,
+            &student_after,
+            &course_id,
+            &Some(evidence_hash(&env, "late_evidence")),
+        )
+        .is_err());
+
+    client.mark_completed(
+        &admin,
+        &student_before,
+        &course_id,
+        &Some(evidence_hash(&env, "on_time_evidence")),
+    );
+    assert_eq!(client.has_completed(&student_before, &course_id), Some(true));
+}
+
+#[test]
 fn test_expire_enrollment_releases_active_counters_and_emits_event() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
