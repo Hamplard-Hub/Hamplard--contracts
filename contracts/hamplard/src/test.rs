@@ -15640,6 +15640,76 @@ fn test_set_co_instructors_and_credit_split_on_enroll() {
 }
 
 #[test]
+fn test_frozen_co_instructor_blocks_enrollment_until_unfrozen() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-FROZEN",
+        1_000_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-FROZEN");
+
+    let co_instructor_a = Address::generate(&env);
+    let co_instructor_b = Address::generate(&env);
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-FROZEN",
+        &[
+            (co_instructor_a.clone(), 3_000),
+            (co_instructor_b.clone(), 2_000),
+        ],
+    );
+
+    client.freeze_instructor(
+        &admin,
+        &co_instructor_a,
+        &String::from_str(&env, "compliance review"),
+    );
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let res = client.try_enroll(&student, &course_id, &i128::MAX);
+    assert!(
+        res.is_err(),
+        "enrollment must fail while any co-instructor is frozen"
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_a, &token_id),
+        0
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_b, &token_id),
+        0
+    );
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+
+    client.unfreeze_instructor(&admin, &co_instructor_a);
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_a, &token_id),
+        240_000_000
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_b, &token_id),
+        160_000_000
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        400_000_000
+    );
+}
+
+#[test]
 fn test_admin_can_set_co_instructors() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);

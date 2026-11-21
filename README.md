@@ -399,6 +399,11 @@ lead instructor = 80 - 24 - 16 = 40 USDC
 Refunds debit the lead instructor and every co-instructor in the same
 proportions, so no recipient keeps revenue for an enrollment that was refunded.
 
+If the lead instructor or any configured co-instructor is frozen, new
+enrollments and re-enrollments for the course are rejected until the frozen
+instructor is unfrozen, ensuring frozen co-instructors cannot accrue new
+earnings.
+
 The platform fee percentage can be:
 
 - **Global default** (set at `__constructor`, updatable by admin)
