@@ -2579,16 +2579,25 @@ impl HamplardContract {
             modified = true;
         }
 
+        if let Some(mode) = new_capacity_mode {
+            course.capacity_mode = mode;
+            modified = true;
+        }
+
         if let Some(capacity) = new_max_capacity {
             if capacity == Some(0) {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
             }
+            if let Some(cap) = capacity {
+                let current_enrollments = match course.capacity_mode {
+                    CapacityMode::Lifetime => course.total_enrollments,
+                    CapacityMode::Concurrent => course.active_enrollments,
+                };
+                if cap < current_enrollments {
+                    soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+                }
+            }
             course.max_capacity = capacity;
-            modified = true;
-        }
-
-        if let Some(mode) = new_capacity_mode {
-            course.capacity_mode = mode;
             modified = true;
         }
 
