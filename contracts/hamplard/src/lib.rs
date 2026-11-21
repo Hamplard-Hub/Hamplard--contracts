@@ -945,7 +945,7 @@ pub struct InstructorStats {
     pub total_students: u32,
     /// Total number of enrollments marked completed via `mark_completed`.
     pub total_completions: u32,
-    /// Total number of certificates issued via `issue_certificate`.
+    /// Number of certificates issued via `issue_certificate` that are not currently revoked.
     pub total_certificates: u32,
 }
 
@@ -1548,21 +1548,8 @@ impl HamplardContract {
         instructor.require_auth();
         let course_id = Self::normalize_course_id(&env, &course_id);
 
-        // Validate that the token address is a contract (not an EOA)
-        let token_client = token::Client::new(&env, &token);
-        let token_decimals = token_client.decimals();
-
-        // Validate token decimal precision matches expected standard (7 for Stellar USDC)
-        // This ensures fee calculations are accurate
-        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
-        if token_decimals != EXPECTED_TOKEN_DECIMALS {
-            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-        }
-
-        // #392 — The token must already be on the enrollment whitelist.
-        // validate_enrollment() keeps the same check at enroll time because the
-        // whitelist can change afterwards, but without it here an instructor
-        // could register and get approved for a course no student can enroll in.
+        // #391 - Check the whitelist BEFORE any cross-contract call, so an
+        // attacker-supplied token contract never executes inside registration.
         if !env
             .storage()
             .instance()
@@ -1571,6 +1558,14 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
+        // Only an approved token is ever called. Decimals must match the
+        // expected precision so fee maths stays accurate.
+        let token_client = token::Client::new(&env, &token);
+        let token_decimals = token_client.decimals();
+        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
+        if token_decimals != EXPECTED_TOKEN_DECIMALS {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+        }
         if Self::is_instructor_frozen_internal(&env, &instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
@@ -5058,6 +5053,12 @@ impl HamplardContract {
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
 
         cert.revoked = true;
+
+        // #407 - a revoked certificate no longer counts toward the
+        // instructor's track record.
+        Self::update_instructor_stats(env, &cert.instructor, |s| {
+            s.total_certificates = s.total_certificates.saturating_sub(1);
+        });
         cert.revoked_by = Some(admin.clone());
         cert.revocation_ledger = Some(current_ledger);
         cert.revocation_reason = Some(reason.clone());
@@ -5153,6 +5154,14 @@ impl HamplardContract {
         cert.revocation_ledger = None;
         cert.revocation_reason = None;
         cert.revocation_deadline = None;
+
+        // #407 - revocation cancelled, so the certificate counts again.
+        Self::update_instructor_stats(&env, &cert.instructor, |s| {
+            s.total_certificates = s
+                .total_certificates
+                .checked_add(1)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
+        });
 
         Self::persist(&env, &DataKey::Certificate(certificate_id.clone()), &cert);
 

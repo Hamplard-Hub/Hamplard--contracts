@@ -2875,6 +2875,29 @@ fn test_register_course_with_non_whitelisted_token_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #34)")]
+fn test_register_course_unapproved_token_makes_no_external_call() {
+    let (env, contract_id, _, _, _, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Not a contract at all. If register_course still called decimals() on it
+    // first, the host would fail with a different error than the whitelist
+    // rejection (#34), so this proves no external call happens.
+    let not_a_contract = Address::generate(&env);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-NO-CALL"),
+        &500_000_000,
+        &not_a_contract,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+}
+
+#[test]
 fn test_register_course_succeeds_once_token_whitelisted() {
     let (env, contract_id, _, admin, _, _, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
