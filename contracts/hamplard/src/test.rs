@@ -20080,3 +20080,60 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_get_instructor_earning_tokens_tracks_credit_debit_and_withdrawal() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    // Initially empty
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 0);
+
+    // Register a second approved token
+    let token2_admin = Address::generate(&env);
+    let token2_id = env.register_stellar_asset_contract_v2(token2_admin).address();
+    let token2_admin_client = token::StellarAssetClient::new(&env, &token2_id);
+    client.add_approved_token(&admin, &token2_id);
+
+    // Enroll in token1 course -> token1 appears in earning tokens
+    let price = 100_000_000i128;
+    let share1 = enroll_one(&env, &client, &token_id, &admin, &instructor, "IET-1");
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), token_id);
+
+    // Second enrollment in token1 does not duplicate token1
+    let _ = enroll_one(&env, &client, &token_id, &admin, &instructor, "IET-2");
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 1);
+
+    // Enroll in token2 course -> both token1 and token2 appear
+    let course2 = String::from_str(&env, "IET-3");
+    register_and_approve_course(&env, &client, &token2_id, &admin, &instructor, "IET-3", price);
+    let student2 = Address::generate(&env);
+    token2_admin_client.mint(&student2, &price);
+    client.enroll(&student2, &course2);
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 2);
+    assert!(tokens.contains(&token_id));
+    assert!(tokens.contains(&token2_id));
+
+    // Partial withdrawal of token1 keeps token1 in the set
+    client.withdraw_earnings(&instructor, &token_id, &share1, &None);
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 2);
+
+    // Full withdrawal of remaining token1 removes token1 from the set
+    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), token2_id);
+
+    // Refund of token2 enrollment debits balance to 0 and removes token2
+    let fee2 = price - client.get_instructor_earnings(&instructor, &token2_id);
+    token_admin_client.mint(&treasury, &0);
+    token2_admin_client.mint(&treasury, &fee2);
+    client.fund_refund_reserve(&treasury, &token2_id, &fee2);
+    client.request_refund(&student2, &course2);
+    client.process_refund(&admin, &student2, &course2, &true, &None);
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 0);
+}
