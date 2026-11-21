@@ -19604,6 +19604,37 @@ fn test_reject_then_resubmit_outside_window_fails() {
     client.request_refund(&student, &course_id);
 }
 
+#[test]
+#[should_panic(expected = "cannot mark completed while refund request is pending")]
+fn test_mark_completed_rejects_pending_refund_request() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-318-PENDING-REFUND",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-318-PENDING-REFUND");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence")),
+    );
+}
+
 /// A Pending request still blocks a second request from the same student.
 #[test]
 #[should_panic(expected = "refund request already exists")]
