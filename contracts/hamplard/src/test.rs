@@ -12517,6 +12517,106 @@ fn test_frozen_instructor_cannot_unpause_course() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_instructor_cannot_unpause_admin_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-1");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-1",
+        100_000_000,
+    );
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().paused_by, Some(PausedBy::Admin));
+
+    client.unpause_course(&instructor, &course_id);
+}
+
+#[test]
+fn test_admin_can_unpause_admin_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-2");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-2",
+        100_000_000,
+    );
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().paused_by, Some(PausedBy::Admin));
+
+    client.unpause_course(&admin, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
+fn test_instructor_can_unpause_instructor_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-3");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-3",
+        100_000_000,
+    );
+    client.pause_course(&instructor, &course_id);
+    assert_eq!(
+        client.get_course(&course_id).unwrap().paused_by,
+        Some(PausedBy::Instructor)
+    );
+
+    client.unpause_course(&instructor, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
+fn test_admin_can_unpause_instructor_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-4");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-4",
+        100_000_000,
+    );
+    client.pause_course(&instructor, &course_id);
+    assert_eq!(
+        client.get_course(&course_id).unwrap().paused_by,
+        Some(PausedBy::Instructor)
+    );
+
+    client.unpause_course(&admin, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #11)")]
 fn test_register_course_rejects_empty_course_id() {
     let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
