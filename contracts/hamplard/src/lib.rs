@@ -4310,6 +4310,10 @@ impl HamplardContract {
     /// Frozen instructors cannot withdraw until an admin unfreezes them.
     /// Withdrawals reduce `get_instructor_earnings()` but do not change
     /// `get_instructor_total_earnings()`.
+    ///
+    /// Emits `earnings_withdrawn`:
+    /// - Topics: `("earnings_withdrawn", instructor, token)`
+    /// - Data: `(token, withdraw_amount, recipient, new_balance, ledger_sequence)`
     pub fn withdraw_earnings(
         env: Env,
         instructor: Address,
@@ -4388,8 +4392,18 @@ impl HamplardContract {
         );
 
         env.events().publish(
-            (Symbol::new(&env, "earnings_withdrawn"), instructor.clone()),
-            (instructor.clone(), token, withdraw_amount, recipient, env.ledger().sequence()),
+            (
+                Symbol::new(&env, "earnings_withdrawn"),
+                instructor.clone(),
+                token.clone(),
+            ),
+            (
+                token,
+                withdraw_amount,
+                recipient,
+                new_balance,
+                env.ledger().sequence(),
+            ),
         );
     }
 
