@@ -492,10 +492,11 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
+| `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 
 ### `student_enrolled` is the single enrollment event
 
-`enroll` and `batch_enroll` emit exactly one event per paid
+`enroll`, `batch_enroll` and `re_enroll` emit exactly one payment event per paid
 enrollment. Topics: `("student_enrolled", course_id)`. Data:
 `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)`,
 where `payouts` is a `Vec<(Address, i128)>` of every instructor recipient

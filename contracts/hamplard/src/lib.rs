@@ -814,7 +814,8 @@ pub struct Enrollment {
     pub is_refunded: bool,
     /// Course version active at the time of enrollment
     pub course_version: u32,
-    /// Platform's share of `amount_paid`, as actually deducted at
+    /// Hash of the course content at the time of enrollment (#416)
+    pub content_hash: BytesN<32>,    /// Platform's share of `amount_paid`, as actually deducted at
     /// enroll()/re_enroll() time via `deduct_fee()`. Persisted so that a
     /// later refund splits funds in the same proportion that was actually
     /// collected, even if `FeeConfig(token)` or `course.platform_fee_percent`
@@ -843,7 +844,10 @@ pub struct Certificate {
     pub course_id: String,
     /// Short course title stored on-chain for easy verification
     pub course_title: String,
-    /// Reference back to the enrollment record (e.g. backend ID)
+    /// Course version the student completed (snapshot from the enrollment, #416)
+    pub course_version: u32,
+    /// Course content hash the student completed (snapshot from the enrollment, #416)
+    pub content_hash: BytesN<32>,    /// Reference back to the enrollment record (e.g. backend ID)
     pub enrollment_reference: String,
     /// Instructor's address (for attribution)
     pub instructor: Address,
@@ -1012,6 +1016,7 @@ pub enum DataKey {
     InstructorCourseList(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
+    MaxPendingCoursesPerInstructor,
     /// Minimum ledger sequences required between course registration and approval
     MinReviewDelay,
     /// Default minimum ledger sequences required between enroll() and
@@ -1686,7 +1691,7 @@ impl HamplardContract {
             DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
         let current_pending_count = Self::read_instructor_pending_course_count(&env, &instructor);
 
-        if current_pending_count >= max_courses {
+        if current_pending_count >= Self::effective_max_pending_courses(&env, max_courses) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
 
@@ -2176,7 +2181,7 @@ impl HamplardContract {
             let new_pending_key =
                 DataKey::InstructorPendingCourseCountPersistent(new_instructor.clone());
             let new_pending = Self::read_instructor_pending_course_count(&env, &new_instructor);
-            if new_pending >= max_courses {
+            if new_pending >= Self::effective_max_pending_courses(&env, max_courses) {
                 soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
             }
         }
@@ -3670,6 +3675,7 @@ impl HamplardContract {
             evidence_hash: None,
             is_refunded: false,
             course_version: course.version,
+            content_hash: course.content_hash.clone(),
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
@@ -3862,6 +3868,7 @@ impl HamplardContract {
             evidence_hash: None,
             is_refunded: false,
             course_version: course.version,
+            content_hash: course.content_hash.clone(),
             platform_amount,
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
@@ -4160,6 +4167,7 @@ impl HamplardContract {
             evidence_hash: None,
             is_refunded: false,
             course_version: course.version,
+            content_hash: course.content_hash.clone(),
             platform_amount,
             instructor_amount,
             enrollment_ref: new_enrollment_ref,
@@ -4245,6 +4253,22 @@ impl HamplardContract {
         }
 
         Self::increment_student_enrollment_count(&env, &student);
+
+        // #358 - re-enrollment moves the same funds as enroll(), so it emits
+        // the same single canonical payment event (see #366).
+        env.events().publish(
+            (Symbol::new(&env, "student_enrolled"), course_id.clone()),
+            (
+                student.clone(),
+                course_id.clone(),
+                course.price,
+                platform_amount,
+                instructor_amount,
+                env.ledger().sequence(),
+                treasury.clone(),
+                Self::payout_breakdown(&env, &course, instructor_amount),
+            ),
+        );
 
         env.events().publish(
             (Symbol::new(&env, "student_re_enrolled"), course_id.clone()),
@@ -4790,6 +4814,8 @@ impl HamplardContract {
             student: enrollment.student.clone(),
             course_id: course_id.clone(),
             course_title,
+            course_version: enrollment.course_version,
+            content_hash: enrollment.content_hash.clone(),
             enrollment_reference: enrollment_reference.clone(),
             instructor: course.instructor.clone(),
             issued_by: env.current_contract_address(),
@@ -5769,6 +5795,46 @@ impl HamplardContract {
         );
     }
 
+    /// Admin sets the per-instructor cap on courses awaiting approval (#377).
+    /// Independent of `MaxCoursesPerInstructor`; when never set, the pending
+    /// cap falls back to the total cap (the previous behaviour).
+    pub fn update_max_pending_limit(env: Env, admin: Address, new_max: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "update_max_pending_limit");
+        if new_max == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidMaxCoursesLimit);
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let old_max: u32 = Self::get_max_pending_limit(env.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxPendingCoursesPerInstructor, &new_max);
+
+        env.events().publish(
+            (Symbol::new(&env, "max_pending_limit_updated"), admin.clone()),
+            (admin, old_max, new_max, env.ledger().sequence()),
+        );
+    }
+
+    /// Current per-instructor cap on courses awaiting approval (#377).
+    pub fn get_max_pending_limit(env: Env) -> u32 {
+        let max_courses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxCoursesPerInstructor)
+            .unwrap_or(50);
+        Self::effective_max_pending_courses(&env, max_courses)
+    }
+
+    fn effective_max_pending_courses(env: &Env, max_courses: u32) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxPendingCoursesPerInstructor)
+            .unwrap_or(max_courses)
+    }
     /// Admin freezes/blocks a specific instructor address.
     /// Automatically pauses all of the instructor's currently Active courses
     /// to prevent students from enrolling in or paying for frozen instructor courses.
@@ -7181,6 +7247,44 @@ impl HamplardContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Paginated view of the certificate IDs issued for a course (#415).
+    /// `limit` is clamped to 50 per page; an out-of-range `offset` returns an
+    /// empty page. Pages follow issuance order.
+    pub fn get_course_certificates_page(
+        env: Env,
+        course_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<String> {
+        const MAX_PAGE: u32 = 50;
+        let all: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = all.len();
+        let mut page: Vec<String> = Vec::new(&env);
+        if limit == 0 || offset >= total {
+            return page;
+        }
+        let end = total.min(offset.saturating_add(limit.min(MAX_PAGE)));
+        let mut i = offset;
+        while i < end {
+            page.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        page
+    }
+
+    /// Number of certificates ever issued (indexed) for a course (#415).
+    pub fn get_course_certificate_count(env: Env, course_id: String) -> u32 {
+        let all: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseCertificates(course_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        all.len()
+    }
     /// Check whether a student has an active enrollment record for a course.
     ///
     /// This is a storage-presence check: it returns `true` for completed and
