@@ -875,6 +875,12 @@ pub struct Certificate {
     /// `Some(seq)` means revocation is pending and challengeable until
     /// the current ledger reaches `seq`. `None` means no pending revocation.
     pub revocation_deadline: Option<u32>,
+    /// ID of the replacement certificate issued after this one was revoked
+    /// for `ISSUED_IN_ERROR`.  Set by `issue_certificate` when it creates a
+    /// corrected certificate against the same enrollment.  The old revoked
+    /// certificate remains on-chain; this field lets verifiers find the
+    /// replacement without an off-chain index.
+    pub superseded_by: Option<String>,
 }
 
 /// Verification status of an on-chain certificate returned by `get_certificate_status`.
@@ -4793,9 +4799,27 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
         }
 
-        if enrollment.certificate_issued {
-            soroban_sdk::panic_with_error!(&env, Error::CertificateAlreadyIssued);
-        }
+        // Track the previous certificate ID when replacing a revoked one, so we
+        // can set `superseded_by` on the old cert after the new one is stored.
+        let superseded_cert_id: Option<String> = if enrollment.certificate_issued {
+            // Allow reissue only when the existing certificate is revoked.
+            // Any other state means a valid certificate already exists.
+            let prev_cert_id = enrollment
+                .certificate_id
+                .clone()
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError));
+            let prev_cert: Certificate = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Certificate(prev_cert_id.clone()))
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError));
+            if !prev_cert.revoked {
+                soroban_sdk::panic_with_error!(&env, Error::CertificateAlreadyIssued);
+            }
+            Some(prev_cert_id)
+        } else {
+            None
+        };
 
         // Certificate ID must be unique
         if env
@@ -4842,6 +4866,7 @@ impl HamplardContract {
             expires_at_ledger,
             instructor_signature,
             revocation_deadline: None,
+            superseded_by: None,
         };
 
         Self::persist(
@@ -4849,6 +4874,20 @@ impl HamplardContract {
             &DataKey::Certificate(certificate_id.clone()),
             &certificate,
         );
+
+        // If this is a corrected reissue, back-link the old revoked certificate
+        // to the new one so verifiers can follow the chain.
+        if let Some(ref prev_id) = superseded_cert_id {
+            let prev_key = DataKey::Certificate(prev_id.clone());
+            if let Some(mut prev_cert) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Certificate>(&prev_key)
+            {
+                prev_cert.superseded_by = Some(certificate_id.clone());
+                Self::persist(&env, &prev_key, &prev_cert);
+            }
+        }
 
         // Mark enrollment as certificate issued
         enrollment.certificate_issued = true;
@@ -4911,12 +4950,15 @@ impl HamplardContract {
     ///
     /// Revocation does **not** clear `Enrollment.certificate_issued` or
     /// `Enrollment.certificate_id` — that enrollment record permanently
-    /// carries the fact that a certificate was issued for it. Because
-    /// `issue_certificate` panics whenever `certificate_issued` is already
-    /// `true`, a revoked certificate can never be replaced by re-issuing a
-    /// fresh certificate against the same enrollment. Certifying the student
-    /// again requires a new enrollment (see `re_enroll`), which starts from
-    /// a clean `Enrollment` record.
+    /// carries the fact that a certificate was issued for it.
+    ///
+    /// When the reason is `ISSUED_IN_ERROR` (e.g. wrong title, wrong expiry),
+    /// the admin may call `issue_certificate` again for the same enrollment to
+    /// issue a corrected replacement.  The replacement is a brand-new
+    /// certificate with its own ID; the old revoked certificate remains
+    /// on-chain and gains a `superseded_by` link to the new one.  Revocations
+    /// made for any other reason (e.g. `ACADEMIC_DISHONESTY`) are final and
+    /// block reissuance against the same enrollment.
     ///
     /// # Arguments
     /// - `admin`          — must match stored admin

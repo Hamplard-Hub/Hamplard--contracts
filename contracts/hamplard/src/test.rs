@@ -1466,6 +1466,142 @@ fn test_revoke_certificate_metadata_persisted() {
     );
 }
 
+// #405 — admin can issue a replacement after revoking for ISSUED_IN_ERROR
+#[test]
+fn test_reissue_certificate_after_issued_in_error_revocation() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REISSUE-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-REISSUE-001");
+    let orig_cert_id = String::from_str(&env, "CERT-ORIG-001");
+    let new_cert_id = String::from_str(&env, "CERT-NEW-001");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence_hash")),
+    );
+
+    // Issue the original (incorrect) certificate
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &orig_cert_id,
+        &String::from_str(&env, "Wrong Title"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-REISSUE-001"),
+        &None,
+        &None,
+    );
+
+    // Revoke it for ISSUED_IN_ERROR
+    client.revoke_certificate(
+        &admin,
+        &orig_cert_id,
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    // Admin can now issue the corrected certificate against the same enrollment
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &new_cert_id,
+        &String::from_str(&env, "Correct Title"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-REISSUE-001"),
+        &None,
+        &None,
+    );
+
+    // The new certificate is valid
+    let new_cert = client.get_certificate(&admin, &new_cert_id);
+    assert!(!new_cert.revoked);
+    assert_eq!(new_cert.course_id, course_id);
+
+    // The old revoked certificate stays on-chain and points to the replacement
+    let old_cert = client.get_certificate(&admin, &orig_cert_id);
+    assert!(old_cert.revoked);
+    assert_eq!(old_cert.superseded_by, Some(new_cert_id.clone()));
+}
+
+// #405 — reissue is NOT allowed when the revocation reason is not ISSUED_IN_ERROR
+#[test]
+#[should_panic(expected = "Error(Contract, #42)")]
+fn test_reissue_blocked_after_non_error_revocation() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-DISHONESTY-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-DISHONESTY-001");
+    let cert_id = String::from_str(&env, "CERT-DISHONESTY-001");
+    let replacement_id = String::from_str(&env, "CERT-DISHONESTY-002");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence_hash")),
+    );
+
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Some Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-DISHONESTY-001"),
+        &None,
+        &None,
+    );
+
+    // Revoke for a non-corrective reason
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ACADEMIC_DISHONESTY"),
+    );
+
+    // Reissue must be blocked — panics with CertificateAlreadyIssued (#42)
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &replacement_id,
+        &String::from_str(&env, "Some Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-DISHONESTY-001"),
+        &None,
+        &None,
+    );
+}
+
 #[test]
 fn test_issue_certificate_with_instructor_signature() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
