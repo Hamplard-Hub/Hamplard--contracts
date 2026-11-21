@@ -6,6 +6,9 @@ use crate::{HamplardContract, HamplardContractClient};
 /// Default token amount minted to each test account.
 pub const DEFAULT_BALANCE: i128 = 1_000_000;
 
+/// Maximum number of pending course registrations per instructor (used by regression tests).
+pub const PENDING_LIMIT_PROBE: u32 = 3;
+
 /// Default course price.
 pub const DEFAULT_PRICE: i128 = 100;
 
