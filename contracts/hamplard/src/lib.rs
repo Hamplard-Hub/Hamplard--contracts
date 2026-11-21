@@ -830,6 +830,22 @@ pub struct Enrollment {
     pub completed_at_ledger: Option<u32>,
 }
 
+/// Compact snapshot of a course's terms at a specific version (#371).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CourseTerms {
+    /// Course price at this version (in stroops)
+    pub price: i128,
+    /// Platform fee percentage at this version (0-100)
+    pub platform_fee_percent: u32,
+    /// Content commitment hash active at this version
+    pub content_hash: BytesN<32>,
+    /// Optional maximum capacity at this version
+    pub max_capacity: Option<u32>,
+    /// Capacity enforcement mode at this version
+    pub capacity_mode: CapacityMode,
+}
+
 /// An on-chain certificate of completion
 /// Acts as a lightweight NFT — a verifiable proof of skill attainment.
 #[contracttype]
@@ -1137,6 +1153,8 @@ pub enum DataKey2 {
     /// Contract-held reserve, per token, that funds the platform-fee share of
     /// refunds so they never need a signature from the treasury account
     RefundReserve(Address),
+    /// Snapshot of course terms keyed by `(course_id, version)` (#371).
+    CourseTerms(String, u32),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1755,6 +1773,7 @@ impl HamplardContract {
         };
 
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::save_course_terms(&env, &course);
 
         Self::persist(
             &env,
@@ -2603,6 +2622,7 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
 
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::save_course_terms(&env, &course);
 
         env.events().publish(
             (Symbol::new(&env, "course_updated"), course_id.clone()),
@@ -2649,6 +2669,7 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
 
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::save_course_terms(&env, &course);
 
         env.events().publish(
             (Symbol::new(&env, "course_updated"), course_id.clone()),
@@ -7120,6 +7141,19 @@ impl HamplardContract {
         Self::get_course_internal(&env, &course_id)
     }
 
+    /// Get the `CourseTerms` snapshot for a specific `(course_id, version)` (#371).
+    pub fn get_course_terms(env: Env, course_id: String, version: u32) -> Option<CourseTerms> {
+        let key = DataKey2::CourseTerms(course_id, version);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+        env.storage().persistent().get(&key)
+    }
+
     /// Get an enrollment record for a student + course pair
     ///
     /// Returns `Some(Enrollment)` if the record exists and has not expired.
@@ -7566,6 +7600,22 @@ impl HamplardContract {
             key,
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    /// Persist a `CourseTerms` snapshot for `course.version` (#371).
+    fn save_course_terms(env: &Env, course: &Course) {
+        let terms = CourseTerms {
+            price: course.price,
+            platform_fee_percent: course.platform_fee_percent,
+            content_hash: course.content_hash.clone(),
+            max_capacity: course.max_capacity,
+            capacity_mode: course.capacity_mode.clone(),
+        };
+        Self::persist(
+            env,
+            &DataKey2::CourseTerms(course.id.clone(), course.version),
+            &terms,
         );
     }
 
