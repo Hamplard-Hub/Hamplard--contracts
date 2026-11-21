@@ -20080,3 +20080,56 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_get_course_terms_preserves_version_snapshots() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-TERMS-V");
+    let v1_price = 100_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TERMS-V",
+        v1_price,
+    );
+    let initial_course = client.get_course(&course_id).unwrap();
+
+    let student1 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student1, &v1_price);
+    client.enroll(&student1, &course_id, &v1_price);
+    let e1 = client.get_enrollment(&student1, &student1, &course_id).unwrap();
+    assert_eq!(e1.course_version, 1);
+
+    let v2_price = 200_000_000i128;
+    let new_ver = client.update_course(
+        &instructor,
+        &course_id,
+        &Some(v2_price),
+        &Some(Some(25u32)),
+        &None,
+    );
+    assert_eq!(new_ver, 2);
+
+    let student2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student2, &v2_price);
+    client.enroll(&student2, &course_id, &v2_price);
+    let e2 = client.get_enrollment(&student2, &student2, &course_id).unwrap();
+    assert_eq!(e2.course_version, 2);
+
+    let terms_v1 = client.get_course_terms(&course_id, &e1.course_version).unwrap();
+    assert_eq!(terms_v1.price, v1_price);
+    assert_eq!(terms_v1.platform_fee_percent, initial_course.platform_fee_percent);
+    assert_eq!(terms_v1.content_hash, initial_course.content_hash);
+    assert_eq!(terms_v1.max_capacity, initial_course.max_capacity);
+
+    let terms_v2 = client.get_course_terms(&course_id, &e2.course_version).unwrap();
+    assert_eq!(terms_v2.price, v2_price);
+    assert_eq!(terms_v2.max_capacity, Some(25u32));
+
+    assert!(client.get_course_terms(&course_id, &3u32).is_none());
+}
