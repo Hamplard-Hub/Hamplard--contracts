@@ -6407,18 +6407,27 @@ fn test_events_emitted_for_admin_operations() {
         l.sequence_number += 1;
     });
     client.enroll(&student, &course_id, &i128::MAX);
+    let expected_evidence = Some(evidence_hash(&env, "evidence"));
     client.mark_completed(
         &admin,
         &student,
         &course_id,
-        &Some(evidence_hash(&env, "evidence")),
+        &expected_evidence,
     );
-    let (event_student, event_admin, _event_ledger): (Address, Address, u32) =
-        last_event_val(&env, &contract_id, "course_completed")
-            .try_into_val(&env)
-            .unwrap();
+    let (event_course_id, event_student, event_admin, event_evidence, event_ledger): (
+        String,
+        Address,
+        Address,
+        Option<BytesN<32>>,
+        u32,
+    ) = last_event_val(&env, &contract_id, "course_completed")
+        .try_into_val(&env)
+        .unwrap();
+    assert_eq!(event_course_id, course_id);
     assert_eq!(event_student, student);
     assert_eq!(event_admin, admin);
+    assert_eq!(event_evidence, expected_evidence);
+    assert_eq!(event_ledger, env.ledger().sequence());
 
     // issue_certificate
     let cert_id = String::from_str(&env, "CERT-ATTR-001");
