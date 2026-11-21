@@ -3629,7 +3629,7 @@ impl HamplardContract {
                 if lead_amount > 0 {
                     env.events().publish(
                         (
-                            Symbol::new(&env, "instructor_payment_transferred"),
+                            Symbol::new(&env, "instructor_earnings_credited"),
                             course_id.clone(),
                         ),
                         (
@@ -3876,7 +3876,7 @@ impl HamplardContract {
                 if lead_amount > 0 {
                     env.events().publish(
                         (
-                            Symbol::new(env, "instructor_payment_transferred"),
+                            Symbol::new(env, "instructor_earnings_credited"),
                             course_id.clone(),
                         ),
                         (
