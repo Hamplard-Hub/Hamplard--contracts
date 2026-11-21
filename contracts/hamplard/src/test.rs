@@ -6841,18 +6841,29 @@ fn test_process_refund_event_includes_admin() {
     env.mock_all_auths_allowing_non_root_auth();
     client.process_refund(&admin, &student, &course_id, &true, &None);
 
-    let (event_student, event_course_id, event_approved, event_admin): (
-        Address,
-        String,
-        bool,
-        Address,
-    ) = last_event_val(&env, &contract_id, "refund_processed")
-        .try_into_val(&env)
-        .unwrap();
+    let (
+        event_student,
+        event_course_id,
+        event_approved,
+        event_admin,
+        event_refund_amount,
+        event_platform_amount,
+        event_instructor_amount,
+        event_ledger,
+    ): (Address, String, bool, Address, i128, i128, i128, u32) =
+        last_event_val(&env, &contract_id, "refund_processed")
+            .try_into_val(&env)
+            .unwrap();
     assert_eq!(event_student, student);
     assert_eq!(event_course_id, course_id);
     assert!(event_approved);
     assert_eq!(event_admin, admin);
+    assert_eq!(event_refund_amount, 500_000_000);
+    assert_eq!(
+        event_platform_amount + event_instructor_amount,
+        event_refund_amount
+    );
+    assert_eq!(event_ledger, env.ledger().sequence());
 }
 #[test]
 fn test_process_refund_emits_refund_issued_with_split() {
