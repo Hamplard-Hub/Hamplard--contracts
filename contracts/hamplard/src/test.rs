@@ -18815,6 +18815,33 @@ fn test_archive_course_refund_reverses_exact_split_with_fee_config_and_risk() {
 }
 
 #[test]
+fn test_archive_course_refund_resolves_pending_refund_request() {
+    let price: i128 = 1_000_000_000;
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) =
+        setup_custom_fee_split(price);
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-SPLIT");
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    let pending_req = client.get_refund_request(&student, &course_id).unwrap();
+    assert_eq!(pending_req.status, RefundStatus::Pending);
+
+    client.pause_course(&admin, &course_id);
+    let mut students = soroban_sdk::Vec::new(&env);
+    students.push_back(student.clone());
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
+
+    let resolved_req = client.get_refund_request(&student, &course_id).unwrap();
+    assert_eq!(resolved_req.status, RefundStatus::Approved);
+    assert_eq!(resolved_req.refund_amount, Some(price));
+}
+
+#[test]
 fn test_re_enroll_then_refund_reverses_exact_split_with_fee_config_and_risk() {
     let price: i128 = 1_000_000_000;
     let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) =

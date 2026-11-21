@@ -2443,6 +2443,23 @@ impl HamplardContract {
                             instructor_amount,
                         );
 
+                        // Resolve any pending refund request so it cannot get stuck
+                        // in Pending after archive_course() refunds and removes the
+                        // enrollment. (#321)
+                        let refund_req_key =
+                            DataKey::RefundRequest(student.clone(), course_id.clone());
+                        if let Some(mut refund_req) = env
+                            .storage()
+                            .persistent()
+                            .get::<DataKey, RefundRequest>(&refund_req_key)
+                        {
+                            if refund_req.status == RefundStatus::Pending {
+                                refund_req.status = RefundStatus::Approved;
+                                refund_req.refund_amount = Some(platform_amount + instructor_amount);
+                                Self::persist(&env, &refund_req_key, &refund_req);
+                            }
+                        }
+
                         Self::promote_from_waitlist(&env, &course_id);
                     }
                 }
