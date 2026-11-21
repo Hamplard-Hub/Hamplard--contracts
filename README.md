@@ -487,6 +487,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_unpaused`             | `course_id`                                 | Course unpaused                           |
 | `course_archived`             | `course_id`                                 | Course archived                           |
 | `student_enrolled`            | `(course_id, student, amount_paid)`         | Student enrolls and pays                  |
+| `instructor_earnings_credited`| `(course_id)` / `(instructor, amount, ledger)` | Instructor share credited to pull balance |
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |

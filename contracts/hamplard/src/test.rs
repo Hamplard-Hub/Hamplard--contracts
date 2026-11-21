@@ -20080,3 +20080,43 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_enroll_emits_instructor_earnings_credited_event() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let share = enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARNINGS-EVENT",
+    );
+
+    let mut found_credited = false;
+    let mut found_old_transferred = false;
+    for (contract, topics, data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "instructor_earnings_credited") {
+            let topic_course: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            let (ev_instructor, ev_amount, _ledger): (Address, i128, u32) =
+                data.try_into_val(&env).unwrap();
+            assert_eq!(topic_course, String::from_str(&env, "COURSE-EARNINGS-EVENT"));
+            assert_eq!(ev_instructor, instructor);
+            assert_eq!(ev_amount, share);
+            found_credited = true;
+        } else if sym == Symbol::new(&env, "instructor_payment_transferred") {
+            found_old_transferred = true;
+        }
+    }
+
+    assert!(found_credited, "instructor_earnings_credited event not emitted");
+    assert!(
+        !found_old_transferred,
+        "deprecated instructor_payment_transferred event should not be emitted"
+    );
+}
