@@ -867,10 +867,26 @@ pub struct Certificate {
     pub revocation_reason: Option<String>,
     /// Optional ledger sequence when the certificate expires
     pub expires_at_ledger: Option<u32>,
-    /// Optional Ed25519 signature from the instructor over the certificate
-    /// data, allowing external verifiers to cryptographically confirm the
-    /// instructor endorsed this certificate without off-chain evidence.
-    pub instructor_signature: Option<BytesN<64>>,
+    /// Optional bytes supplied by the caller at issuance, intended to carry
+    /// an instructor-produced Ed25519 signature over the certificate data.
+    ///
+    /// **This field is NOT verified on-chain.** The contract stores whatever
+    /// 64 bytes the admin supplies without checking them against the
+    /// instructor's key.  On-chain verification is not possible because
+    /// `Course.instructor` is a Soroban `Address`, not a raw 32-byte Ed25519
+    /// public key; there is no protocol primitive to extract a raw key from
+    /// an arbitrary Soroban address.
+    ///
+    /// External verifiers MUST validate this signature themselves using the
+    /// instructor's known public key and the canonical signed payload
+    /// (SHA-256 of `certificate_id || student || course_id || issued_at_ledger`).
+    /// Treat the field as unverified attestation data, not a proof of
+    /// endorsement.
+    ///
+    /// **Limitation:** only Ed25519 Stellar accounts are supported as signers;
+    /// multisig and contract-based accounts cannot produce a usable signature
+    /// for this field.
+    pub instructor_attestation: Option<BytesN<64>>,
     /// Ledger sequence after which a pending revocation becomes permanent.
     /// `Some(seq)` means revocation is pending and challengeable until
     /// the current ledger reaches `seq`. `None` means no pending revocation.
@@ -4732,8 +4748,10 @@ impl HamplardContract {
     /// - `certificate_id`       — unique certificate identifier
     /// - `course_title`         — short title stored on-chain for verifiability
     /// - `enrollment_reference` — free-form backend enrollment ID (e.g. UUID)
-    /// - `expires_at_ledger`    — optional expiry ledger
-    /// - `instructor_signature` — optional Ed25519 signature
+    /// - `expires_at_ledger`       — optional expiry ledger
+    /// - `instructor_attestation`  — optional 64-byte blob supplied by the
+    ///   instructor as an off-chain attestation.  **Not verified on-chain**;
+    ///   see `Certificate.instructor_attestation` for the full limitation note.
     pub fn issue_certificate(
         env: Env,
         admin: Address,
@@ -4743,7 +4761,7 @@ impl HamplardContract {
         course_title: String,
         enrollment_reference: String,
         expires_at_ledger: Option<u32>,
-        instructor_signature: Option<BytesN<64>>,
+        instructor_attestation: Option<BytesN<64>>,
     ) -> String {
         admin.require_auth();
         Self::require_admin(&env, &admin, "issue_certificate");
@@ -4840,7 +4858,7 @@ impl HamplardContract {
             revocation_ledger: None,
             revocation_reason: None,
             expires_at_ledger,
-            instructor_signature,
+            instructor_attestation,
             revocation_deadline: None,
         };
 
