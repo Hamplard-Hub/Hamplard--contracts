@@ -4187,11 +4187,57 @@ fn test_withdraw_earnings_event_includes_destination() {
         let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "earnings_withdrawn") {
             let topic_instructor: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
-            let (tok, amt, dest): (Address, i128, Address) = data.try_into_val(&env).unwrap();
+            let topic_token: Address = topics.get(2).unwrap().try_into_val(&env).unwrap();
+            let (tok, amt, dest, new_bal, ledger_seq): (Address, i128, Address, i128, u32) =
+                data.try_into_val(&env).unwrap();
             assert_eq!(topic_instructor, instructor);
+            assert_eq!(topic_token, token_id);
             assert_eq!(tok, token_id);
             assert_eq!(amt, share);
             assert_eq!(dest, cold);
+            assert_eq!(new_bal, 0);
+            assert_eq!(ledger_seq, env.ledger().sequence());
+            found = true;
+        }
+    }
+    assert!(found, "earnings_withdrawn event not emitted");
+}
+
+#[test]
+fn test_withdraw_earnings_event_partial_includes_remaining_balance() {
+    let (env, contract_id, token_id, admin, _s, _t, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let share = enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EVT-PARTIAL",
+    );
+    let partial = share / 3;
+    let expected_remaining = share - partial;
+
+    client.withdraw_earnings(&instructor, &token_id, &partial, &None);
+
+    let mut found = false;
+    for (contract, topics, data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "earnings_withdrawn") {
+            let topic_instructor: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            let topic_token: Address = topics.get(2).unwrap().try_into_val(&env).unwrap();
+            let (tok, amt, dest, new_bal, ledger_seq): (Address, i128, Address, i128, u32) =
+                data.try_into_val(&env).unwrap();
+            assert_eq!(topic_instructor, instructor);
+            assert_eq!(topic_token, token_id);
+            assert_eq!(tok, token_id);
+            assert_eq!(amt, partial);
+            assert_eq!(dest, instructor);
+            assert_eq!(new_bal, expected_remaining);
+            assert_eq!(ledger_seq, env.ledger().sequence());
             found = true;
         }
     }
