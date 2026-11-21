@@ -486,13 +486,28 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_paused`               | `course_id`                                 | Course paused                             |
 | `course_unpaused`             | `course_id`                                 | Course unpaused                           |
 | `course_archived`             | `course_id`                                 | Course archived                           |
-| `student_enrolled`            | `(course_id, student, amount_paid)`         | Student enrolls and pays                  |
+| `student_enrolled` | `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)` | Student enrolls and pays (single canonical enrollment event) |
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
+| `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 
+### `student_enrolled` is the single enrollment event
+
+`enroll`, `batch_enroll` and `re_enroll` emit exactly one payment event per paid
+enrollment. Topics: `("student_enrolled", course_id)`. Data:
+`(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)`,
+where `payouts` is a `Vec<(Address, i128)>` of every instructor recipient
+(lead instructor first, then co-instructors) and sums to `instructor_amount`.
+
+**Indexer migration (breaking):** the first six data fields are unchanged and
+two fields were appended. `platform_fee_transferred`,
+`instructor_payment_transferred` and `co_instructor_paid` are no longer
+emitted during enrollment. Read the platform fee and `treasury` from
+`student_enrolled`, and per-recipient amounts from `payouts`. Decoders that
+expect a 6-field tuple must be updated to 8 fields.
 See `contracts/hamplard/src/lib.rs` for the complete event list, including waitlist, freeze, blocklist, approver, and configuration events.
 
 ---
