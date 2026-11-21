@@ -900,6 +900,11 @@ fn test_enrollment_receipt_event_emitted_with_payment_breakdown() {
         let topic0 = topics.get(0).unwrap();
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
 
+        // #366 - the per-recipient events are no longer emitted on enroll.
+        for legacy in ["platform_fee_transferred", "instructor_payment_transferred", "co_instructor_paid"] {
+            assert_ne!(sym, Symbol::new(&env, legacy));
+        }
+
         if sym == Symbol::new(&env, "student_enrolled") {
             enrollment_events += 1;
 
@@ -911,10 +916,18 @@ fn test_enrollment_receipt_event_emitted_with_payment_breakdown() {
                 event_platform_fee,
                 event_instructor_fee,
                 event_ledger,
-            ): (Address, String, i128, i128, i128, u32) = data.try_into_val(&env).unwrap();
+                _event_treasury,
+                _event_payouts,
+            ): (Address, String, i128, i128, i128, u32, Address, soroban_sdk::Vec<(Address, i128)>) = data.try_into_val(&env).unwrap();
 
             // Verify student address
             assert_eq!(event_student, student);
+            // #366 - payouts in the single event add up to the instructor amount.
+            let mut payouts_total: i128 = 0;
+            for (_, payout) in _event_payouts.iter() {
+                payouts_total += payout;
+            }
+            assert_eq!(payouts_total, event_instructor_fee);
 
             // Verify course ID
             assert_eq!(event_course_id, course_id);
@@ -1736,6 +1749,18 @@ fn test_instructor_stats_aggregate_across_courses() {
     assert_eq!(stats.total_students, 3);
     assert_eq!(stats.total_completions, 2);
     assert_eq!(stats.total_certificates, 2);
+
+    // #407 - revocation removes the certificate from the instructor's count,
+    // and a successful challenge restores it.
+    client.revoke_certificate(
+        &admin,
+        &String::from_str(&env, "CERT-STATS-A"),
+        &String::from_str(&env, "cheating"),
+    );
+    assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 1);
+
+    client.challenge_revocation(&alice, &String::from_str(&env, "CERT-STATS-A"));
+    assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 2);
 }
 
 /// Stats are keyed per instructor: one instructor's activity must never leak
@@ -3700,7 +3725,9 @@ fn test_batch_enroll_emits_event_for_each_enrollment() {
                 _platform_fee,
                 _instructor_fee,
                 _ledger,
-            ): (Address, String, i128, i128, i128, u32) = data.try_into_val(&env).unwrap();
+                _event_treasury,
+                _event_payouts,
+            ): (Address, String, i128, i128, i128, u32, Address, soroban_sdk::Vec<(Address, i128)>) = data.try_into_val(&env).unwrap();
 
             assert_eq!(event_student, student);
 
