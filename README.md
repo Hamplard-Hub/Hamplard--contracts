@@ -306,7 +306,8 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `enroll(student, course_id)` | Student | Pay course price; platform fee is forwarded and instructor earnings are credited |
 | `batch_enroll(student, course_ids)` | Student | Enroll in up to 50 courses in one transaction |
 | `re_enroll(student, course_id)` | Student | Re-enroll after a completed course, archiving the previous enrollment |
-| `withdraw_earnings(instructor, token, amount, destination)` | Instructor | Withdraw accumulated earnings (`amount = 0` withdraws the full balance) |
+| `withdraw_earnings(instructor, token, amount, destination)` | Instructor | Withdraw a positive `amount` of accumulated earnings (`amount <= 0` panics) |
+| `withdraw_all_earnings(instructor, token, destination)` | Instructor | Withdraw the full accumulated earnings balance |
 | `request_refund(student, course_id)` | Student | Open a refund request within the configured window |
 | `process_refund(admin, student, course_id, approved, refund_amount)` | Admin | Approve or reject a refund and debit each revenue recipient proportionally |
 
