@@ -3607,33 +3607,13 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
-                env.events().publish(
-                    (
-                        Symbol::new(&env, "platform_fee_transferred"),
-                        course_id.clone(),
-                    ),
-                    (treasury.clone(), platform_amount, env.ledger().sequence()),
-                );
             }
 
             // Credit instructor earnings — pull-based withdrawal model.
             // Co-instructors receive their configured share first; the lead
             // instructor receives the remainder.
             if instructor_amount > 0 {
-                let lead_amount = Self::credit_instructor_shares(env, &course, instructor_amount);
-                if lead_amount > 0 {
-                    env.events().publish(
-                        (
-                            Symbol::new(&env, "instructor_payment_transferred"),
-                            course_id.clone(),
-                        ),
-                        (
-                            course.instructor.clone(),
-                            lead_amount,
-                            env.ledger().sequence(),
-                        ),
-                    );
-                }
+                Self::credit_instructor_shares(env, &course, instructor_amount);
             }
 
             actual_received
@@ -3768,6 +3748,8 @@ impl HamplardContract {
                 platform_amount,
                 instructor_amount,
                 env.ledger().sequence(),
+                treasury.clone(),
+                Self::payout_breakdown(env, &course, instructor_amount),
             ),
         );
     }
@@ -3857,30 +3839,10 @@ impl HamplardContract {
 
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
-                env.events().publish(
-                    (
-                        Symbol::new(env, "platform_fee_transferred"),
-                        course_id.clone(),
-                    ),
-                    (treasury.clone(), platform_amount, env.ledger().sequence()),
-                );
             }
 
             if instructor_amount > 0 {
-                let lead_amount = Self::credit_instructor_shares(env, &course, instructor_amount);
-                if lead_amount > 0 {
-                    env.events().publish(
-                        (
-                            Symbol::new(env, "instructor_payment_transferred"),
-                            course_id.clone(),
-                        ),
-                        (
-                            course.instructor.clone(),
-                            lead_amount,
-                            env.ledger().sequence(),
-                        ),
-                    );
-                }
+                Self::credit_instructor_shares(env, &course, instructor_amount);
             }
 
             actual_received
@@ -3973,6 +3935,8 @@ impl HamplardContract {
                 platform_amount,
                 instructor_amount,
                 env.ledger().sequence(),
+                treasury.clone(),
+                Self::payout_breakdown(env, &course, instructor_amount),
             ),
         );
 
@@ -7964,14 +7928,6 @@ impl HamplardContract {
                     .checked_add(share_amount)
                     .unwrap_or_else(|| panic!("co-instructor share total overflow"));
 
-                env.events().publish(
-                    (Symbol::new(env, "co_instructor_paid"), course.id.clone()),
-                    (
-                        co_instructor.address.clone(),
-                        share_amount,
-                        env.ledger().sequence(),
-                    ),
-                );
             }
         }
 
@@ -7986,6 +7942,41 @@ impl HamplardContract {
         lead_share
     }
 
+    /// Read-only mirror of the split performed by `credit_instructor_shares`.
+    /// Returns every instructor payout for `total_amount` (lead instructor
+    /// first, then co-instructors) so `student_enrolled` can carry the full
+    /// breakdown as the single canonical enrollment event (#366).
+    fn payout_breakdown(env: &Env, course: &Course, total_amount: i128) -> Vec<(Address, i128)> {
+        let mut payouts: Vec<(Address, i128)> = Vec::new(env);
+        if total_amount <= 0 {
+            return payouts;
+        }
+
+        let mut distributed: i128 = 0;
+        for co_instructor in course.co_instructors.iter() {
+            if co_instructor.share_bps == 0 {
+                continue;
+            }
+            let share_amount = total_amount
+                .checked_mul(co_instructor.share_bps as i128)
+                .unwrap_or_else(|| panic!("overflow computing co-instructor share"))
+                / Self::MAX_SHARE_BPS as i128;
+            if share_amount > 0 {
+                payouts.push_back((co_instructor.address.clone(), share_amount));
+                distributed = distributed
+                    .checked_add(share_amount)
+                    .unwrap_or_else(|| panic!("co-instructor share total overflow"));
+            }
+        }
+
+        let lead_share = total_amount
+            .checked_sub(distributed)
+            .unwrap_or_else(|| panic!("co-instructor split underflow"));
+        if lead_share > 0 {
+            payouts.push_front((course.instructor.clone(), lead_share));
+        }
+        payouts
+    }
     /// Debit `total_amount` from the course's instructor split, taking each
     /// co-instructor's pro-rata share first and the remainder from the lead
     /// instructor. Used by refund paths so every recipient that was credited
