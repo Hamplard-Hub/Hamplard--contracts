@@ -2029,6 +2029,10 @@ impl HamplardContract {
         }
         Self::require_admin_or_instructor(&env, &caller, &course);
 
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
