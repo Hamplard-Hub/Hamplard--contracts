@@ -2005,6 +2005,92 @@ impl HamplardContract {
         );
     }
 
+    /// Instructor resubmits a Rejected course for review, moving it back to
+    /// Pending and resetting the governance review clock.
+    ///
+    /// This avoids burning the original course ID: the instructor keeps their
+    /// existing backend record and simply re-enters the approval queue.
+    ///
+    /// # Arguments
+    /// - `instructor` — must be the course owner and must sign
+    /// - `course_id`  — the previously-rejected course to resubmit
+    pub fn resubmit_course(env: Env, instructor: Address, course_id: String) {
+        instructor.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
+        }
+
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+
+        if course.instructor != instructor {
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if course.status != CourseStatus::Rejected {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
+        }
+
+        // Check the pending slot limit before re-entering the queue.
+        let max_courses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxCoursesPerInstructor)
+            .unwrap_or(50);
+        let current_pending =
+            Self::read_instructor_pending_course_count(&env, &instructor);
+        if current_pending >= max_courses {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
+        }
+
+        // Also reclaim the total-count slot (rejected courses don't consume a
+        // slot against MaxCoursesPerInstructor, so this re-registers the course
+        // in the live count).
+        let current_count = Self::read_instructor_course_count(&env, &instructor);
+        if current_count >= max_courses {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
+        }
+
+        // Reset the review clock so the MinReviewDelay governance window is
+        // measured from the resubmission, not the original registration.
+        course.status = CourseStatus::Pending;
+        course.created_at_ledger = env.ledger().sequence();
+        course.last_updated_ledger = env.ledger().sequence();
+        Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+
+        // Increment both the total and pending counters.
+        let count_key =
+            DataKey::InstructorCourseCountPersistent(instructor.clone());
+        env.storage()
+            .persistent()
+            .set(&count_key, &(current_count + 1));
+        env.storage().persistent().extend_ttl(
+            &count_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        let pending_key =
+            DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+        env.storage()
+            .persistent()
+            .set(&pending_key, &(current_pending + 1));
+        env.storage().persistent().extend_ttl(
+            &pending_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "course_resubmitted"), course_id.clone()),
+            (course_id, instructor, env.ledger().sequence()),
+        );
+    }
+
     /// Instructor or admin pauses a course.
     /// Existing enrollments are unaffected — students can still access content.
     /// New enrollments are blocked until the course is unpaused.
