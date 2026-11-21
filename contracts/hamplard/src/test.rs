@@ -14193,6 +14193,89 @@ fn setup_arbitration(
 
 /// The fee config reads as zero before an admin ever sets it, so callers can
 /// rely on `get_arbitration_fee_config()` without an unwrap.
+// ============================================================
+// #368 — PLATFORM FEE ACCUMULATION AND SWEEP
+// ============================================================
+
+/// Enrollment accumulates the platform fee in-contract instead of
+/// transferring it to the treasury immediately (one transfer, not two).
+#[test]
+fn test_enrollment_accumulates_platform_fee_instead_of_transferring() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-ACCUM-368",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-FEE-ACCUM-368");
+
+    let treasury_before = token::Client::new(&env, &token_id).balance(&treasury);
+
+    // Enroll: full price leaves student, platform fee stays in contract.
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    // Treasury must NOT have received anything yet.
+    let treasury_after = token::Client::new(&env, &token_id).balance(&treasury);
+    assert_eq!(treasury_after, treasury_before, "treasury should not receive fees until sweep");
+
+    // The accumulated fee must equal 20 % of the price (setup uses 20 % fee).
+    let expected_fee = price * 20 / 100;
+    assert_eq!(
+        client.get_platform_fees_accumulated(&token_id),
+        expected_fee,
+        "accumulated fee mismatch"
+    );
+}
+
+/// sweep_platform_fees sends exactly the accrued amount to the treasury.
+#[test]
+fn test_sweep_platform_fees_sends_accrued_amount_to_treasury() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    let price: i128 = 1_000_000_000;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &(price * 3));
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-SWEEP-368",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-FEE-SWEEP-368");
+
+    // Two enrollments accumulate fees.
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(&admin, &student, &course_id, &Some(evidence_hash(&env, "s368")));
+    client.re_enroll(&student, &course_id, &i128::MAX);
+
+    let expected_fee = price * 20 / 100 * 2; // two enrollments at 20 %
+    assert_eq!(client.get_platform_fees_accumulated(&token_id), expected_fee);
+
+    let treasury_before = token::Client::new(&env, &token_id).balance(&treasury);
+
+    // Any caller (here admin) can sweep.
+    client.sweep_platform_fees(&admin, &token_id);
+
+    let treasury_after = token::Client::new(&env, &token_id).balance(&treasury);
+    assert_eq!(treasury_after - treasury_before, expected_fee, "sweep amount mismatch");
+
+    // Accumulator resets to zero after sweep.
+    assert_eq!(client.get_platform_fees_accumulated(&token_id), 0);
+}
+
 #[test]
 fn test_arbitration_fee_config_defaults_to_zero() {
     let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
