@@ -7501,13 +7501,21 @@ impl HamplardContract {
     ) -> Option<Enrollment> {
         caller.require_auth();
         let is_admin = Self::is_admin(&env, &caller);
-        let course = Self::get_course_internal(&env, &course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-        let is_instructor = caller == course.instructor;
 
-        if caller != student && !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        // #374 — Only load the course when we can't already grant access.
+        // Students and admins are always authorised; the course entry is only
+        // needed to check whether the caller is the course instructor.
+        // If the course entry has been archived by TTL, students and admins
+        // can still read their enrollment; a third party gets Unauthorized
+        // rather than a misleading CourseNotFound.
+        if caller != student && !is_admin {
+            let course = Self::get_course_internal(&env, &course_id)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+            if caller != course.instructor {
+                soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+            }
         }
+
         env.storage()
             .persistent()
             .get(&DataKey::Enrollment(student, course_id))
@@ -7524,12 +7532,15 @@ impl HamplardContract {
     ) -> Vec<Enrollment> {
         caller.require_auth();
         let is_admin = Self::is_admin(&env, &caller);
-        let course = Self::get_course_internal(&env, &course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-        let is_instructor = caller == course.instructor;
 
-        if caller != student && !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        // #374 — Same lazy course-load logic as get_enrollment: students and
+        // admins are always authorised without needing the course entry.
+        if caller != student && !is_admin {
+            let course = Self::get_course_internal(&env, &course_id)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+            if caller != course.instructor {
+                soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+            }
         }
 
         env.storage()
