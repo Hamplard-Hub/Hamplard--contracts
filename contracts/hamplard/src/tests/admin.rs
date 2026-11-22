@@ -321,3 +321,31 @@ fn test_accept_admin_extends_instance_ttl() {
     let ttl = env.storage().instance().get_ttl();
     assert!(ttl >= crate::INSTANCE_TTL_THRESHOLD);
 }
+
+#[test]
+#[should_panic]
+fn test_set_enrollment_expiry_rejects_archived_course() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+
+    ctx.client.archive_course(&ctx.admin, &ctx.course_id);
+
+    // Must panic: archived courses cannot have their enrollment expiry changed.
+    ctx.client.set_enrollment_expiry(&ctx.admin, &ctx.course_id, &1_000_000);
+}
+
+#[test]
+#[should_panic]
+fn test_set_enrollment_expiry_rejects_rejected_course() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup_active_course(&env);
+
+    ctx.client.reject_course(&ctx.admin, &ctx.course_id);
+
+    // Must panic: rejected courses cannot have their enrollment expiry changed.
+    ctx.client.set_enrollment_expiry(&ctx.admin, &ctx.course_id, &1_000_000);
+}

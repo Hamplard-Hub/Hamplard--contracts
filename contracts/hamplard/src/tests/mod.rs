@@ -23,4 +23,5 @@ noindex {
     mod token;
     mod admin;
     mod pause;
+    mod rejection;
 }
