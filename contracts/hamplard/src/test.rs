@@ -1467,7 +1467,7 @@ fn test_revoke_certificate_metadata_persisted() {
 }
 
 #[test]
-fn test_issue_certificate_with_instructor_signature() {
+fn test_issue_certificate_with_instructor_attestation() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -1495,7 +1495,9 @@ fn test_issue_certificate_with_instructor_signature() {
         &Some(evidence_hash(&env, "evidence_hash")),
     );
 
-    let signature = BytesN::from_array(&env, &[7u8; 64]);
+    // The attestation blob is stored verbatim; on-chain verification is not
+    // performed (see Certificate.instructor_attestation for the limitation).
+    let attestation = BytesN::from_array(&env, &[7u8; 64]);
     client.issue_certificate(
         &admin,
         &student,
@@ -1504,15 +1506,15 @@ fn test_issue_certificate_with_instructor_signature() {
         &String::from_str(&env, "Signed Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-SIGNED-001"),
         &None,
-        &Some(signature.clone()),
+        &Some(attestation.clone()),
     );
 
     let cert = client.get_certificate(&admin, &cert_id);
-    assert_eq!(cert.instructor_signature, Some(signature));
+    assert_eq!(cert.instructor_attestation, Some(attestation));
 }
 
 #[test]
-fn test_issue_certificate_without_instructor_signature() {
+fn test_issue_certificate_without_instructor_attestation() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -1552,7 +1554,7 @@ fn test_issue_certificate_without_instructor_signature() {
     );
 
     let cert = client.get_certificate(&admin, &cert_id);
-    assert!(cert.instructor_signature.is_none());
+    assert!(cert.instructor_attestation.is_none());
 }
 
 // ============================================================
