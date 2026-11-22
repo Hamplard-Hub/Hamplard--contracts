@@ -900,6 +900,11 @@ fn test_enrollment_receipt_event_emitted_with_payment_breakdown() {
         let topic0 = topics.get(0).unwrap();
         let sym: Symbol = topic0.try_into_val(&env).unwrap();
 
+        // #366 - the per-recipient events are no longer emitted on enroll.
+        for legacy in ["platform_fee_transferred", "instructor_payment_transferred", "co_instructor_paid"] {
+            assert_ne!(sym, Symbol::new(&env, legacy));
+        }
+
         if sym == Symbol::new(&env, "student_enrolled") {
             enrollment_events += 1;
 
@@ -911,10 +916,18 @@ fn test_enrollment_receipt_event_emitted_with_payment_breakdown() {
                 event_platform_fee,
                 event_instructor_fee,
                 event_ledger,
-            ): (Address, String, i128, i128, i128, u32) = data.try_into_val(&env).unwrap();
+                _event_treasury,
+                _event_payouts,
+            ): (Address, String, i128, i128, i128, u32, Address, soroban_sdk::Vec<(Address, i128)>) = data.try_into_val(&env).unwrap();
 
             // Verify student address
             assert_eq!(event_student, student);
+            // #366 - payouts in the single event add up to the instructor amount.
+            let mut payouts_total: i128 = 0;
+            for (_, payout) in _event_payouts.iter() {
+                payouts_total += payout;
+            }
+            assert_eq!(payouts_total, event_instructor_fee);
 
             // Verify course ID
             assert_eq!(event_course_id, course_id);
@@ -1874,6 +1887,29 @@ fn test_instructor_stats_aggregate_across_courses() {
     assert_eq!(stats.total_students, 3);
     assert_eq!(stats.total_completions, 2);
     assert_eq!(stats.total_certificates, 2);
+
+    // #416 - the certificate records the course version and content hash.
+    let cert_a: Certificate = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Certificate(String::from_str(&env, "CERT-STATS-A")))
+            .unwrap()
+    });
+    let course_a_record = client.get_course(&course_a).unwrap();
+    assert_eq!(cert_a.course_version, course_a_record.version);
+    assert_eq!(cert_a.content_hash, course_a_record.content_hash);
+
+    // #407 - revocation removes the certificate from the instructor's count,
+    // and a successful challenge restores it.
+    client.revoke_certificate(
+        &admin,
+        &String::from_str(&env, "CERT-STATS-A"),
+        &String::from_str(&env, "cheating"),
+    );
+    assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 1);
+
+    client.challenge_revocation(&alice, &String::from_str(&env, "CERT-STATS-A"));
+    assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 2);
 }
 
 /// Stats are keyed per instructor: one instructor's activity must never leak
@@ -3013,6 +3049,29 @@ fn test_register_course_with_non_whitelisted_token_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #34)")]
+fn test_register_course_unapproved_token_makes_no_external_call() {
+    let (env, contract_id, _, _, _, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Not a contract at all. If register_course still called decimals() on it
+    // first, the host would fail with a different error than the whitelist
+    // rejection (#34), so this proves no external call happens.
+    let not_a_contract = Address::generate(&env);
+
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-NO-CALL"),
+        &500_000_000,
+        &not_a_contract,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+}
+
+#[test]
 fn test_register_course_succeeds_once_token_whitelisted() {
     let (env, contract_id, _, admin, _, _, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -3815,7 +3874,9 @@ fn test_batch_enroll_emits_event_for_each_enrollment() {
                 _platform_fee,
                 _instructor_fee,
                 _ledger,
-            ): (Address, String, i128, i128, i128, u32) = data.try_into_val(&env).unwrap();
+                _event_treasury,
+                _event_payouts,
+            ): (Address, String, i128, i128, i128, u32, Address, soroban_sdk::Vec<(Address, i128)>) = data.try_into_val(&env).unwrap();
 
             assert_eq!(event_student, student);
 
@@ -4621,6 +4682,62 @@ fn test_different_instructors_have_independent_limits() {
 
     assert_eq!(client.get_instructor_course_count(&instructor_a), 1u32);
     assert_eq!(client.get_instructor_course_count(&instructor_b), 1u32);
+}
+
+#[test]
+fn test_pending_course_limit_is_independent_of_total_limit() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.update_max_courses_limit(&admin, &10u32);
+    client.update_max_pending_limit(&admin, &1u32);
+    assert_eq!(client.get_max_pending_limit(), 1u32);
+
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PEND-1"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &hash,
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    // Second pending course exceeds the pending cap although the total cap is 10.
+    let second = client.try_register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PEND-2"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &hash,
+        &soroban_sdk::Vec::new(&env),
+    );
+    assert!(second.is_err());
+
+    // Raising only the pending cap lets the instructor register again.
+    client.update_max_pending_limit(&admin, &2u32);
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-PEND-2"),
+        &500_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &hash,
+        &soroban_sdk::Vec::new(&env),
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_update_max_pending_limit_rejects_zero() {
+    let (env, contract_id, _, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.update_max_pending_limit(&admin, &0u32);
 }
 
 #[test]
@@ -13755,6 +13872,14 @@ fn test_bulk_revoke_course_certificates_revokes_five_certificates() {
 
     // The whole cohort is still verifiable during the challenge period and
     // expires together once it passes.
+    // #415 - the paginated getter walks the same IDs in order.
+    let page1 = client.get_course_certificates_page(&course_id, &0u32, &2u32);
+    let page2 = client.get_course_certificates_page(&course_id, &2u32, &2u32);
+    let page3 = client.get_course_certificates_page(&course_id, &4u32, &2u32);
+    assert_eq!((page1.len(), page2.len(), page3.len()), (2, 2, 1));
+    assert_eq!(client.get_course_certificates_page(&course_id, &5u32, &2u32).len(), 0);
+    assert_eq!(client.get_course_certificate_count(&course_id), 5u32);
+
     let indexed = client.get_course_certificates(&course_id);
     for i in 0..indexed.len() {
         assert!(client.verify_certificate(&indexed.get(i).unwrap()));
@@ -16314,10 +16439,12 @@ fn test_set_co_instructors_and_credit_split_on_enroll() {
         ],
     );
 
+    // Co-instructors must accept before they appear in the live list.
+    client.accept_co_instructor(&co_instructor_a, &course_id);
+    client.accept_co_instructor(&co_instructor_b, &course_id);
+
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.co_instructors.len(), 2);
-    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 3_000);
-    assert_eq!(course.co_instructors.get(1).unwrap().share_bps, 2_000);
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -16432,8 +16559,16 @@ fn test_admin_can_set_co_instructors() {
         &client,
         &admin,
         "COURSE-CO-ADMIN",
-        &[(co_instructor, 1_000)],
+        &[(co_instructor.clone(), 1_000)],
     );
+
+    // The live list is empty until the invited address accepts.
+    assert_eq!(
+        client.get_course(&course_id).unwrap().co_instructors.len(),
+        0
+    );
+
+    client.accept_co_instructor(&co_instructor, &course_id);
 
     assert_eq!(
         client.get_course(&course_id).unwrap().co_instructors.len(),
@@ -16713,6 +16848,99 @@ fn test_set_co_instructors_rejects_treasury() {
     );
 }
 
+// #402 — co-instructor consent: a proposed address not yet active
+#[test]
+fn test_set_co_instructors_does_not_activate_without_acceptance() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-01",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-01");
+    let co_instructor = Address::generate(&env);
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-CONSENT-01",
+        &[(co_instructor.clone(), 2_000)],
+    );
+
+    // Without acceptance the live list must still be empty.
+    assert_eq!(
+        client.get_course(&course_id).unwrap().co_instructors.len(),
+        0
+    );
+}
+
+// #402 — co-instructor consent: accepting the invitation makes it active
+#[test]
+fn test_accept_co_instructor_activates_address() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-02",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-02");
+    let co_instructor = Address::generate(&env);
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-CONSENT-02",
+        &[(co_instructor.clone(), 2_000)],
+    );
+
+    client.accept_co_instructor(&co_instructor, &course_id);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.co_instructors.len(), 1);
+    assert_eq!(
+        course.co_instructors.get(0).unwrap().address,
+        co_instructor
+    );
+    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 2_000);
+}
+
+// #402 — co-instructor consent: accepting without an invitation panics
+#[test]
+#[should_panic(expected = "no pending co-instructor invitation")]
+fn test_accept_co_instructor_without_invitation_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-03",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-03");
+    let stranger = Address::generate(&env);
+
+    // Nobody invited `stranger` — must panic.
+    client.accept_co_instructor(&stranger, &course_id);
+}
+
 #[test]
 fn test_refund_debits_each_co_instructor_share() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
@@ -16741,6 +16969,10 @@ fn test_refund_debits_each_co_instructor_share() {
             (co_instructor_b.clone(), 2_000),
         ],
     );
+
+    // Both co-instructors must accept before they receive earnings.
+    client.accept_co_instructor(&co_instructor_a, &course_id);
+    client.accept_co_instructor(&co_instructor_b, &course_id);
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -17995,6 +18227,64 @@ fn test_expired_enrollment_does_not_release_capacity_slot() {
     assert_eq!(course.total_enrollments, 1);
     assert_eq!(course.active_enrollments, 1);
     assert!(!client.is_enrolled(&second_student, &course_id));
+}
+
+#[test]
+fn test_enrollment_writes_course_stats_without_rewriting_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-STATS-SEP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-STATS-SEP");
+
+    let initial_updated_ledger = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+            .unwrap()
+            .last_updated_ledger
+    });
+
+    // Advance ledger before enrolling so any Course rewrite would change last_updated_ledger.
+    env.ledger().with_mut(|l| l.sequence_number += 10);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000);
+    client.enroll(&student, &course_id);
+
+    // Static Course entry in storage was not rewritten during enrollment.
+    env.as_contract(&contract_id, || {
+        let raw_course = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+            .unwrap();
+        assert_eq!(raw_course.last_updated_ledger, initial_updated_ledger);
+        assert_eq!(raw_course.total_enrollments, 0);
+
+        let stats = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, CourseStats>(&DataKey2::CourseStats(course_id.clone()))
+            .unwrap();
+        assert_eq!(stats.total_enrollments, 1);
+        assert_eq!(stats.active_enrollments, 1);
+        assert_eq!(stats.total_earned, 100_000_000);
+    });
+
+    // get_course() still returns the merged view.
+    let merged = client.get_course(&course_id).unwrap();
+    assert_eq!(merged.total_enrollments, 1);
+    assert_eq!(merged.active_enrollments, 1);
+    assert_eq!(merged.total_earned, 100_000_000);
 }
 
 #[test]
