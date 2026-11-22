@@ -4309,8 +4309,10 @@ impl HamplardContract {
         );
     }
 
-    /// Instructor withdraws accumulated earnings for a given token.
-    /// Pass `amount = 0` to withdraw the full available balance.
+    /// Instructor withdraws a specific positive `amount` of accumulated earnings
+    /// for a given token. Panics with `Error::InvalidWithdrawal` when
+    /// `amount <= 0`. Use `withdraw_all_earnings()` to withdraw the full
+    /// available balance.
     ///
     /// `destination` is where the funds are sent. `None` sends them to
     /// `instructor` (previous behaviour). Only the instructor must sign;
@@ -4336,38 +4338,74 @@ impl HamplardContract {
             panic!("instructor is frozen");
         }
 
-        if amount < 0 {
+        if amount <= 0 {
             soroban_sdk::panic_with_error!(&env, Error::InvalidWithdrawal);
         }
 
-        let recipient = destination.unwrap_or_else(|| instructor.clone());
+        Self::withdraw_earnings_internal(&env, &instructor, &token, amount, destination);
+    }
 
-        if recipient == env.current_contract_address() {
-            soroban_sdk::panic_with_error!(&env, Error::InvalidWithdrawal);
+    /// Instructor withdraws all accumulated earnings for a given token.
+    ///
+    /// `destination` is where the funds are sent. `None` sends them to
+    /// `instructor`. Only the instructor must sign; the destination does not
+    /// need to authorize anything. (#346, #349)
+    ///
+    /// Frozen instructors cannot withdraw until an admin unfreezes them.
+    /// Returns without transferring when the available balance is zero.
+    /// Withdrawals reduce `get_instructor_earnings()` but do not change
+    /// `get_instructor_total_earnings()`.
+    pub fn withdraw_all_earnings(
+        env: Env,
+        instructor: Address,
+        token: Address,
+        destination: Option<Address>,
+    ) {
+        instructor.require_auth();
+
+        if Self::is_instructor_frozen_internal(&env, &instructor) {
+            panic!("instructor is frozen");
         }
 
         let earnings_key = DataKey::InstructorEarnings(instructor.clone(), token.clone());
         let balance: i128 = env.storage().persistent().get(&earnings_key).unwrap_or(0);
 
-        let withdraw_amount = if amount == 0 { balance } else { amount };
+        Self::withdraw_earnings_internal(&env, &instructor, &token, balance, destination);
+    }
+
+    fn withdraw_earnings_internal(
+        env: &Env,
+        instructor: &Address,
+        token: &Address,
+        withdraw_amount: i128,
+        destination: Option<Address>,
+    ) {
+        let recipient = destination.unwrap_or_else(|| instructor.clone());
+
+        if recipient == env.current_contract_address() {
+            soroban_sdk::panic_with_error!(env, Error::InvalidWithdrawal);
+        }
 
         if withdraw_amount == 0 {
             return;
         }
 
+        let earnings_key = DataKey::InstructorEarnings(instructor.clone(), token.clone());
+        let balance: i128 = env.storage().persistent().get(&earnings_key).unwrap_or(0);
+
         if withdraw_amount > balance {
-            soroban_sdk::panic_with_error!(&env, Error::InvalidWithdrawal);
+            soroban_sdk::panic_with_error!(env, Error::InvalidWithdrawal);
         }
 
         let new_balance = balance
             .checked_sub(withdraw_amount)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, Error::ArithmeticOverflow));
 
         if new_balance == 0 {
             env.storage().persistent().remove(&earnings_key);
             Self::remove_instructor_earning_token(&env, &instructor, &token);
         } else {
-            Self::persist(&env, &earnings_key, &new_balance);
+            Self::persist(env, &earnings_key, &new_balance);
         }
 
         // Decrement total outstanding instructor earnings for this token
@@ -4382,19 +4420,7 @@ impl HamplardContract {
                 .set(&outstanding_key, &new_outstanding);
         }
 
-        // Decrement total outstanding instructor earnings for this token
-        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
-        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
-        let new_outstanding = current_outstanding.saturating_sub(withdraw_amount);
-        if new_outstanding == 0 {
-            env.storage().instance().remove(&outstanding_key);
-        } else {
-            env.storage()
-                .instance()
-                .set(&outstanding_key, &new_outstanding);
-        }
-
-        let token_client = token::Client::new(&env, &token);
+        let token_client = token::Client::new(env, token);
         token_client.transfer(
             &env.current_contract_address(),
             &recipient,
@@ -4402,6 +4428,12 @@ impl HamplardContract {
         );
 
         env.events().publish(
+            (Symbol::new(env, "earnings_withdrawn"), instructor.clone()),
+            (
+                instructor.clone(),
+                token.clone(),
+                withdraw_amount,
+                recipient,
             (
                 Symbol::new(&env, "earnings_withdrawn"),
                 instructor.clone(),
