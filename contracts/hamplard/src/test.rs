@@ -16602,6 +16602,58 @@ fn test_refund_debits_each_co_instructor_share() {
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
 }
 
+#[test]
+fn test_set_co_instructors_unlocked_after_all_enrollments_refunded() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-UNLOCK",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-UNLOCK");
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000);
+    client.enroll(&student, &course_id);
+
+    // Locked while a non-refunded enrollment exists.
+    let co_a = Address::generate(&env);
+    let mut addrs = Vec::new(&env);
+    addrs.push_back(co_a.clone());
+    let mut shares = Vec::new(&env);
+    shares.push_back(2_000);
+    assert!(client
+        .try_set_co_instructors(&instructor, &course_id, &addrs, &shares)
+        .is_err());
+
+    // Refund the only enrollment.
+    client.request_refund(&student, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    // Once all enrollments are refunded, co-instructors can be reconfigured.
+    let co_b = Address::generate(&env);
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-UNLOCK",
+        &[(co_b.clone(), 2_500)],
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 0);
+    assert_eq!(course.co_instructors.len(), 1);
+    assert_eq!(course.co_instructors.get(0).unwrap().address, co_b);
+    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 2_500);
+}
+
 
 // ============================================================
 // ISSUE: re_enroll() was missing CourseInstructorRef integrity check

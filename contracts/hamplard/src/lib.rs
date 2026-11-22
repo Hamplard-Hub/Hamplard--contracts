@@ -3248,6 +3248,8 @@ impl HamplardContract {
             panic!("cannot update archived course");
         }
 
+        // Lock only while non-refunded enrollments exist; once every
+        // enrollment has been refunded, co-instructors can be reconfigured.
         if course.total_enrollments > 0 {
             panic!("co-instructors are locked after the first enrollment");
         }
@@ -7132,9 +7134,12 @@ impl HamplardContract {
         );
         env.storage().persistent().remove(&enrollment_key);
 
-        // Decrement active enrollments
+        // Decrement active and non-refunded enrollment counters
         if course.active_enrollments > 0 {
             course.active_enrollments -= 1;
+        }
+        if course.total_enrollments > 0 {
+            course.total_enrollments -= 1;
         }
 
         course.last_updated_ledger = env.ledger().sequence();
