@@ -1466,8 +1466,144 @@ fn test_revoke_certificate_metadata_persisted() {
     );
 }
 
+// #405 — admin can issue a replacement after revoking for ISSUED_IN_ERROR
 #[test]
-fn test_issue_certificate_with_instructor_signature() {
+fn test_reissue_certificate_after_issued_in_error_revocation() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REISSUE-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-REISSUE-001");
+    let orig_cert_id = String::from_str(&env, "CERT-ORIG-001");
+    let new_cert_id = String::from_str(&env, "CERT-NEW-001");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence_hash")),
+    );
+
+    // Issue the original (incorrect) certificate
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &orig_cert_id,
+        &String::from_str(&env, "Wrong Title"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-REISSUE-001"),
+        &None,
+        &None,
+    );
+
+    // Revoke it for ISSUED_IN_ERROR
+    client.revoke_certificate(
+        &admin,
+        &orig_cert_id,
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    // Admin can now issue the corrected certificate against the same enrollment
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &new_cert_id,
+        &String::from_str(&env, "Correct Title"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-REISSUE-001"),
+        &None,
+        &None,
+    );
+
+    // The new certificate is valid
+    let new_cert = client.get_certificate(&admin, &new_cert_id);
+    assert!(!new_cert.revoked);
+    assert_eq!(new_cert.course_id, course_id);
+
+    // The old revoked certificate stays on-chain and points to the replacement
+    let old_cert = client.get_certificate(&admin, &orig_cert_id);
+    assert!(old_cert.revoked);
+    assert_eq!(old_cert.superseded_by, Some(new_cert_id.clone()));
+}
+
+// #405 — reissue is NOT allowed when the revocation reason is not ISSUED_IN_ERROR
+#[test]
+#[should_panic(expected = "Error(Contract, #42)")]
+fn test_reissue_blocked_after_non_error_revocation() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-DISHONESTY-001",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-DISHONESTY-001");
+    let cert_id = String::from_str(&env, "CERT-DISHONESTY-001");
+    let replacement_id = String::from_str(&env, "CERT-DISHONESTY-002");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence_hash")),
+    );
+
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Some Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-DISHONESTY-001"),
+        &None,
+        &None,
+    );
+
+    // Revoke for a non-corrective reason
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ACADEMIC_DISHONESTY"),
+    );
+
+    // Reissue must be blocked — panics with CertificateAlreadyIssued (#42)
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &replacement_id,
+        &String::from_str(&env, "Some Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-DISHONESTY-001"),
+        &None,
+        &None,
+    );
+}
+
+#[test]
+fn test_issue_certificate_with_instructor_attestation() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -1495,7 +1631,9 @@ fn test_issue_certificate_with_instructor_signature() {
         &Some(evidence_hash(&env, "evidence_hash")),
     );
 
-    let signature = BytesN::from_array(&env, &[7u8; 64]);
+    // The attestation blob is stored verbatim; on-chain verification is not
+    // performed (see Certificate.instructor_attestation for the limitation).
+    let attestation = BytesN::from_array(&env, &[7u8; 64]);
     client.issue_certificate(
         &admin,
         &student,
@@ -1504,15 +1642,15 @@ fn test_issue_certificate_with_instructor_signature() {
         &String::from_str(&env, "Signed Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-SIGNED-001"),
         &None,
-        &Some(signature.clone()),
+        &Some(attestation.clone()),
     );
 
     let cert = client.get_certificate(&admin, &cert_id);
-    assert_eq!(cert.instructor_signature, Some(signature));
+    assert_eq!(cert.instructor_attestation, Some(attestation));
 }
 
 #[test]
-fn test_issue_certificate_without_instructor_signature() {
+fn test_issue_certificate_without_instructor_attestation() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -1552,7 +1690,7 @@ fn test_issue_certificate_without_instructor_signature() {
     );
 
     let cert = client.get_certificate(&admin, &cert_id);
-    assert!(cert.instructor_signature.is_none());
+    assert!(cert.instructor_attestation.is_none());
 }
 
 // ============================================================
@@ -3978,9 +4116,46 @@ fn test_instructor_earnings_accumulate_and_withdraw() {
     );
     assert_eq!(token_client.balance(&instructor), 0);
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), instructor_share);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #40)")]
+fn test_withdraw_earnings_zero_amount_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARN-ZERO",
+    );
+
+    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+}
+
+#[test]
+fn test_withdraw_earnings_zero_amount_leaves_balance_intact() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let share = enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EARN-ZERO-INTACT",
+    );
+
+    let res = client.try_withdraw_earnings(&instructor, &token_id, &0, &None);
+    assert!(res.is_err());
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), share);
+    assert_eq!(token_client.balance(&instructor), 0);
 }
 
 #[test]
@@ -4058,11 +4233,11 @@ fn test_double_withdrawal_prevented() {
     );
     client.enroll(&student, &String::from_str(&env, "COURSE-EARN-DBL"), &i128::MAX);
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     let balance_after_first = token_client.balance(&instructor);
 
     // Second full withdrawal is a no-op (zero balance)
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), balance_after_first);
 }
 
@@ -4072,7 +4247,7 @@ fn test_zero_balance_withdrawal_is_safe() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
 }
 
@@ -4114,7 +4289,7 @@ fn test_withdraw_earnings_to_custom_destination() {
     );
 
     let cold = Address::generate(&env);
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(cold.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(cold.clone()));
 
     assert_eq!(token_client.balance(&cold), share);
     assert_eq!(token_client.balance(&instructor), 0);
@@ -4159,7 +4334,7 @@ fn test_withdraw_earnings_none_defaults_to_instructor() {
         "COURSE-DEST-3",
     );
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
     assert_eq!(token_client.balance(&instructor), share);
 }
 
@@ -4177,7 +4352,7 @@ fn test_withdraw_earnings_event_includes_destination() {
     );
 
     let cold = Address::generate(&env);
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(cold.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(cold.clone()));
 
     let mut found = false;
     for (contract, topics, data) in env.events().all().iter() {
@@ -4187,11 +4362,57 @@ fn test_withdraw_earnings_event_includes_destination() {
         let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
         if sym == Symbol::new(&env, "earnings_withdrawn") {
             let topic_instructor: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
-            let (tok, amt, dest): (Address, i128, Address) = data.try_into_val(&env).unwrap();
+            let topic_token: Address = topics.get(2).unwrap().try_into_val(&env).unwrap();
+            let (tok, amt, dest, new_bal, ledger_seq): (Address, i128, Address, i128, u32) =
+                data.try_into_val(&env).unwrap();
             assert_eq!(topic_instructor, instructor);
+            assert_eq!(topic_token, token_id);
             assert_eq!(tok, token_id);
             assert_eq!(amt, share);
             assert_eq!(dest, cold);
+            assert_eq!(new_bal, 0);
+            assert_eq!(ledger_seq, env.ledger().sequence());
+            found = true;
+        }
+    }
+    assert!(found, "earnings_withdrawn event not emitted");
+}
+
+#[test]
+fn test_withdraw_earnings_event_partial_includes_remaining_balance() {
+    let (env, contract_id, token_id, admin, _s, _t, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let share = enroll_one(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EVT-PARTIAL",
+    );
+    let partial = share / 3;
+    let expected_remaining = share - partial;
+
+    client.withdraw_earnings(&instructor, &token_id, &partial, &None);
+
+    let mut found = false;
+    for (contract, topics, data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if sym == Symbol::new(&env, "earnings_withdrawn") {
+            let topic_instructor: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+            let topic_token: Address = topics.get(2).unwrap().try_into_val(&env).unwrap();
+            let (tok, amt, dest, new_bal, ledger_seq): (Address, i128, Address, i128, u32) =
+                data.try_into_val(&env).unwrap();
+            assert_eq!(topic_instructor, instructor);
+            assert_eq!(topic_token, token_id);
+            assert_eq!(tok, token_id);
+            assert_eq!(amt, partial);
+            assert_eq!(dest, instructor);
+            assert_eq!(new_bal, expected_remaining);
+            assert_eq!(ledger_seq, env.ledger().sequence());
             found = true;
         }
     }
@@ -4220,12 +4441,12 @@ fn test_withdraw_earnings_only_instructor_auth_required() {
             address: &instructor,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
-                fn_name: "withdraw_earnings",
-                args: (instructor.clone(), token_id.clone(), 0i128, dest.clone()).into_val(&env),
+                fn_name: "withdraw_all_earnings",
+                args: (instructor.clone(), token_id.clone(), dest.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .withdraw_earnings(&instructor, &token_id, &0, &dest);
+        .withdraw_all_earnings(&instructor, &token_id, &dest);
 
     assert_eq!(token::Client::new(&env, &token_id).balance(&cold), share);
 }
@@ -4252,12 +4473,12 @@ fn test_withdraw_earnings_destination_auth_is_not_enough() {
             address: &attacker,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
-                fn_name: "withdraw_earnings",
-                args: (instructor.clone(), token_id.clone(), 0i128, dest.clone()).into_val(&env),
+                fn_name: "withdraw_all_earnings",
+                args: (instructor.clone(), token_id.clone(), dest.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .try_withdraw_earnings(&instructor, &token_id, &0, &dest);
+        .try_withdraw_all_earnings(&instructor, &token_id, &dest);
 
     assert!(res.is_err());
     assert_eq!(token::Client::new(&env, &token_id).balance(&attacker), 0);
@@ -4277,7 +4498,7 @@ fn test_withdraw_earnings_rejects_contract_as_destination() {
         "COURSE-DEST-7",
     );
 
-    client.withdraw_earnings(&instructor, &token_id, &0, &Some(contract_id.clone()));
+    client.withdraw_all_earnings(&instructor, &token_id, &Some(contract_id.clone()));
 }
 
 #[test]
@@ -5090,6 +5311,55 @@ fn test_course_approval_time_lock_premature_panics() {
     );
 
     // Try to approve immediately — should panic
+    client.approve_course(&admin, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_approve_active_course_with_unelapsed_review_delay_panics_not_pending() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-ACTIVE-DELAY");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.approve_course(&admin, &course_id);
+
+    // Raise review delay after approval so elapsed < delay; status check must win.
+    client.update_min_review_delay(&admin, &100u32);
+    client.approve_course(&admin, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_approve_rejected_course_with_unelapsed_review_delay_panics_not_pending() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.update_min_review_delay(&admin, &10u32);
+
+    let course_id = String::from_str(&env, "COURSE-REJECTED-DELAY");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(&admin, &course_id, &String::from_str(&env, "not a fit"));
+
+    // Review delay has not elapsed, but course is Rejected — must panic with CourseNotPending (#17).
     client.approve_course(&admin, &course_id);
 }
 
@@ -6407,18 +6677,27 @@ fn test_events_emitted_for_admin_operations() {
         l.sequence_number += 1;
     });
     client.enroll(&student, &course_id, &i128::MAX);
+    let expected_evidence = Some(evidence_hash(&env, "evidence"));
     client.mark_completed(
         &admin,
         &student,
         &course_id,
-        &Some(evidence_hash(&env, "evidence")),
+        &expected_evidence,
     );
-    let (event_student, event_admin, _event_ledger): (Address, Address, u32) =
-        last_event_val(&env, &contract_id, "course_completed")
-            .try_into_val(&env)
-            .unwrap();
+    let (event_course_id, event_student, event_admin, event_evidence, event_ledger): (
+        String,
+        Address,
+        Address,
+        Option<BytesN<32>>,
+        u32,
+    ) = last_event_val(&env, &contract_id, "course_completed")
+        .try_into_val(&env)
+        .unwrap();
+    assert_eq!(event_course_id, course_id);
     assert_eq!(event_student, student);
     assert_eq!(event_admin, admin);
+    assert_eq!(event_evidence, expected_evidence);
+    assert_eq!(event_ledger, env.ledger().sequence());
 
     // issue_certificate
     let cert_id = String::from_str(&env, "CERT-ATTR-001");
@@ -6741,6 +7020,84 @@ fn test_get_enrollment_history_unauthorized_access() {
     client.get_enrollment_history(&random_user, &student, &course_id);
 }
 
+// #374 — Student and admin can read enrollment even when the course entry is absent.
+
+/// Student can call get_enrollment() when no course entry exists (simulates
+/// a course archived by TTL).
+#[test]
+fn test_get_enrollment_student_succeeds_without_course_entry() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-ENTRY-374",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-NO-ENTRY-374");
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    // Simulate the course entry being removed (TTL expiry).
+    env.storage()
+        .persistent()
+        .remove(&crate::DataKey::Course(course_id.clone()));
+
+    // Student must still be able to read their own enrollment.
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .expect("enrollment should still be readable");
+    assert_eq!(enrollment.student, student);
+}
+
+/// Admin can call get_enrollment() and get_enrollment_history() when no
+/// course entry exists.
+#[test]
+fn test_get_enrollment_admin_succeeds_without_course_entry() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-NO-ENTRY-ADM-374",
+        200_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-NO-ENTRY-ADM-374");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "374-ev")),
+    );
+    client.re_enroll(&student, &course_id, &i128::MAX);
+
+    // Drop the course entry.
+    env.storage()
+        .persistent()
+        .remove(&crate::DataKey::Course(course_id.clone()));
+
+    // Admin can read enrollment.
+    assert!(client
+        .get_enrollment(&admin, &student, &course_id)
+        .is_some());
+
+    // Admin can read enrollment history.
+    let history = client.get_enrollment_history(&admin, &student, &course_id);
+    assert!(!history.is_empty());
+}
+
 #[test]
 fn test_multi_sig_admin_events_record_both_actors() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
@@ -6841,18 +7198,29 @@ fn test_process_refund_event_includes_admin() {
     env.mock_all_auths_allowing_non_root_auth();
     client.process_refund(&admin, &student, &course_id, &true, &None);
 
-    let (event_student, event_course_id, event_approved, event_admin): (
-        Address,
-        String,
-        bool,
-        Address,
-    ) = last_event_val(&env, &contract_id, "refund_processed")
-        .try_into_val(&env)
-        .unwrap();
+    let (
+        event_student,
+        event_course_id,
+        event_approved,
+        event_admin,
+        event_refund_amount,
+        event_platform_amount,
+        event_instructor_amount,
+        event_ledger,
+    ): (Address, String, bool, Address, i128, i128, i128, u32) =
+        last_event_val(&env, &contract_id, "refund_processed")
+            .try_into_val(&env)
+            .unwrap();
     assert_eq!(event_student, student);
     assert_eq!(event_course_id, course_id);
     assert!(event_approved);
     assert_eq!(event_admin, admin);
+    assert_eq!(event_refund_amount, 500_000_000);
+    assert_eq!(
+        event_platform_amount + event_instructor_amount,
+        event_refund_amount
+    );
+    assert_eq!(event_ledger, env.ledger().sequence());
 }
 #[test]
 fn test_process_refund_emits_refund_issued_with_split() {
@@ -7845,6 +8213,59 @@ fn test_enrollment_expiry_none_allows_completion_at_any_time() {
     );
 
     assert_eq!(client.has_completed(&student, &course_id), Some(true));
+}
+
+#[test]
+fn test_set_enrollment_expiry_does_not_apply_retroactively() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student_before = Address::generate(&env);
+    let student_after = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_before, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_after, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRY-SNAPSHOT",
+        500_000_000,
+    );
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRY-SNAPSHOT");
+
+    // Initial expiry is 100 ledgers; student_before snapshots 100 ledgers
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(100u32));
+    client.enroll(&student_before, &course_id, &i128::MAX);
+
+    // Instructor shortens expiry to 10 ledgers; only student_after snapshots 10 ledgers
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(10u32));
+    client.enroll(&student_after, &course_id, &i128::MAX);
+
+    // Advance 20 ledgers: student_after is expired, student_before is still within 100 ledgers
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 20;
+    });
+
+    assert!(client
+        .try_mark_completed(
+            &admin,
+            &student_after,
+            &course_id,
+            &Some(evidence_hash(&env, "late_evidence")),
+        )
+        .is_err());
+
+    client.mark_completed(
+        &admin,
+        &student_before,
+        &course_id,
+        &Some(evidence_hash(&env, "on_time_evidence")),
+    );
+    assert_eq!(client.has_completed(&student_before, &course_id), Some(true));
 }
 
 #[test]
@@ -12517,6 +12938,154 @@ fn test_frozen_instructor_cannot_unpause_course() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_frozen_instructor_cannot_pause_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-PAUSE",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor, &String::from_str(&env, "test reason"));
+
+    client.pause_course(&instructor, &String::from_str(&env, "COURSE-FROZEN-PAUSE"));
+}
+
+#[test]
+fn test_admin_can_pause_and_unpause_frozen_instructor_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-FROZEN-ADMIN-PAUSE");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-ADMIN-PAUSE",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor, &String::from_str(&env, "test reason"));
+
+    // Admin can unpause and re-pause even while the instructor is frozen.
+    client.unpause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().status, CourseStatus::Active);
+
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().status, CourseStatus::Paused);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_register_course_rejects_empty_course_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_instructor_cannot_unpause_admin_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-1");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-1",
+        100_000_000,
+    );
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().paused_by, Some(PausedBy::Admin));
+
+    client.unpause_course(&instructor, &course_id);
+}
+
+#[test]
+fn test_admin_can_unpause_admin_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-2");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-2",
+        100_000_000,
+    );
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().paused_by, Some(PausedBy::Admin));
+
+    client.unpause_course(&admin, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
+fn test_instructor_can_unpause_instructor_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-3");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-3",
+        100_000_000,
+    );
+    client.pause_course(&instructor, &course_id);
+    assert_eq!(
+        client.get_course(&course_id).unwrap().paused_by,
+        Some(PausedBy::Instructor)
+    );
+
+    client.unpause_course(&instructor, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
+fn test_admin_can_unpause_instructor_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-MOD-PAUSE-4");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MOD-PAUSE-4",
+        100_000_000,
+    );
+    client.pause_course(&instructor, &course_id);
+    assert_eq!(
+        client.get_course(&course_id).unwrap().paused_by,
+        Some(PausedBy::Instructor)
+    );
+
+    client.unpause_course(&admin, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #11)")]
 fn test_register_course_rejects_empty_course_id() {
     let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
@@ -12575,6 +13144,104 @@ fn test_update_course_rejects_zero_max_capacity() {
         &Some(Some(0u32)),
         &None,
     );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_update_course_rejects_max_capacity_below_total_enrollments() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-LOW-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-LOW-CAP");
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    // total_enrollments == 2 in Lifetime mode; setting max_capacity to Some(1) must panic.
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+}
+
+#[test]
+fn test_update_course_allows_max_capacity_equal_to_current_enrollments() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-EXACT-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-EXACT-CAP");
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    client.update_course(&instructor, &course_id, &None, &Some(Some(2u32)), &None);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.max_capacity, Some(2u32));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_update_course_rejects_max_capacity_below_active_enrollments_in_concurrent_mode() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-CONCURRENT-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-CONCURRENT-CAP");
+
+    client.update_course(
+        &instructor,
+        &course_id,
+        &None,
+        &None,
+        &Some(crate::CapacityMode::Concurrent),
+    );
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    // active_enrollments == 2 in Concurrent mode; setting max_capacity to Some(1) must panic.
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
 }
 
 #[test]
@@ -15640,6 +16307,76 @@ fn test_set_co_instructors_and_credit_split_on_enroll() {
 }
 
 #[test]
+fn test_frozen_co_instructor_blocks_enrollment_until_unfrozen() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-FROZEN",
+        1_000_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-FROZEN");
+
+    let co_instructor_a = Address::generate(&env);
+    let co_instructor_b = Address::generate(&env);
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-FROZEN",
+        &[
+            (co_instructor_a.clone(), 3_000),
+            (co_instructor_b.clone(), 2_000),
+        ],
+    );
+
+    client.freeze_instructor(
+        &admin,
+        &co_instructor_a,
+        &String::from_str(&env, "compliance review"),
+    );
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    let res = client.try_enroll(&student, &course_id, &i128::MAX);
+    assert!(
+        res.is_err(),
+        "enrollment must fail while any co-instructor is frozen"
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_a, &token_id),
+        0
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_b, &token_id),
+        0
+    );
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+
+    client.unfreeze_instructor(&admin, &co_instructor_a);
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_a, &token_id),
+        240_000_000
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_b, &token_id),
+        160_000_000
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        400_000_000
+    );
+}
+
+#[test]
 fn test_admin_can_set_co_instructors() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -16001,6 +16738,58 @@ fn test_refund_debits_each_co_instructor_share() {
         0
     );
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+}
+
+#[test]
+fn test_set_co_instructors_unlocked_after_all_enrollments_refunded() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-UNLOCK",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-UNLOCK");
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000);
+    client.enroll(&student, &course_id);
+
+    // Locked while a non-refunded enrollment exists.
+    let co_a = Address::generate(&env);
+    let mut addrs = Vec::new(&env);
+    addrs.push_back(co_a.clone());
+    let mut shares = Vec::new(&env);
+    shares.push_back(2_000);
+    assert!(client
+        .try_set_co_instructors(&instructor, &course_id, &addrs, &shares)
+        .is_err());
+
+    // Refund the only enrollment.
+    client.request_refund(&student, &course_id);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    // Once all enrollments are refunded, co-instructors can be reconfigured.
+    let co_b = Address::generate(&env);
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-UNLOCK",
+        &[(co_b.clone(), 2_500)],
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 0);
+    assert_eq!(course.co_instructors.len(), 1);
+    assert_eq!(course.co_instructors.get(0).unwrap().address, co_b);
+    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 2_500);
 }
 
 
@@ -17043,7 +17832,7 @@ fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
     );
 
     client.freeze_instructor(&admin, &instructor);
-    let frozen_withdrawal = client.try_withdraw_earnings(&instructor, &token_id, &0, &None);
+    let frozen_withdrawal = client.try_withdraw_all_earnings(&instructor, &token_id, &None);
     assert!(
         frozen_withdrawal.is_err(),
         "frozen instructors must not be able to withdraw"
@@ -17054,7 +17843,7 @@ fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
     );
 
     client.unfreeze_instructor(&admin, &instructor);
-    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    client.withdraw_all_earnings(&instructor, &token_id, &None);
 
     assert_eq!(
         token::Client::new(&env, &token_id).balance(&instructor),
@@ -18873,6 +19662,33 @@ fn test_archive_course_refund_reverses_exact_split_with_fee_config_and_risk() {
 }
 
 #[test]
+fn test_archive_course_refund_resolves_pending_refund_request() {
+    let price: i128 = 1_000_000_000;
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) =
+        setup_custom_fee_split(price);
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-SPLIT");
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    let pending_req = client.get_refund_request(&student, &course_id).unwrap();
+    assert_eq!(pending_req.status, RefundStatus::Pending);
+
+    client.pause_course(&admin, &course_id);
+    let mut students = soroban_sdk::Vec::new(&env);
+    students.push_back(student.clone());
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
+
+    let resolved_req = client.get_refund_request(&student, &course_id).unwrap();
+    assert_eq!(resolved_req.status, RefundStatus::Approved);
+    assert_eq!(resolved_req.refund_amount, Some(price));
+}
+
+#[test]
 fn test_re_enroll_then_refund_reverses_exact_split_with_fee_config_and_risk() {
     let price: i128 = 1_000_000_000;
     let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) =
@@ -19662,6 +20478,37 @@ fn test_reject_then_resubmit_outside_window_fails() {
     client.request_refund(&student, &course_id);
 }
 
+#[test]
+#[should_panic(expected = "cannot mark completed while refund request is pending")]
+fn test_mark_completed_rejects_pending_refund_request() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-318-PENDING-REFUND",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-318-PENDING-REFUND");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence")),
+    );
+}
+
 /// A Pending request still blocks a second request from the same student.
 #[test]
 #[should_panic(expected = "refund request already exists")]
@@ -20137,4 +20984,329 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     assert_eq!(page.len(), 50);
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
+}
+
+#[test]
+#[should_panic]
+fn test_set_enrollment_start_ledger_rejected_course_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-REJECTED-ENROLL-START");
+
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(&admin, &course_id, &String::from_str(&env, "rejected"));
+
+    client.set_enrollment_start_ledger(
+        &instructor,
+        &course_id,
+        &Some(env.ledger().sequence() + 10),
+    );
+}
+fn test_get_course_terms_preserves_version_snapshots() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-TERMS-V");
+    let v1_price = 100_000_000i128;
+// ============================================================
+// #316 — process_refund rejects enrollments completed after the request
+// ============================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #")]
+fn test_process_refund_rejected_when_enrollment_completed_after_request() {
+// #323 — InstructorStats.total_students decremented on refund
+// ============================================================
+
+#[test]
+fn test_instructor_stats_total_students_decremented_on_process_refund() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+// #326 — process_refund / archive_course use the effective treasury
+// ============================================================
+
+#[test]
+fn test_refund_uses_new_treasury_after_pending_treasury_matures() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let new_treasury = Address::generate(&env);
+    let student = Address::generate(&env);
+    asset_client.mint(&student, &1_000_000_000);
+
+    let price = 500_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-TERMS-V",
+        v1_price,
+    );
+    let initial_course = client.get_course(&course_id).unwrap();
+
+    let student1 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student1, &v1_price);
+    client.enroll(&student1, &course_id, &v1_price);
+    let e1 = client.get_enrollment(&student1, &student1, &course_id).unwrap();
+    assert_eq!(e1.course_version, 1);
+
+    let v2_price = 200_000_000i128;
+    let new_ver = client.update_course(
+        &instructor,
+        &course_id,
+        &Some(v2_price),
+        &Some(Some(25u32)),
+        &None,
+    );
+    assert_eq!(new_ver, 2);
+
+    let student2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&student2, &v2_price);
+    client.enroll(&student2, &course_id, &v2_price);
+    let e2 = client.get_enrollment(&student2, &student2, &course_id).unwrap();
+    assert_eq!(e2.course_version, 2);
+
+    let terms_v1 = client.get_course_terms(&course_id, &e1.course_version).unwrap();
+    assert_eq!(terms_v1.price, v1_price);
+    assert_eq!(terms_v1.platform_fee_percent, initial_course.platform_fee_percent);
+    assert_eq!(terms_v1.content_hash, initial_course.content_hash);
+    assert_eq!(terms_v1.max_capacity, initial_course.max_capacity);
+
+    let terms_v2 = client.get_course_terms(&course_id, &e2.course_version).unwrap();
+    assert_eq!(terms_v2.price, v2_price);
+    assert_eq!(terms_v2.max_capacity, Some(25u32));
+
+    assert!(client.get_course_terms(&course_id, &3u32).is_none());
+}
+        "COURSE-316",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-316");
+
+    // Student enrolls and immediately files a refund request.
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    // Retrieve the enrollment reference needed for mark_completed.
+    let enrollment_ref = get_enrollment_ref(&env, &client, &student, "COURSE-316");
+
+    // Admin marks the enrollment completed while the refund request is pending.
+    // Supply an evidence hash to satisfy the mark_completed guard.
+    let hash = evidence_hash(&env, "evidence-316");
+    client.submit_completion_evidence(&student, &course_id, &hash);
+    client.mark_completed(&admin, &student, &course_id, &enrollment_ref);
+
+    // Fund the refund reserve — this call should not be reached.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Admin attempts to approve the refund — must panic because enrollment
+    // is now marked completed.
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+        "COURSE-323A",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-323A");
+
+    // Enroll; total_students should be 1.
+    client.enroll(&student, &course_id, &i128::MAX);
+    let stats_before = client.get_instructor_stats(&instructor);
+    assert_eq!(stats_before.total_students, 1, "stats should show 1 student after enrollment");
+
+    // Fund the refund reserve so the platform-fee share can be returned.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Request and approve the refund.
+    client.request_refund(&student, &course_id);
+    client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    // After refund, total_students must be back to 0.
+    let stats_after = client.get_instructor_stats(&instructor);
+    assert_eq!(
+        stats_after.total_students,
+        0,
+        "total_students should be decremented after refund is approved"
+    );
+}
+
+#[test]
+fn test_instructor_stats_total_students_decremented_on_archive_refund() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    asset_client.mint(&student, &1_000_000_000);
+
+    let price = 500_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-323B",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-323B");
+
+    // Enroll; total_students should be 1.
+    client.enroll(&student, &course_id, &i128::MAX);
+    let stats_before = client.get_instructor_stats(&instructor);
+    assert_eq!(stats_before.total_students, 1, "stats should show 1 student after enrollment");
+
+    // Pause course so it can be archived.
+    client.pause_course(&admin, &course_id);
+
+    // Fund the refund reserve so the platform-fee share can be returned.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Archive the course, refunding the enrolled student.
+    let students = soroban_sdk::vec![&env, student.clone()];
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
+
+    // After archive-refund, total_students must be back to 0.
+    let stats_after = client.get_instructor_stats(&instructor);
+    assert_eq!(
+        stats_after.total_students,
+        0,
+        "total_students should be decremented after archive refund"
+    );
+        "COURSE-326",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-326");
+
+    // Enroll student so a refund request can be filed.
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    // Schedule treasury update and request the refund before it matures.
+    client.update_treasury(&admin, &sec_admin, &new_treasury);
+    client.request_refund(&student, &course_id);
+
+    // Fund both treasuries so the transfer won't fail regardless of which is
+    // used; we'll detect the wrong one by checking balances after.
+    asset_client.mint(&treasury, &price);
+    asset_client.mint(&new_treasury, &price);
+    let old_treasury_balance_before = token_client.balance(&treasury);
+    let new_treasury_balance_before = token_client.balance(&new_treasury);
+
+    // Advance past both the treasury delay and the refund processing deadline
+    // so the student can self-approve via claim_refund (hits apply_refund_approval).
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::TREASURY_UPDATE_DELAY_LEDGERS + 10_000;
+    });
+
+    // Student self-approves — this takes the apply_refund_approval path.
+    client.claim_refund(&student, &course_id);
+
+    let platform_fee = price * 20 / 100; // 20% default fee
+
+    // The old treasury balance must be unchanged — the platform-fee share
+    // of the refund was drawn from the new (now effective) treasury.
+    assert_eq!(
+        token_client.balance(&treasury),
+        old_treasury_balance_before,
+        "old treasury should not be debited after pending update matures"
+    );
+    assert_eq!(
+        token_client.balance(&new_treasury),
+        new_treasury_balance_before - platform_fee,
+        "new (effective) treasury should be debited for the platform-fee refund"
+    );
+#[test]
+fn test_get_instructor_earning_tokens_tracks_credit_debit_and_withdrawal() {
+fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    // Initially empty
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 0);
+
+    // Register a second approved token
+    let token2_admin = Address::generate(&env);
+    let token2_id = env.register_stellar_asset_contract_v2(token2_admin).address();
+    let token2_admin_client = token::StellarAssetClient::new(&env, &token2_id);
+    client.add_approved_token(&admin, &token2_id);
+
+    // Enroll in token1 course -> token1 appears in earning tokens
+    let price = 100_000_000i128;
+    let share1 = enroll_one(&env, &client, &token_id, &admin, &instructor, "IET-1");
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), token_id);
+
+    // Second enrollment in token1 does not duplicate token1
+    let _ = enroll_one(&env, &client, &token_id, &admin, &instructor, "IET-2");
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 1);
+
+    // Enroll in token2 course -> both token1 and token2 appear
+    let course2 = String::from_str(&env, "IET-3");
+    register_and_approve_course(&env, &client, &token2_id, &admin, &instructor, "IET-3", price);
+    let student2 = Address::generate(&env);
+    token2_admin_client.mint(&student2, &price);
+    client.enroll(&student2, &course2);
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 2);
+    assert!(tokens.contains(&token_id));
+    assert!(tokens.contains(&token2_id));
+
+    // Partial withdrawal of token1 keeps token1 in the set
+    client.withdraw_earnings(&instructor, &token_id, &share1, &None);
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 2);
+
+    // Full withdrawal of remaining token1 removes token1 from the set
+    client.withdraw_earnings(&instructor, &token_id, &0, &None);
+    let tokens = client.get_instructor_earning_tokens(&instructor);
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), token2_id);
+
+    // Refund of token2 enrollment debits balance to 0 and removes token2
+    let fee2 = price - client.get_instructor_earnings(&instructor, &token2_id);
+    token_admin_client.mint(&treasury, &0);
+    token2_admin_client.mint(&treasury, &fee2);
+    client.fund_refund_reserve(&treasury, &token2_id, &fee2);
+    client.request_refund(&student2, &course2);
+    client.process_refund(&admin, &student2, &course2, &true, &None);
+    assert_eq!(client.get_instructor_earning_tokens(&instructor).len(), 0);
+    assert_eq!(client.get_platform_fees_collected(&token_id), 0);
+
+    let course_id = String::from_str(&env, "FEE-TRACK-1");
+    let price = 100_000_000i128;
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "FEE-TRACK-1", price);
+
+    let student1 = Address::generate(&env);
+    let student2 = Address::generate(&env);
+    token_admin_client.mint(&student1, &price);
+    token_admin_client.mint(&student2, &price);
+
+    client.enroll(&student1, &course_id);
+    let fee_one = client.get_platform_fees_collected(&token_id);
+    assert!(fee_one > 0);
+
+    client.enroll(&student2, &course_id);
+    assert_eq!(client.get_platform_fees_collected(&token_id), fee_one * 2);
+
+    // Fund refund reserve and process a full refund for student1
+    token_admin_client.mint(&treasury, &fee_one);
+    client.fund_refund_reserve(&treasury, &token_id, &fee_one);
+    client.request_refund(&student1, &course_id);
+    client.process_refund(&admin, &student1, &course_id, &true, &None);
+
+    assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
 }
