@@ -2001,6 +2001,40 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
 
+        // #376 — Decrement the total course count so a rejected course does
+        // not permanently occupy a slot against MaxCoursesPerInstructor.
+        let count_key =
+            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+        let count = Self::read_instructor_course_count(&env, &course.instructor);
+        let new_count = count
+            .checked_sub(1)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
+        env.storage()
+            .persistent()
+            .set(&count_key, &new_count);
+        env.storage().persistent().extend_ttl(
+            &count_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // The course was Pending when rejected, so also release the pending slot.
+        let pending_key =
+            DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+        let pending_count =
+            Self::read_instructor_pending_course_count(&env, &course.instructor);
+        let new_pending_count = pending_count
+            .checked_sub(1)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
+        env.storage()
+            .persistent()
+            .set(&pending_key, &new_pending_count);
+        env.storage().persistent().extend_ttl(
+            &pending_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.events().publish(
             (Symbol::new(&env, "course_rejected"), course_id.clone()),
             (
@@ -2501,6 +2535,10 @@ impl HamplardContract {
             return;
         }
 
+        // #376 — Capture the status before we overwrite it; we need to know
+        // whether to also release the pending slot.
+        let pre_archive_status = course.status.clone();
+
         course.status = CourseStatus::Archived;
         course.archived_at_ledger = Some(env.ledger().sequence());
         course.last_updated_ledger = env.ledger().sequence();
@@ -2510,6 +2548,44 @@ impl HamplardContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Course(course_id.clone()));
+
+        // #376 — Decrement the total course count so an archived course does
+        // not permanently occupy a slot against MaxCoursesPerInstructor.
+        let count_key =
+            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+        let count = Self::read_instructor_course_count(&env, &course.instructor);
+        let new_count = count
+            .checked_sub(1)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
+        env.storage()
+            .persistent()
+            .set(&count_key, &new_count);
+        env.storage().persistent().extend_ttl(
+            &count_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        // If the archived course was still Pending, release the pending slot too.
+        if pre_archive_status == CourseStatus::Pending {
+            let pending_key =
+                DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+            let pending_count =
+                Self::read_instructor_pending_course_count(&env, &course.instructor);
+            let new_pending_count = pending_count
+                .checked_sub(1)
+                .unwrap_or_else(|| {
+                    soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow)
+                });
+            env.storage()
+                .persistent()
+                .set(&pending_key, &new_pending_count);
+            env.storage().persistent().extend_ttl(
+                &pending_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
 
         // Include refund accounting in the archive event so indexers can reconcile
         // the operation without replaying every enrollment history entry.
