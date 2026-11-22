@@ -14725,6 +14725,40 @@ fn test_verify_certificate_extends_ttl_for_valid_certificate() {
     );
 }
 
+#[test]
+fn test_course_instructor_ref_ttl_extended_with_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-REF-TTL");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REF-TTL",
+        100_000_000,
+    );
+
+    // Advance close to the end of the initial TTL window so get_course()
+    // triggers a renewal on both Course and CourseInstructorRef.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::PERSISTENT_TTL_EXTEND_TO - 100;
+    });
+    assert!(client.get_course(&course_id).is_some());
+
+    // Advance past the original TTL window; the course must remain enrollable.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1_000_000;
+    });
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000);
+    client.enroll(&student, &course_id);
+    assert!(client.is_enrolled(&student, &course_id));
+}
+
 // =============================================================================
 // ISSUE #237: list_courses() must not overflow when limit is u32::MAX
 // =============================================================================
