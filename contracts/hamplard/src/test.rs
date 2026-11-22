@@ -12791,6 +12791,54 @@ fn test_frozen_instructor_cannot_unpause_course() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_frozen_instructor_cannot_pause_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-PAUSE",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor, &String::from_str(&env, "test reason"));
+
+    client.pause_course(&instructor, &String::from_str(&env, "COURSE-FROZEN-PAUSE"));
+}
+
+#[test]
+fn test_admin_can_pause_and_unpause_frozen_instructor_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-FROZEN-ADMIN-PAUSE");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FROZEN-ADMIN-PAUSE",
+        100_000_000,
+    );
+    client.freeze_instructor(&admin, &instructor, &String::from_str(&env, "test reason"));
+
+    // Admin can unpause and re-pause even while the instructor is frozen.
+    client.unpause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().status, CourseStatus::Active);
+
+    client.pause_course(&admin, &course_id);
+    assert_eq!(client.get_course(&course_id).unwrap().status, CourseStatus::Paused);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_register_course_rejects_empty_course_id() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
 #[should_panic(expected = "Error(Contract, #2)")]
 fn test_instructor_cannot_unpause_admin_paused_course() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
