@@ -6607,6 +6607,12 @@ impl HamplardContract {
                 .get::<DataKey, Enrollment>(&enrollment_key)
                 .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::EnrollmentNotFound));
 
+            // Re-check: reject if enrollment was completed after the request
+            // was filed — the student already received course value. (#316)
+            if enrollment.completed {
+                soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
+            }
+
             // Record the refund in the course's cumulative stats. Partial
             // refunds add only the amount actually paid back.
             course.refund_count = course
@@ -6812,6 +6818,14 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Enrollment>(&enrollment_key)
             .unwrap_or_else(|| panic!("enrollment not found"));
+
+        // Re-check: if the enrollment was marked completed after the refund
+        // request was filed (e.g. admin called mark_completed while the request
+        // was pending), reject the refund. The student received the course value
+        // so a refund would be unwarranted. (#316)
+        if enrollment.completed {
+            soroban_sdk::panic_with_error!(env, Error::EnrollmentStateError);
+        }
 
         // Use the split actually applied at enroll()/re_enroll() time
         // (persisted on the enrollment record) rather than recomputing

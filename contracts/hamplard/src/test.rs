@@ -20357,6 +20357,12 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
 }
 
 // ============================================================
+// #316 — process_refund rejects enrollments completed after the request
+// ============================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #")]
+fn test_process_refund_rejected_when_enrollment_completed_after_request() {
 // #323 — InstructorStats.total_students decremented on refund
 // ============================================================
 
@@ -20387,6 +20393,30 @@ fn test_refund_uses_new_treasury_after_pending_treasury_matures() {
         &token_id,
         &admin,
         &instructor,
+        "COURSE-316",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-316");
+
+    // Student enrolls and immediately files a refund request.
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.request_refund(&student, &course_id);
+
+    // Retrieve the enrollment reference needed for mark_completed.
+    let enrollment_ref = get_enrollment_ref(&env, &client, &student, "COURSE-316");
+
+    // Admin marks the enrollment completed while the refund request is pending.
+    // Supply an evidence hash to satisfy the mark_completed guard.
+    let hash = evidence_hash(&env, "evidence-316");
+    client.submit_completion_evidence(&student, &course_id, &hash);
+    client.mark_completed(&admin, &student, &course_id, &enrollment_ref);
+
+    // Fund the refund reserve — this call should not be reached.
+    fund_refund_reserve_for_test(&env, &client, &token_id, price);
+
+    // Admin attempts to approve the refund — must panic because enrollment
+    // is now marked completed.
+    client.process_refund(&admin, &student, &course_id, &true, &None);
         "COURSE-323A",
         price,
     );
