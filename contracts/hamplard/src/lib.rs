@@ -1137,6 +1137,9 @@ pub enum DataKey2 {
     /// Contract-held reserve, per token, that funds the platform-fee share of
     /// refunds so they never need a signature from the treasury account
     RefundReserve(Address),
+    /// Per-instructor set of token addresses in which the instructor currently
+    /// holds a non-zero withdrawable earnings balance.
+    InstructorEarningTokens(Address),
     /// Net cumulative platform fees collected for a token (incremented on
     /// enrollment fee collection, decremented on refunds).
     PlatformFeesCollected(Address),
@@ -4358,6 +4361,7 @@ impl HamplardContract {
 
         if new_balance == 0 {
             env.storage().persistent().remove(&earnings_key);
+            Self::remove_instructor_earning_token(&env, &instructor, &token);
         } else {
             Self::persist(&env, &earnings_key, &new_balance);
         }
@@ -4406,6 +4410,15 @@ impl HamplardContract {
             .persistent()
             .get(&DataKey::InstructorEarnings(instructor, token))
             .unwrap_or(0)
+    }
+
+    /// List all token addresses in which `instructor` currently holds a
+    /// non-zero withdrawable earnings balance.
+    pub fn get_instructor_earning_tokens(env: Env, instructor: Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::InstructorEarningTokens(instructor))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Get the instructor's lifetime net earnings across all tokens.
@@ -8073,6 +8086,9 @@ impl HamplardContract {
         );
             .unwrap_or_else(|| panic!("overflow computing instructor earnings"));
         Self::persist(&env, &key, &new_balance);
+        if new_balance > 0 {
+            Self::add_instructor_earning_token(env, instructor, token);
+        }
         // Also update the per-instructor total earnings accumulator
         // Also update the lifetime net earnings accumulator.
         let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
@@ -8202,6 +8218,7 @@ impl HamplardContract {
         let new_balance = current - amount;
         if new_balance == 0 {
             env.storage().persistent().remove(&key);
+            Self::remove_instructor_earning_token(env, instructor, token);
         } else {
             Self::persist(&env, &key, &new_balance);
         }
@@ -8228,6 +8245,38 @@ impl HamplardContract {
             env.storage()
                 .instance()
                 .set(&outstanding_key, &new_outstanding);
+        }
+    }
+
+    /// Ensure `token` is present in `instructor`'s non-zero earning tokens set.
+    fn add_instructor_earning_token(env: &Env, instructor: &Address, token: &Address) {
+        let key = DataKey2::InstructorEarningTokens(instructor.clone());
+        let mut tokens: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        if !tokens.contains(token) {
+            tokens.push_back(token.clone());
+            Self::persist(env, &key, &tokens);
+        }
+    }
+
+    /// Remove `token` from `instructor`'s non-zero earning tokens set.
+    fn remove_instructor_earning_token(env: &Env, instructor: &Address, token: &Address) {
+        let key = DataKey2::InstructorEarningTokens(instructor.clone());
+        if let Some(tokens) = env.storage().persistent().get::<DataKey2, Vec<Address>>(&key) {
+            let mut updated = Vec::new(env);
+            for t in tokens.iter() {
+                if t != *token {
+                    updated.push_back(t);
+                }
+            }
+            if updated.is_empty() {
+                env.storage().persistent().remove(&key);
+            } else {
+                Self::persist(env, &key, &updated);
+            }
         }
     }
 
