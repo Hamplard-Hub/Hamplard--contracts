@@ -20080,3 +20080,36 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     let rest = client.list_courses_by_status(&CourseStatus::Active, &50u32, &u32::MAX);
     assert_eq!(rest.len(), 5);
 }
+
+#[test]
+fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    assert_eq!(client.get_platform_fees_collected(&token_id), 0);
+
+    let course_id = String::from_str(&env, "FEE-TRACK-1");
+    let price = 100_000_000i128;
+    register_and_approve_course(&env, &client, &token_id, &admin, &instructor, "FEE-TRACK-1", price);
+
+    let student1 = Address::generate(&env);
+    let student2 = Address::generate(&env);
+    token_admin_client.mint(&student1, &price);
+    token_admin_client.mint(&student2, &price);
+
+    client.enroll(&student1, &course_id);
+    let fee_one = client.get_platform_fees_collected(&token_id);
+    assert!(fee_one > 0);
+
+    client.enroll(&student2, &course_id);
+    assert_eq!(client.get_platform_fees_collected(&token_id), fee_one * 2);
+
+    // Fund refund reserve and process a full refund for student1
+    token_admin_client.mint(&treasury, &fee_one);
+    client.fund_refund_reserve(&treasury, &token_id, &fee_one);
+    client.request_refund(&student1, &course_id);
+    client.process_refund(&admin, &student1, &course_id, &true, &None);
+
+    assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
+}
