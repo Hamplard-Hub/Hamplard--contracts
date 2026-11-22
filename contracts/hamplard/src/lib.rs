@@ -6571,7 +6571,7 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::RefundError);
         }
 
-        if approved {
+        let (event_refund_amount, event_platform_amount, event_instructor_amount) = if approved {
             let mut course = Self::get_course_internal(&env, &course_id)
                 .unwrap_or_else(|| panic!("course not found"));
             let breakdown = Self::refund_enrollment(&env, &mut course, &student, refund_amount);
@@ -6709,17 +6709,28 @@ impl HamplardContract {
             request.status = RefundStatus::Approved;
             request.refund_amount = Some(breakdown.refund_amount);
             Self::apply_refund_approval(&env, &key, &mut request, refund_amount);
+            (actual_refund_amount, platform_refund, instructor_refund)
         } else {
             request.status = RefundStatus::Rejected;
             request.refund_amount = None;
             env.storage().persistent().set(&key, &request);
-        }
+            (0i128, 0i128, 0i128)
+        };
 
         Self::persist(&env, &key, &request);
 
         env.events().publish(
             (Symbol::new(&env, "refund_processed"), course_id.clone()),
-            (student, course_id, approved, admin, env.ledger().sequence()),
+            (
+                student,
+                course_id,
+                approved,
+                admin,
+                event_refund_amount,
+                event_platform_amount,
+                event_instructor_amount,
+                env.ledger().sequence(),
+            ),
         );
     }
 
