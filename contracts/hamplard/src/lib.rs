@@ -673,6 +673,15 @@ pub enum CapacityMode {
     Concurrent,
 }
 
+/// Identifies which role paused a course so moderation pauses by an admin
+/// cannot be undone by the course instructor.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PausedBy {
+    Instructor,
+    Admin,
+}
+
 /// A course listing stored on-chain
 /// Full content (videos, materials, descriptions) lives off-chain in the backend.
 /// The contract stores only what is needed to enforce payments and certificates.
@@ -787,6 +796,8 @@ pub struct Course {
     /// course has received its first enrollment so the split cannot be
     /// changed retroactively.
     pub co_instructors: Vec<CoInstructor>,
+    /// Role that paused the course via `pause_course`, if currently paused.
+    pub paused_by: Option<PausedBy>,
 }
 
 /// An enrollment record — one per student per course
@@ -1781,6 +1792,7 @@ impl HamplardContract {
             archived_at_ledger: None,
             categories,
             co_instructors: Vec::new(&env),
+            paused_by: None,
         };
 
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
@@ -2188,6 +2200,11 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Paused;
+        course.paused_by = Some(if is_admin {
+            PausedBy::Admin
+        } else {
+            PausedBy::Instructor
+        });
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
 
@@ -2244,7 +2261,12 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPaused);
         }
 
+        if course.paused_by == Some(PausedBy::Admin) && !is_admin {
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        }
+
         course.status = CourseStatus::Active;
+        course.paused_by = None;
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
 
