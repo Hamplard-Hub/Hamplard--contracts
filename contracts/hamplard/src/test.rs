@@ -12725,6 +12725,104 @@ fn test_update_course_rejects_zero_max_capacity() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_update_course_rejects_max_capacity_below_total_enrollments() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-LOW-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-LOW-CAP");
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    // total_enrollments == 2 in Lifetime mode; setting max_capacity to Some(1) must panic.
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+}
+
+#[test]
+fn test_update_course_allows_max_capacity_equal_to_current_enrollments() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-EXACT-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-EXACT-CAP");
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    client.update_course(&instructor, &course_id, &None, &Some(Some(2u32)), &None);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.max_capacity, Some(2u32));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_update_course_rejects_max_capacity_below_active_enrollments_in_concurrent_mode() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-CONCURRENT-CAP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-CONCURRENT-CAP");
+
+    client.update_course(
+        &instructor,
+        &course_id,
+        &None,
+        &None,
+        &Some(crate::CapacityMode::Concurrent),
+    );
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    asset_client.mint(&student_b, &1_000_000_000i128);
+
+    client.enroll(&student_a, &course_id, &i128::MAX);
+    client.enroll(&student_b, &course_id, &i128::MAX);
+
+    // active_enrollments == 2 in Concurrent mode; setting max_capacity to Some(1) must panic.
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+}
+
+#[test]
 fn test_update_course_allows_unlimited_capacity_with_none() {
     let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
