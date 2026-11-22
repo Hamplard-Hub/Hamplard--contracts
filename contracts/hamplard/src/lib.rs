@@ -4020,15 +4020,18 @@ impl HamplardContract {
                 panic!("token transfer amount mismatch");
             }
 
+            // #368 — Accumulate the platform fee in-contract instead of
+            // pushing it to the treasury on every enrollment.  The fee is
+            // swept to the treasury in a single call to sweep_platform_fees().
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
                 Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
                     (
-                        Symbol::new(&env, "platform_fee_transferred"),
+                        Symbol::new(&env, "platform_fee_accrued"),
                         course_id.clone(),
                     ),
-                    (treasury.clone(), platform_amount, env.ledger().sequence()),
+                    (course.token.clone(), platform_amount, new_total, env.ledger().sequence()),
                 );
             }
 
@@ -4264,15 +4267,16 @@ impl HamplardContract {
                 soroban_sdk::panic_with_error!(&env, Error::TransferAmountMismatch);
             }
 
+            // #368 — Accumulate the platform fee in-contract (same as enroll_internal).
             if platform_amount > 0 {
                 token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
                 Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
                     (
-                        Symbol::new(env, "platform_fee_transferred"),
+                        Symbol::new(env, "platform_fee_accrued"),
                         course_id.clone(),
                     ),
-                    (treasury.clone(), platform_amount, env.ledger().sequence()),
+                    (course.token.clone(), platform_amount, new_total, env.ledger().sequence()),
                 );
             }
 
@@ -7456,6 +7460,54 @@ impl HamplardContract {
             .persistent()
             .get(&DataKey2::RefundReserve(token))
             .unwrap_or(0)
+    }
+
+    /// Return the total platform fees accumulated for `token` since the last
+    /// sweep (or since contract deployment).
+    pub fn get_platform_fees_accumulated(env: Env, token: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey2::PlatformFeesAccumulated(token))
+            .unwrap_or(0)
+    }
+
+    /// Transfer all accumulated platform fees for `token` to the current
+    /// treasury address in a single call.
+    ///
+    /// This is permissionless: anyone may call it, and the funds always go to
+    /// the treasury (never to `caller`).  Callers pay the gas for the
+    /// cross-contract transfer, which benefits the platform by reducing per-
+    /// enrollment overhead.
+    ///
+    /// Panics if there are no fees to sweep (to avoid a no-op transfer).
+    pub fn sweep_platform_fees(env: Env, caller: Address, token: Address) {
+        caller.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        let acc_key = DataKey2::PlatformFeesAccumulated(token.clone());
+        let amount: i128 = env.storage().instance().get(&acc_key).unwrap_or(0);
+        if amount == 0 {
+            panic!("no platform fees to sweep");
+        }
+
+        // Clear the accumulator before transferring to protect against
+        // re-entrancy (even though Soroban's single-threaded model makes it
+        // practically impossible today).
+        env.storage().instance().set(&acc_key, &0i128);
+
+        let treasury = Self::read_treasury(&env);
+        token::Client::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &treasury,
+            &amount,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "platform_fees_swept"), token.clone()),
+            (treasury, token, amount, env.ledger().sequence()),
+        );
     }
 
     /// Pay the platform-fee share of a refund to `student` out of the
