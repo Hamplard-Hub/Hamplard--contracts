@@ -1847,6 +1847,13 @@ impl HamplardContract {
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+
+        if course.status != CourseStatus::Pending {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
+        }
+
         // Enforce governance window: approve_course cannot be called
         // immediately after init(). This ensures there's a review period
         // where the community can observe admin actions before the platform
@@ -1871,9 +1878,6 @@ impl HamplardContract {
             }
         }
 
-        let mut course = Self::get_course_internal(&env, &course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
         // #361 — Guard against a price change between the price the student
         // approved and execution: revert before any payment is attempted when
         // the current price exceeds the student's stated maximum.
@@ -1893,10 +1897,6 @@ impl HamplardContract {
 
         if elapsed < delay {
             soroban_sdk::panic_with_error!(&env, Error::GovernanceWindowNotElapsed);
-        }
-
-        if course.status != CourseStatus::Pending {
-            soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
         }
 
         // Issue 167: High-value course co-signature

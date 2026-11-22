@@ -5177,6 +5177,55 @@ fn test_course_approval_time_lock_premature_panics() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_approve_active_course_with_unelapsed_review_delay_panics_not_pending() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-ACTIVE-DELAY");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.approve_course(&admin, &course_id);
+
+    // Raise review delay after approval so elapsed < delay; status check must win.
+    client.update_min_review_delay(&admin, &100u32);
+    client.approve_course(&admin, &course_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_approve_rejected_course_with_unelapsed_review_delay_panics_not_pending() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.update_min_review_delay(&admin, &10u32);
+
+    let course_id = String::from_str(&env, "COURSE-REJECTED-DELAY");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(&admin, &course_id, &String::from_str(&env, "not a fit"));
+
+    // Review delay has not elapsed, but course is Rejected — must panic with CourseNotPending (#17).
+    client.approve_course(&admin, &course_id);
+}
+
+#[test]
 fn test_course_approval_time_lock_success() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
