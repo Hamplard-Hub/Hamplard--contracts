@@ -6280,6 +6280,39 @@ fn test_frozen_instructor_cannot_register_course() {
         &soroban_sdk::Vec::new(&env),
     );
 }
+
+// #379 — approve_course must reject a frozen instructor's pending course.
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_approve_course_frozen_instructor_panics() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register a course BEFORE freezing the instructor so the course reaches
+    // Pending status successfully.
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "FROZEN-PENDING-COURSE"),
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    // Advance past the min-review-delay window.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+
+    // Freeze the instructor after registration.
+    client.freeze_instructor(&admin, &instructor, &String::from_str(&env, "test reason"));
+
+    // approve_course must panic with InstructorFrozen (#8).
+    client.approve_course(&admin, &String::from_str(&env, "FROZEN-PENDING-COURSE"));
+}
+
 #[test]
 fn test_refund_lifecycle() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
