@@ -4894,7 +4894,7 @@ impl HamplardContract {
         }
 
         enrollment.completed = true;
-        enrollment.evidence_hash = evidence_hash;
+        enrollment.evidence_hash = evidence_hash.clone();
         enrollment.completed_at_ledger = Some(env.ledger().sequence()); // Issue 166
 
         Self::persist(
@@ -4932,7 +4932,13 @@ impl HamplardContract {
         let completion_ledger = env.ledger().sequence();
         env.events().publish(
             (Symbol::new(&env, "course_completed"), course_id.clone()),
-            (course_id.clone(), student, admin, completion_ledger),
+            (
+                course_id.clone(),
+                student,
+                admin,
+                evidence_hash,
+                completion_ledger,
+            ),
         );
     }
 
