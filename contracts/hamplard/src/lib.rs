@@ -1004,6 +1004,20 @@ pub struct InstructorStats {
     pub total_certificates: u32,
 }
 
+/// Hot enrollment and revenue counters for a course, stored separately from
+/// the static `Course` metadata so enrollments do not rewrite the full
+/// `Course` entry.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CourseStats {
+    /// Total number of non-refunded enrollments.
+    pub total_enrollments: u32,
+    /// Total active enrollments (enrolled but not completed or refunded).
+    pub active_enrollments: u32,
+    /// Total USDC earned across all enrollments, net of refunds (in stroops).
+    pub total_earned: i128,
+}
+
 // ============================================================
 // STORAGE KEYS
 // ============================================================
@@ -2609,13 +2623,18 @@ impl HamplardContract {
                                 soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
                             });
 
-                        if course.active_enrollments > 0 {
-                            course.active_enrollments -= 1;
+                        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+                        if stats.active_enrollments > 0 {
+                            stats.active_enrollments -= 1;
                         }
                         // Capacity is a lifetime cap on non-refunded
                         // enrollments, so a refund releases the seat. (#324)
-                        if course.total_enrollments > 0 {
-                            course.total_enrollments -= 1;
+                        if stats.total_enrollments > 0 {
+                            stats.total_enrollments -= 1;
+                        }
+                        Self::write_course_stats(&env, &course_id, &stats);
+                        course.active_enrollments = stats.active_enrollments;
+                        course.total_enrollments = stats.total_enrollments;
 
                         if enrollment.amount_paid > 0 {
                             let total_active: u32 = env
@@ -4095,21 +4114,21 @@ impl HamplardContract {
             &enrollment,
         );
 
-        // Update course stats
-        course.total_enrollments = course
+        // Update course stats without rewriting the static Course entry.
+        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+        stats.total_enrollments = stats
             .total_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.active_enrollments = course
+        stats.active_enrollments = stats
             .active_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.total_earned = course
+        stats.total_earned = stats
             .total_earned
             .checked_add(course.price)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.last_updated_ledger = env.ledger().sequence();
-        Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::write_course_stats(&env, &course_id, &stats);
 
         // Increment platform-wide active enrollment counter
         let total_active: u32 = Self::read_total_active_enrollments(env);
@@ -4297,20 +4316,20 @@ impl HamplardContract {
             &enrollment,
         );
 
-        course.total_enrollments = course
+        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+        stats.total_enrollments = stats
             .total_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.active_enrollments = course
+        stats.active_enrollments = stats
             .active_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.total_earned = course
+        stats.total_earned = stats
             .total_earned
             .checked_add(course.price)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.last_updated_ledger = env.ledger().sequence();
-        Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::write_course_stats(&env, &course_id, &stats);
 
         let total_active: u32 = Self::read_total_active_enrollments(env);
         Self::write_total_active_enrollments(
@@ -4594,7 +4613,8 @@ impl HamplardContract {
 
         Self::persist(&env, &enrollment_key, &new_enrollment);
 
-        course.total_enrollments = course
+        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+        stats.total_enrollments = stats
             .total_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
@@ -4603,19 +4623,18 @@ impl HamplardContract {
         // A completed attempt was already removed from the active counters
         // by mark_completed(). An expired attempt is still counted as active,
         // so release that slot before counting the new enrollment.
-        if !previous_was_completed && course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
+        if !previous_was_completed && stats.active_enrollments > 0 {
+            stats.active_enrollments -= 1;
         }
-        course.active_enrollments = course
+        stats.active_enrollments = stats
             .active_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.total_earned = course
+        stats.total_earned = stats
             .total_earned
             .checked_add(course.price)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.last_updated_ledger = env.ledger().sequence();
-        Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        Self::write_course_stats(&env, &course_id, &stats);
 
         // Increment platform-wide active enrollment counter
         let total_active: u32 = Self::read_total_active_enrollments(&env);
@@ -5051,10 +5070,10 @@ impl HamplardContract {
         // approved and execution: revert before any payment is attempted when
         // the current price exceeds the student's stated maximum.
         Self::assert_price_within_limit(course.price, max_price);
-        if course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
-            course.last_updated_ledger = env.ledger().sequence();
-            Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+        if stats.active_enrollments > 0 {
+            stats.active_enrollments -= 1;
+            Self::write_course_stats(&env, &course_id, &stats);
         }
 
         // Decrement platform-wide active enrollment counter
@@ -5145,18 +5164,11 @@ impl HamplardContract {
 
         env.storage().persistent().remove(&enrollment_key);
 
-        if course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
+        let mut stats = Self::read_course_stats(&env, &course_id, &course);
+        if stats.active_enrollments > 0 {
+            stats.active_enrollments -= 1;
+            Self::write_course_stats(&env, &course_id, &stats);
         }
-        course.last_updated_ledger = env.ledger().sequence();
-        env.storage()
-            .persistent()
-            .set(&DataKey::Course(course_id.clone()), &course);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Course(course_id.clone()),
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
 
         let total_active: u32 = env
             .storage()
@@ -7160,15 +7172,17 @@ impl HamplardContract {
             Self::persist(&env, &history_key, &history);
             env.storage().persistent().remove(&enrollment_key);
 
-            // Decrement active enrollments
-            if course.active_enrollments > 0 {
-                course.active_enrollments -= 1;
+            // Decrement active and non-refunded enrollments in CourseStats
+            let mut stats = Self::read_course_stats(&env, &course_id, &course);
+            if stats.active_enrollments > 0 {
+                stats.active_enrollments -= 1;
             }
             // Capacity is a lifetime cap on non-refunded enrollments, so a
             // refund releases the seat. (#324)
-            if course.total_enrollments > 0 {
-                course.total_enrollments -= 1;
+            if stats.total_enrollments > 0 {
+                stats.total_enrollments -= 1;
             }
+            Self::write_course_stats(&env, &course_id, &stats);
 
             course.last_updated_ledger = env.ledger().sequence();
             Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
@@ -7375,11 +7389,6 @@ impl HamplardContract {
         if course.total_enrollments > 0 {
             course.total_enrollments -= 1;
         }
-
-        course.last_updated_ledger = env.ledger().sequence();
-        env.storage()
-            .persistent()
-            .set(&DataKey::Course(request.course_id.clone()), &course);
 
         // Decrement platform-wide active enrollment counter
         let total_active: u32 = env
@@ -7739,6 +7748,14 @@ impl HamplardContract {
                 Self::PERSISTENT_TTL_THRESHOLD,
                 Self::PERSISTENT_TTL_EXTEND_TO,
             );
+            let stats_key = DataKey2::CourseStats(course_id.clone());
+            if env.storage().persistent().has(&stats_key) {
+                env.storage().persistent().extend_ttl(
+                    &stats_key,
+                    Self::PERSISTENT_TTL_THRESHOLD,
+                    Self::PERSISTENT_TTL_EXTEND_TO,
+                );
+            }
         }
         Self::get_course_internal(&env, &course_id)
     }
@@ -8276,13 +8293,14 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
         {
-            return Some(course);
+            return Some(Self::merge_course_stats(env, course_id, course));
         }
 
         // If not found in active courses, check archived courses
         env.storage()
             .persistent()
             .get::<DataKey, Course>(&DataKey::ArchivedCourse(course_id.clone()))
+            .map(|course| Self::merge_course_stats(env, course_id, course))
     }
 
     fn get_enrollment_internal(env: &Env, student: &Address, course_id: &String) -> Enrollment {
@@ -9037,8 +9055,10 @@ impl HamplardContract {
         );
         env.storage().persistent().remove(&enrollment_key);
 
-        if course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
+        let mut stats = Self::read_course_stats(env, &course.id, course);
+        if stats.active_enrollments > 0 {
+            stats.active_enrollments -= 1;
+            Self::write_course_stats(env, &course.id, &stats);
         }
 
         let total_active: u32 = Self::read_total_active_enrollments(env);

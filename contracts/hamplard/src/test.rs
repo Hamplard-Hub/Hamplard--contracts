@@ -18196,6 +18196,64 @@ fn test_expired_enrollment_does_not_release_capacity_slot() {
 }
 
 #[test]
+fn test_enrollment_writes_course_stats_without_rewriting_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-STATS-SEP",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-STATS-SEP");
+
+    let initial_updated_ledger = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+            .unwrap()
+            .last_updated_ledger
+    });
+
+    // Advance ledger before enrolling so any Course rewrite would change last_updated_ledger.
+    env.ledger().with_mut(|l| l.sequence_number += 10);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000);
+    client.enroll(&student, &course_id);
+
+    // Static Course entry in storage was not rewritten during enrollment.
+    env.as_contract(&contract_id, || {
+        let raw_course = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+            .unwrap();
+        assert_eq!(raw_course.last_updated_ledger, initial_updated_ledger);
+        assert_eq!(raw_course.total_enrollments, 0);
+
+        let stats = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, CourseStats>(&DataKey2::CourseStats(course_id.clone()))
+            .unwrap();
+        assert_eq!(stats.total_enrollments, 1);
+        assert_eq!(stats.active_enrollments, 1);
+        assert_eq!(stats.total_earned, 100_000_000);
+    });
+
+    // get_course() still returns the merged view.
+    let merged = client.get_course(&course_id).unwrap();
+    assert_eq!(merged.total_enrollments, 1);
+    assert_eq!(merged.active_enrollments, 1);
+    assert_eq!(merged.total_earned, 100_000_000);
+}
+
+#[test]
 fn test_expired_enrollment_can_re_enroll_and_is_archived() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
