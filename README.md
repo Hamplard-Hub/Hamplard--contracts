@@ -306,7 +306,8 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `enroll(student, course_id)` | Student | Pay course price; platform fee is forwarded and instructor earnings are credited |
 | `batch_enroll(student, course_ids)` | Student | Enroll in up to 50 courses in one transaction |
 | `re_enroll(student, course_id)` | Student | Re-enroll after a completed course, archiving the previous enrollment |
-| `withdraw_earnings(instructor, token, amount, destination)` | Instructor | Withdraw accumulated earnings (`amount = 0` withdraws the full balance) |
+| `withdraw_earnings(instructor, token, amount, destination)` | Instructor | Withdraw a positive `amount` of accumulated earnings (`amount <= 0` panics) |
+| `withdraw_all_earnings(instructor, token, destination)` | Instructor | Withdraw the full accumulated earnings balance |
 | `request_refund(student, course_id)` | Student | Open a refund request within the configured window |
 | `process_refund(admin, student, course_id, approved, refund_amount)` | Admin | Approve or reject a refund and debit each revenue recipient proportionally |
 
@@ -399,6 +400,11 @@ lead instructor = 80 - 24 - 16 = 40 USDC
 Refunds debit the lead instructor and every co-instructor in the same
 proportions, so no recipient keeps revenue for an enrollment that was refunded.
 
+If the lead instructor or any configured co-instructor is frozen, new
+enrollments and re-enrollments for the course are rejected until the frozen
+instructor is unfrozen, ensuring frozen co-instructors cannot accrue new
+earnings.
+
 The platform fee percentage can be:
 
 - **Global default** (set at `__constructor`, updatable by admin)
@@ -486,14 +492,29 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_paused`               | `course_id`                                 | Course paused                             |
 | `course_unpaused`             | `course_id`                                 | Course unpaused                           |
 | `course_archived`             | `course_id`                                 | Course archived                           |
-| `student_enrolled`            | `(course_id, student, amount_paid)`         | Student enrolls and pays                  |
-| `instructor_earnings_credited`| `(course_id)` / `(instructor, amount, ledger)` | Instructor share credited to pull balance |
+| `student_enrolled` | `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)` | Student enrolls and pays (single canonical enrollment event) |
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
+| `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
+| `refund_processed`            | `(student, course_id, approved, admin, refund_amount, platform_amount, instructor_amount, ledger)` | Refund request approved or rejected by admin |
 
+### `student_enrolled` is the single enrollment event
+
+`enroll`, `batch_enroll` and `re_enroll` emit exactly one payment event per paid
+enrollment. Topics: `("student_enrolled", course_id)`. Data:
+`(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)`,
+where `payouts` is a `Vec<(Address, i128)>` of every instructor recipient
+(lead instructor first, then co-instructors) and sums to `instructor_amount`.
+
+**Indexer migration (breaking):** the first six data fields are unchanged and
+two fields were appended. `platform_fee_transferred`,
+`instructor_payment_transferred` and `co_instructor_paid` are no longer
+emitted during enrollment. Read the platform fee and `treasury` from
+`student_enrolled`, and per-recipient amounts from `payouts`. Decoders that
+expect a 6-field tuple must be updated to 8 fields.
 See `contracts/hamplard/src/lib.rs` for the complete event list, including waitlist, freeze, blocklist, approver, and configuration events.
 
 ---
