@@ -3234,7 +3234,7 @@ impl HamplardContract {
             panic!("student is blocked");
         }
 
-        if Self::is_instructor_frozen_internal(env, &course.instructor) {
+        if Self::is_any_course_instructor_frozen(env, &course) {
             Self::emit_enrollment_failed(env, student, course_id, "INSTRUCTOR_FROZEN");
             panic!("instructor is frozen");
         }
@@ -4031,7 +4031,7 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::StudentBlocked);
         }
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if Self::is_any_course_instructor_frozen(&env, &course) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -7728,6 +7728,22 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::InstructorBlocked(instructor.clone()))
             .unwrap_or(false)
+    }
+
+    /// Returns `true` if the lead instructor or any configured co-instructor
+    /// on `course` is currently frozen. Enrollment and re-enrollment reject
+    /// courses when any revenue recipient on the instructor side is frozen so
+    /// frozen co-instructors cannot accrue new earnings. (#343)
+    fn is_any_course_instructor_frozen(env: &Env, course: &Course) -> bool {
+        if Self::is_instructor_frozen_internal(env, &course.instructor) {
+            return true;
+        }
+        for co_instructor in course.co_instructors.iter() {
+            if Self::is_instructor_frozen_internal(env, &co_instructor.address) {
+                return true;
+            }
+        }
+        false
     }
 
     fn is_student_blocked_internal(env: &Env, student: &Address) -> bool {
