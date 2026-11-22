@@ -20356,6 +20356,70 @@ fn test_list_courses_by_status_clamps_limit_and_empty_catalog() {
     assert_eq!(rest.len(), 5);
 }
 
+// ============================================================
+// #326 — process_refund / archive_course use the effective treasury
+// ============================================================
+
+#[test]
+fn test_refund_uses_new_treasury_after_pending_treasury_matures() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let new_treasury = Address::generate(&env);
+    let student = Address::generate(&env);
+    asset_client.mint(&student, &1_000_000_000);
+
+    let price = 500_000_000i128;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-326",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-326");
+
+    // Enroll student so a refund request can be filed.
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    // Schedule treasury update and request the refund before it matures.
+    client.update_treasury(&admin, &sec_admin, &new_treasury);
+    client.request_refund(&student, &course_id);
+
+    // Fund both treasuries so the transfer won't fail regardless of which is
+    // used; we'll detect the wrong one by checking balances after.
+    asset_client.mint(&treasury, &price);
+    asset_client.mint(&new_treasury, &price);
+    let old_treasury_balance_before = token_client.balance(&treasury);
+    let new_treasury_balance_before = token_client.balance(&new_treasury);
+
+    // Advance past both the treasury delay and the refund processing deadline
+    // so the student can self-approve via claim_refund (hits apply_refund_approval).
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::TREASURY_UPDATE_DELAY_LEDGERS + 10_000;
+    });
+
+    // Student self-approves — this takes the apply_refund_approval path.
+    client.claim_refund(&student, &course_id);
+
+    let platform_fee = price * 20 / 100; // 20% default fee
+
+    // The old treasury balance must be unchanged — the platform-fee share
+    // of the refund was drawn from the new (now effective) treasury.
+    assert_eq!(
+        token_client.balance(&treasury),
+        old_treasury_balance_before,
+        "old treasury should not be debited after pending update matures"
+    );
+    assert_eq!(
+        token_client.balance(&new_treasury),
+        new_treasury_balance_before - platform_fee,
+        "new (effective) treasury should be debited for the platform-fee refund"
+    );
 #[test]
 fn test_get_instructor_earning_tokens_tracks_credit_debit_and_withdrawal() {
 fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
