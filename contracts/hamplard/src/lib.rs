@@ -3234,16 +3234,29 @@ impl HamplardContract {
 
     /// Configure the co-instructors of a course and their revenue shares.
     ///
+    /// This is the first step of a two-step consent flow.  `set_co_instructors`
+    /// records the proposed addresses and their shares as *pending invitations*;
+    /// no address becomes active until it calls `accept_co_instructor()`.
+    ///
+    /// This design prevents arbitrary addresses (including exchange or contract
+    /// addresses that cannot withdraw) from being attached to a course and
+    /// credited earnings without their knowledge.
+    ///
     /// `co_instructor_addresses` and `co_instructor_shares_bps` must have the
     /// same length. Shares are basis points of the instructor portion of each
     /// enrollment and must total at most 10 000 bps; any remainder is paid to
     /// the lead instructor. Once the course has received its first enrollment
     /// the split is locked so it cannot be changed retroactively.
     ///
+    /// Calling `set_co_instructors` again replaces the entire pending list,
+    /// clearing unaccepted invitations.  Already-accepted co-instructors in
+    /// `course.co_instructors` are cleared and must re-accept from the new
+    /// proposal.
+    ///
     /// # Arguments
     /// - `caller`                    — course instructor or admin (must sign)
     /// - `course_id`                 — the course to configure
-    /// - `co_instructor_addresses`   — co-instructor addresses
+    /// - `co_instructor_addresses`   — co-instructor addresses to invite
     /// - `co_instructor_shares_bps`  — matching revenue shares in basis points
     pub fn set_co_instructors(
         env: Env,
@@ -3337,7 +3350,9 @@ impl HamplardContract {
             panic!("total co-instructor shares cannot exceed 10000 bps");
         }
 
-        course.co_instructors = co_instructors.clone();
+        // Clear the live co-instructor list — new assignments are not active
+        // until each address calls accept_co_instructor().
+        course.co_instructors = Vec::new(&env);
         course.last_updated_ledger = env.ledger().sequence();
         env.storage()
             .persistent()
@@ -3348,9 +3363,115 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
+        // Evict any existing pending invitations for this course before
+        // writing the new ones, so a re-proposal starts from a clean slate.
+        let pending_list_key = DataKey2::PendingCoInstructorList(course_id.clone());
+        let old_pending: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&pending_list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        for i in 0..old_pending.len() {
+            let addr = old_pending.get(i).unwrap();
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::PendingCoInstructor(course_id.clone(), addr));
+        }
+
+        // Write new pending invitations.
+        let mut pending_addresses: Vec<Address> = Vec::new(&env);
+        for i in 0..co_instructors.len() {
+            let co = co_instructors.get(i).unwrap();
+            let inv_key = DataKey2::PendingCoInstructor(course_id.clone(), co.address.clone());
+            env.storage().persistent().set(&inv_key, &co.share_bps);
+            env.storage().persistent().extend_ttl(
+                &inv_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+            pending_addresses.push_back(co.address.clone());
+        }
+        env.storage().persistent().set(&pending_list_key, &pending_addresses);
+        env.storage().persistent().extend_ttl(
+            &pending_list_key,
+            Self::PERSISTENT_TTL_THRESHOLD,
+            Self::PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.events().publish(
-            (Symbol::new(&env, "co_instructors_set"), course_id.clone()),
+            (Symbol::new(&env, "co_instructors_proposed"), course_id.clone()),
             (course_id, co_instructors, env.ledger().sequence()),
+        );
+    }
+
+    /// Accept a co-instructor invitation for a course.
+    ///
+    /// After `set_co_instructors` proposes a list, each invited address must
+    /// call this function to consent to the role.  Only then does the address
+    /// appear in `course.co_instructors` and start receiving earnings from
+    /// new enrollments.
+    ///
+    /// A co-instructor who does not accept is never credited earnings, so
+    /// exchange addresses or contract addresses that cannot withdraw are
+    /// never trapped with unreachable funds.
+    ///
+    /// # Arguments
+    /// - `co_instructor` — the invited address (must sign)
+    /// - `course_id`     — the course the invitation is for
+    ///
+    /// # Panics
+    /// - If there is no pending invitation for `(course_id, co_instructor)`.
+    pub fn accept_co_instructor(env: Env, co_instructor: Address, course_id: String) {
+        co_instructor.require_auth();
+
+        let inv_key = DataKey2::PendingCoInstructor(course_id.clone(), co_instructor.clone());
+
+        let share_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&inv_key)
+            .unwrap_or_else(|| panic!("no pending co-instructor invitation"));
+
+        // Remove the pending invitation entry.
+        env.storage().persistent().remove(&inv_key);
+
+        // Remove from the pending list.
+        let list_key = DataKey2::PendingCoInstructorList(course_id.clone());
+        let old_list: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for i in 0..old_list.len() {
+            let addr = old_list.get(i).unwrap();
+            if addr != co_instructor {
+                new_list.push_back(addr);
+            }
+        }
+        if new_list.is_empty() {
+            env.storage().persistent().remove(&list_key);
+        } else {
+            env.storage().persistent().set(&list_key, &new_list);
+            env.storage().persistent().extend_ttl(
+                &list_key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+
+        // Add to the live co-instructor list on the course.
+        let mut course = Self::get_course_internal(&env, &course_id)
+            .unwrap_or_else(|| panic!("course not found"));
+        course
+            .co_instructors
+            .push_back(CoInstructor { address: co_instructor.clone(), share_bps });
+        course.last_updated_ledger = env.ledger().sequence();
+        Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
+
+        env.events().publish(
+            (Symbol::new(&env, "co_instructor_accepted"), course_id.clone()),
+            (co_instructor, course_id, share_bps, env.ledger().sequence()),
         );
     }
 

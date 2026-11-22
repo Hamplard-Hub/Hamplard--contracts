@@ -16405,10 +16405,12 @@ fn test_set_co_instructors_and_credit_split_on_enroll() {
         ],
     );
 
+    // Co-instructors must accept before they appear in the live list.
+    client.accept_co_instructor(&co_instructor_a, &course_id);
+    client.accept_co_instructor(&co_instructor_b, &course_id);
+
     let course = client.get_course(&course_id).unwrap();
     assert_eq!(course.co_instructors.len(), 2);
-    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 3_000);
-    assert_eq!(course.co_instructors.get(1).unwrap().share_bps, 2_000);
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
@@ -16523,8 +16525,16 @@ fn test_admin_can_set_co_instructors() {
         &client,
         &admin,
         "COURSE-CO-ADMIN",
-        &[(co_instructor, 1_000)],
+        &[(co_instructor.clone(), 1_000)],
     );
+
+    // The live list is empty until the invited address accepts.
+    assert_eq!(
+        client.get_course(&course_id).unwrap().co_instructors.len(),
+        0
+    );
+
+    client.accept_co_instructor(&co_instructor, &course_id);
 
     assert_eq!(
         client.get_course(&course_id).unwrap().co_instructors.len(),
@@ -16804,6 +16814,99 @@ fn test_set_co_instructors_rejects_treasury() {
     );
 }
 
+// #402 — co-instructor consent: a proposed address not yet active
+#[test]
+fn test_set_co_instructors_does_not_activate_without_acceptance() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-01",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-01");
+    let co_instructor = Address::generate(&env);
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-CONSENT-01",
+        &[(co_instructor.clone(), 2_000)],
+    );
+
+    // Without acceptance the live list must still be empty.
+    assert_eq!(
+        client.get_course(&course_id).unwrap().co_instructors.len(),
+        0
+    );
+}
+
+// #402 — co-instructor consent: accepting the invitation makes it active
+#[test]
+fn test_accept_co_instructor_activates_address() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-02",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-02");
+    let co_instructor = Address::generate(&env);
+
+    set_co_instructor_split(
+        &env,
+        &client,
+        &instructor,
+        "COURSE-CO-CONSENT-02",
+        &[(co_instructor.clone(), 2_000)],
+    );
+
+    client.accept_co_instructor(&co_instructor, &course_id);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.co_instructors.len(), 1);
+    assert_eq!(
+        course.co_instructors.get(0).unwrap().address,
+        co_instructor
+    );
+    assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 2_000);
+}
+
+// #402 — co-instructor consent: accepting without an invitation panics
+#[test]
+#[should_panic(expected = "no pending co-instructor invitation")]
+fn test_accept_co_instructor_without_invitation_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CO-CONSENT-03",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CO-CONSENT-03");
+    let stranger = Address::generate(&env);
+
+    // Nobody invited `stranger` — must panic.
+    client.accept_co_instructor(&stranger, &course_id);
+}
+
 #[test]
 fn test_refund_debits_each_co_instructor_share() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
@@ -16832,6 +16935,10 @@ fn test_refund_debits_each_co_instructor_share() {
             (co_instructor_b.clone(), 2_000),
         ],
     );
+
+    // Both co-instructors must accept before they receive earnings.
+    client.accept_co_instructor(&co_instructor_a, &course_id);
+    client.accept_co_instructor(&co_instructor_b, &course_id);
 
     let student = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
