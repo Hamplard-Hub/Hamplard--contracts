@@ -828,6 +828,8 @@ pub struct Enrollment {
     pub enrollment_ref: String,
     /// Ledger sequence when the enrollment was marked completed, if any (#166)
     pub completed_at_ledger: Option<u32>,
+    /// Snapshot of the course's `enrollment_expiry_ledgers` at enrollment time (#340)
+    pub enrollment_expiry_ledgers: Option<u32>,
 }
 
 /// An on-chain certificate of completion
@@ -3706,6 +3708,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
             completed_at_ledger: None,
+            enrollment_expiry_ledgers: course.enrollment_expiry_ledgers,
         };
 
         Self::persist(
@@ -3917,6 +3920,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: enrollment_ref.clone(),
             completed_at_ledger: None,
+            enrollment_expiry_ledgers: course.enrollment_expiry_ledgers,
         };
 
         Self::persist(
@@ -4214,6 +4218,7 @@ impl HamplardContract {
             instructor_amount,
             enrollment_ref: new_enrollment_ref,
             completed_at_ledger: None,
+            enrollment_expiry_ledgers: course.enrollment_expiry_ledgers,
         };
 
         Self::persist(&env, &enrollment_key, &new_enrollment);
@@ -4629,7 +4634,7 @@ impl HamplardContract {
         }
 
         // Check enrollment expiry — expired enrollments cannot be completed
-        if let Some(expiry_ledgers) = course.enrollment_expiry_ledgers {
+        if let Some(expiry_ledgers) = enrollment.enrollment_expiry_ledgers {
             let expiry_at = enrollment
                 .enrolled_at_ledger
                 .checked_add(expiry_ledgers)
@@ -4719,7 +4724,7 @@ impl HamplardContract {
             panic!("refunded enrollment cannot expire");
         }
 
-        let expiry_ledgers = course
+        let expiry_ledgers = enrollment
             .enrollment_expiry_ledgers
             .unwrap_or_else(|| panic!("course has no enrollment expiry"));
         let expiry_at = enrollment
@@ -7690,8 +7695,8 @@ impl HamplardContract {
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::EnrollmentNotFound))
     }
 
-    fn is_enrollment_expired(env: &Env, course: &Course, enrollment: &Enrollment) -> bool {
-        match course.enrollment_expiry_ledgers {
+    fn is_enrollment_expired(env: &Env, _course: &Course, enrollment: &Enrollment) -> bool {
+        match enrollment.enrollment_expiry_ledgers {
             Some(expiry_ledgers) => {
                 let expiry_at = enrollment
                     .enrolled_at_ledger
@@ -7703,8 +7708,8 @@ impl HamplardContract {
         }
     }
 
-    fn is_enrollment_expired_internal(env: &Env, course: &Course, enrollment: &Enrollment) -> bool {
-        if let Some(expiry_ledgers) = course.enrollment_expiry_ledgers {
+    fn is_enrollment_expired_internal(env: &Env, _course: &Course, enrollment: &Enrollment) -> bool {
+        if let Some(expiry_ledgers) = enrollment.enrollment_expiry_ledgers {
             let expiry_at = enrollment
                 .enrolled_at_ledger
                 .checked_add(expiry_ledgers)
