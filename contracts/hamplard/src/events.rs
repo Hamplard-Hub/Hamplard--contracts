@@ -56,3 +56,22 @@ pub fn admin_transfer_cancelled(env: &Env, admin1: address, admin2: address) {
         (admin1, admin2),
     );
 }
+
+/// Event emitted when a refund is requested.
+///
+/// Payload carries the requested ledger sequence and the ledger at which the
+/// student enrolled so off-chain systems can compute deadlines without an
+/// extra read.
+pub fn refund_requested(
+    env: &Env,
+    course_id: Symbol,
+    student: address,
+    amount_paid: i128,
+    requested_at_ledger: u32,
+    enrolled_at_ledger: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "refund_requested"),),
+        (course_id, student, amount_paid, requested_at_ledger, enrolled_at_ledger),
+    );
+}
