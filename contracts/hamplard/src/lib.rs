@@ -7080,160 +7080,27 @@ impl HamplardContract {
         }
 
         let (event_refund_amount, event_platform_amount, event_instructor_amount) = if approved {
-            let mut course = Self::get_course_internal(&env, &course_id)
-                .unwrap_or_else(|| panic!("course not found"));
-            let breakdown = Self::refund_enrollment(&env, &mut course, &student, refund_amount);
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-            let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
-            let mut enrollment = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Enrollment>(&enrollment_key)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::EnrollmentNotFound));
-
-            // Re-check: reject if enrollment was completed after the request
-            // was filed — the student already received course value. (#316)
-            if enrollment.completed {
-                soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
-            }
-
-            // Record the refund in the course's cumulative stats. Partial
-            // refunds add only the amount actually paid back.
-            course.refund_count = course
-                .refund_count
-                .checked_add(1)
-                .unwrap_or_else(|| panic!("course refund_count overflow"));
-            course.total_refunded = course
-                .total_refunded
-                .checked_add(breakdown.refund_amount)
-                .unwrap_or_else(|| panic!("course total_refunded overflow"));
-            // Use the split actually applied at enroll()/re_enroll() time
-            // (persisted on the enrollment record) rather than recomputing
-            // it from course.platform_fee_percent, which is never consulted
-            // at enrollment and may have since diverged from the FeeConfig
-            // (and any risk surcharge) that deduct_fee() actually applied.
-            let platform_amount = enrollment.platform_amount;
-            let actual_refund_amount = match refund_amount {
-                Some(amount) => {
-                    if amount < 0 || amount > enrollment.amount_paid {
-                        soroban_sdk::panic_with_error!(&env, Error::RefundError);
-                    }
-                    amount
-                }
-                None => enrollment.amount_paid,
-            };
-            let platform_refund = if enrollment.amount_paid == 0 {
-                0
-            } else {
-                actual_refund_amount
-                    .checked_mul(platform_amount)
-                    .map(|v| v / enrollment.amount_paid)
-                    .unwrap_or_else(|| {
-                        soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
-                    })
-            };
-            let instructor_refund = actual_refund_amount
-                .checked_sub(platform_refund)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-
-            let token_client = token::Client::new(&env, &course.token);
-            let treasury = Self::effective_treasury(&env);
-            let treasury: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Treasury)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-            let treasury: Address = Self::read_treasury(&env);
-
-            // Refund the platform fee from the contract-held refund reserve (no
-            // treasury signature needed), proportional to the request when a
-            // partial amount is specified.
-            if platform_refund > 0 {
-                Self::pay_platform_refund(&env, &course.token, &student, platform_refund);
-            }
-
-            // Refund instructor share from contract-held earnings, again using the
-            // proportional partial split when a refund amount is requested.
-            if instructor_refund > 0 {
-                Self::debit_instructor_earnings(
-                    &env,
-                    &course.instructor,
-                    &course.token,
-                    instructor_refund,
-                );
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &student,
-                    &instructor_refund,
-                );
-            }
-
-            // Archive the refunded enrollment to EnrollmentHistory before
-            // removing the active record, so the refund is auditable on-chain.
-            enrollment.is_refunded = true;
-            let history_key = DataKey::EnrollmentHistory(student.clone(), course_id.clone());
-            let mut history: Vec<Enrollment> = env
-                .storage()
-                .persistent()
-                .get(&history_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            history.push_back(enrollment.clone());
-            Self::persist(&env, &history_key, &history);
-            env.storage().persistent().remove(&enrollment_key);
-
-            // Decrement active and non-refunded enrollments in CourseStats
-            let mut stats = Self::read_course_stats(&env, &course_id, &course);
-            if stats.active_enrollments > 0 {
-                stats.active_enrollments -= 1;
-            }
-            // Capacity is a lifetime cap on non-refunded enrollments, so a
-            // refund releases the seat. (#324)
-            if stats.total_enrollments > 0 {
-                stats.total_enrollments -= 1;
-            }
-            Self::write_course_stats(&env, &course_id, &stats);
-
-            course.last_updated_ledger = env.ledger().sequence();
-            Self::persist_course(&env, &course_id, &course);
-
-            // Decrement platform-wide active enrollment counter
-            Self::dec_total_active(&env);
-            // Decrement the platform-wide paid-enrollment counter. Free
-            // enrollments were never counted, so they must not decrement it.
-            if enrollment.amount_paid > 0 {
-                let total_active: u32 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::TotalActiveEnrollments)
-                    .unwrap_or(0);
-                if total_active > 0 {
-                    env.storage()
-                        .instance()
-                        .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
-                }
-            }
-
+            let breakdown =
+                Self::apply_refund_approval(&env, &key, &mut request, refund_amount, true);
             Self::emit_refund_issued(
                 &env,
                 &course_id,
                 &student,
-                actual_refund_amount,
-                platform_refund,
-                instructor_refund,
+                breakdown.refund_amount,
+                breakdown.platform_refund,
+                breakdown.instructor_refund,
             );
-
-            request.status = RefundStatus::Approved;
-            request.refund_amount = Some(breakdown.refund_amount);
-            Self::apply_refund_approval(&env, &key, &mut request, refund_amount);
-            (actual_refund_amount, platform_refund, instructor_refund)
+            (
+                breakdown.refund_amount,
+                breakdown.platform_refund,
+                breakdown.instructor_refund,
+            )
         } else {
             request.status = RefundStatus::Rejected;
             request.refund_amount = None;
-            env.storage().persistent().set(&key, &request);
+            Self::persist(&env, &key, &request);
             (0i128, 0i128, 0i128)
         };
-
-        Self::persist(&env, &key, &request);
 
         env.events().publish(
             (Symbol::new(&env, "refund_processed"), course_id.clone()),
@@ -7275,7 +7142,7 @@ impl HamplardContract {
             panic!("refund processing deadline has not elapsed");
         }
 
-        Self::apply_refund_approval(&env, &key, &mut request, None);
+        Self::apply_refund_approval(&env, &key, &mut request, None, false);
 
         env.events().publish(
             (Symbol::new(&env, "refund_claimed"), course_id.clone()),
@@ -7287,14 +7154,15 @@ impl HamplardContract {
     /// when `refund_amount` is `None`), archive the enrollment to history,
     /// decrement the active-enrollment counters, and mark the request
     /// `Approved`. Shared by the admin `process_refund` path and the
-    /// student `claim_refund` self-approval path so the two stay
-    /// byte-for-byte consistent.
+    /// student `claim_refund` self-approval path so both pay and account for
+    /// the refund exactly once. The caller selects the existing funding source.
     fn apply_refund_approval(
         env: &Env,
         key: &DataKey,
         request: &mut RefundRequest,
         refund_amount: Option<i128>,
-    ) {
+        platform_refund_from_reserve: bool,
+    ) -> RefundBreakdown {
         let mut course = Self::get_course_internal(env, &request.course_id)
             .unwrap_or_else(|| panic!("course not found"));
         let enrollment_key =
@@ -7319,8 +7187,6 @@ impl HamplardContract {
         // at enrollment and may have since diverged from the FeeConfig
         // (and any risk surcharge) that deduct_fee() actually applied.
         let platform_amount = enrollment.platform_amount;
-        let instructor_amount = enrollment.instructor_amount;
-
         // `None` refunds the full payment; `Some` refunds that many stroops
         // and splits them between the platform and instructor proportionally.
         let actual_refund_amount = match refund_amount {
@@ -7345,15 +7211,16 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("refund split underflow"));
 
         let token_client = token::Client::new(env, &course.token);
-        // Apply any matured pending treasury update so the refund uses the
-        // effective treasury, not a stale one. (#326)
-        let treasury: Address = Self::read_treasury(env);
-
-        // Refund platform fee from treasury, proportional to the request when
-        // a partial amount is specified.
+        // Refund the platform share from the reserve for admin processing;
+        // student claims retain the existing effective-treasury behavior.
         if platform_refund > 0 {
-            token_client.transfer(&treasury, &request.student, &platform_refund);
-            Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
+            if platform_refund_from_reserve {
+                Self::pay_platform_refund(env, &course.token, &request.student, platform_refund);
+            } else {
+                let treasury: Address = Self::read_treasury(env);
+                token_client.transfer(&treasury, &request.student, &platform_refund);
+                Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
+            }
         }
 
         // Refund instructor share from contract-held earnings, again using the
@@ -7383,42 +7250,61 @@ impl HamplardContract {
             .get(&history_key)
             .unwrap_or_else(|| Vec::new(env));
         history.push_back(enrollment.clone());
-        env.storage().persistent().set(&history_key, &history);
-        env.storage().persistent().extend_ttl(
-            &history_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
+        Self::persist(env, &history_key, &history);
         env.storage().persistent().remove(&enrollment_key);
 
-        // Decrement active and non-refunded enrollment counters
-        if course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
+        let mut stats = Self::read_course_stats(env, &request.course_id, &course);
+        if stats.active_enrollments > 0 {
+            stats.active_enrollments -= 1;
         }
-        if course.total_enrollments > 0 {
-            course.total_enrollments -= 1;
+        if stats.total_enrollments > 0 {
+            stats.total_enrollments -= 1;
         }
+        Self::write_course_stats(env, &request.course_id, &stats);
+        course.active_enrollments = stats.active_enrollments;
+        course.total_enrollments = stats.total_enrollments;
+        course.refund_count = course
+            .refund_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("course refund_count overflow"));
+        course.total_refunded = course
+            .total_refunded
+            .checked_add(actual_refund_amount)
+            .unwrap_or_else(|| panic!("course total_refunded overflow"));
+        course.last_updated_ledger = env.ledger().sequence();
+        Self::persist_course(env, &request.course_id, &course);
 
-        // Decrement platform-wide active enrollment counter
-        let total_active: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalActiveEnrollments)
-            .unwrap_or(0);
+        let total_active = Self::read_total_active_enrollments(env);
         if total_active > 0 {
-            env.storage()
+            Self::write_total_active_enrollments(env, total_active - 1);
+        }
+        Self::dec_total_active(env);
+        if enrollment.amount_paid > 0 {
+            let paid_active: u32 = env
+                .storage()
                 .instance()
-                .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
+                .get(&DataKey::TotalActiveEnrollments)
+                .unwrap_or(0);
+            if paid_active > 0 {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalActiveEnrollments, &(paid_active - 1));
+            }
         }
 
-        // Decrement total_students in InstructorStats so refunded enrollments
-        // no longer count toward the instructor's reputation. (#323)
         Self::update_instructor_stats(env, &course.instructor, |s| {
             s.total_students = s.total_students.saturating_sub(1);
         });
 
         request.status = RefundStatus::Approved;
         request.refund_amount = Some(actual_refund_amount);
+        Self::persist(env, key, &*request);
+
+        RefundBreakdown {
+            refund_amount: actual_refund_amount,
+            platform_refund,
+            instructor_refund,
+        }
         env.storage().persistent().set(&key, &request);
     }
 
