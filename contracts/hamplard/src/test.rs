@@ -15779,6 +15779,81 @@ fn test_process_refund_archives_enrollment_to_history() {
     assert_eq!(archived.course_id, course_id);
 }
 
+/// #335 — archive_course() must archive refunded enrollments to
+/// EnrollmentHistory with is_refunded=true before removing the active record.
+#[test]
+fn test_archive_course_refund_archives_enrollment_to_history() {
+    let (env, contract_id, token_id, admin, sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price = 1_000_000_000;
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARCHIVE-REFUND-HISTORY",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARCHIVE-REFUND-HISTORY");
+
+    // Capture the amount paid at enrollment.
+    client.enroll(&student, &course_id, &i128::MAX);
+    let enrollment = client
+        .get_enrollment(&student, &student, &course_id)
+        .unwrap();
+    let amount_paid = enrollment.amount_paid;
+    assert!(amount_paid > 0);
+
+    // Pre-fund refund reserve and pause course before archiving.
+    let platform_fee = price * 20 / 100;
+    client.fund_refund_reserve(&treasury, &token_id, &platform_fee);
+    client.pause_course(&admin, &course_id);
+
+    let mut refund_students = soroban_sdk::Vec::new(&env);
+    refund_students.push_back(student.clone());
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
+
+    // The active enrollment must no longer exist and is_enrolled() must be false.
+    assert!(!client.is_enrolled(&student, &course_id));
+    assert!(
+        client
+            .get_enrollment(&student, &student, &course_id)
+            .is_none(),
+        "active enrollment must be removed after archive_course refund"
+    );
+    assert_eq!(
+        client.get_enrollment_status(&student, &course_id),
+        EnrollmentStatus::Refunded,
+        "enrollment status must report Refunded from EnrollmentHistory"
+    );
+
+    // The history must be queryable on-chain and contain one entry with is_refunded=true.
+    let history = client.get_enrollment_history(&student, &student, &course_id);
+    assert_eq!(
+        history.len(),
+        1,
+        "history must contain exactly one archived entry"
+    );
+    let archived = history.get(0).unwrap();
+    assert!(
+        archived.is_refunded,
+        "archived enrollment must have is_refunded=true"
+    );
+    assert_eq!(
+        archived.amount_paid, amount_paid,
+        "archived enrollment must preserve the original amount_paid"
+    );
+    assert_eq!(archived.student, student);
+    assert_eq!(archived.course_id, course_id);
+}
+
 // ============================================================
 // REFUND PROCESSING DEADLINE — student self-approval past deadline
 // ============================================================
