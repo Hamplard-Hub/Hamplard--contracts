@@ -14337,6 +14337,106 @@ fn test_get_course_certificates_empty_for_course_without_issuance() {
 }
 
 // ============================================================
+// ISSUE #414 — Student certificate index & pagination
+// ============================================================
+
+#[test]
+fn test_get_certificates_by_student_empty() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    assert_eq!(
+        client.get_certificates_by_student(&student, &0u32, &10u32).len(),
+        0
+    );
+}
+
+#[test]
+fn test_get_certificates_by_student_paginated_and_includes_revoked() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    let other_student = Address::generate(&env);
+
+    let courses = ["COURSE-STU-0", "COURSE-STU-1", "COURSE-STU-2"];
+    let certs = ["CERT-STU-0", "CERT-STU-1", "CERT-STU-2"];
+
+    for i in 0..3 {
+        register_and_approve_course(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &instructor,
+            courses[i],
+            100_000_000,
+        );
+        enroll_and_certify(
+            &env,
+            &client,
+            &token_id,
+            &admin,
+            &student,
+            courses[i],
+            certs[i],
+        );
+    }
+
+    // Issue a certificate to another student to ensure per-student isolation.
+    enroll_and_certify(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &other_student,
+        courses[0],
+        "CERT-OTHER-0",
+    );
+
+    // Revoke the middle certificate; it must remain in the student's index.
+    client.revoke_certificate(
+        &admin,
+        &String::from_str(&env, certs[1]),
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    let page1 = client.get_certificates_by_student(&student, &0u32, &2u32);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), String::from_str(&env, certs[0]));
+    assert_eq!(page1.get(1).unwrap(), String::from_str(&env, certs[1]));
+
+    let page2 = client.get_certificates_by_student(&student, &2u32, &2u32);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2.get(0).unwrap(), String::from_str(&env, certs[2]));
+
+    // Edge cases: limit == 0, out-of-range offset, oversized limit.
+    assert_eq!(
+        client.get_certificates_by_student(&student, &0u32, &0u32).len(),
+        0
+    );
+    assert_eq!(
+        client.get_certificates_by_student(&student, &3u32, &10u32).len(),
+        0
+    );
+    assert_eq!(
+        client
+            .get_certificates_by_student(&student, &0u32, &u32::MAX)
+            .len(),
+        3
+    );
+
+    // Other student only sees their own certificate.
+    let other_page = client.get_certificates_by_student(&other_student, &0u32, &10u32);
+    assert_eq!(other_page.len(), 1);
+    assert_eq!(
+        other_page.get(0).unwrap(),
+        String::from_str(&env, "CERT-OTHER-0")
+    );
+}
+
+// ============================================================
 // ISSUE #236 — withdraw_tokens must validate amount > 0
 // ============================================================
 

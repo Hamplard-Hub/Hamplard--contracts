@@ -1213,6 +1213,9 @@ pub enum DataKey2 {
     /// Net cumulative platform fees collected for a token (incremented on
     /// enrollment fee collection, decremented on refunds).
     PlatformFeesCollected(Address),
+    /// Ordered (append-only) list of certificate IDs issued to a student (#414).
+    /// Populated by `issue_certificate` and read by `get_certificates_by_student`.
+    StudentCertificates(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -5402,6 +5405,17 @@ impl HamplardContract {
         course_certs.push_back(certificate_id.clone());
         Self::persist(&env, &course_certs_key, &course_certs);
 
+        // Index the certificate under its student so a wallet or profile page
+        // can enumerate all credentials (including revoked ones) on-chain (#414).
+        let student_certs_key = DataKey2::StudentCertificates(student.clone());
+        let mut student_certs: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&student_certs_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        student_certs.push_back(certificate_id.clone());
+        Self::persist(&env, &student_certs_key, &student_certs);
+
         Self::update_instructor_stats(&env, &certificate.instructor, |s| {
             s.total_certificates = s
                 .total_certificates
@@ -7849,6 +7863,36 @@ impl HamplardContract {
             .get(&DataKey::CourseCertificates(course_id))
             .unwrap_or_else(|| Vec::new(&env));
         all.len()
+    }
+
+    /// Paginated view of all certificate IDs issued to `student` in issuance order (#414).
+    ///
+    /// Includes revoked certificates (which remain flagged on-chain on their
+    /// `Certificate` record). `limit` is clamped to `MAX_PAGE_SIZE` (50);
+    /// `limit == 0` or an out-of-range `offset` returns an empty `Vec`.
+    pub fn get_certificates_by_student(
+        env: Env,
+        student: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<String> {
+        let all: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::StudentCertificates(student))
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = all.len();
+        let mut page: Vec<String> = Vec::new(&env);
+        if limit == 0 || offset >= total {
+            return page;
+        }
+        let end = total.min(offset.saturating_add(limit.min(Self::MAX_PAGE_SIZE)));
+        let mut i = offset;
+        while i < end {
+            page.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        page
     }
     /// Check whether a student has an active enrollment record for a course.
     ///
