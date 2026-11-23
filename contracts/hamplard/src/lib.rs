@@ -7450,9 +7450,11 @@ impl HamplardContract {
     /// list, so it always reflects every course the instructor has ever
     /// registered.
     pub fn get_courses_by_instructor(env: Env, instructor: Address) -> Vec<String> {
+        let key = DataKey::InstructorCourseList(instructor);
+        Self::extend_persistent_ttl_if_exists(&env, &key);
         env.storage()
             .persistent()
-            .get(&DataKey::InstructorCourseList(instructor))
+            .get(&key)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -8062,10 +8064,12 @@ impl HamplardContract {
     ///
     /// Returns an empty list when `offset` is beyond the end of the catalog.
     pub fn list_courses(env: Env, offset: u32, limit: u32) -> Vec<String> {
+        let key = DataKey::CourseList;
+        Self::extend_persistent_ttl_if_exists(&env, &key);
         let catalog: Vec<String> = env
             .storage()
             .persistent()
-            .get(&DataKey::CourseList)
+            .get(&key)
             .unwrap_or_else(|| Vec::new(&env));
 
         let total = catalog.len();
@@ -8097,10 +8101,12 @@ impl HamplardContract {
         offset: u32,
         limit: u32,
     ) -> Vec<String> {
+        let key = DataKey::CourseList;
+        Self::extend_persistent_ttl_if_exists(&env, &key);
         let catalog: Vec<String> = env
             .storage()
             .persistent()
-            .get(&DataKey::CourseList)
+            .get(&key)
             .unwrap_or_else(|| Vec::new(&env));
 
         let limit = limit.min(Self::MAX_PAGE_SIZE);
@@ -8207,6 +8213,20 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+    }
+
+    /// Extend the persistent storage TTL of `key` if it exists.
+    fn extend_persistent_ttl_if_exists<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        if env.storage().persistent().has(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
     }
 
     /// Persist a `CourseTerms` snapshot for `course.version` (#371).

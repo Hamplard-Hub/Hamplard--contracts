@@ -15106,6 +15106,86 @@ fn test_list_courses_limit_zero_returns_empty_page() {
     assert_eq!(client.list_courses(&1u32, &0u32).len(), 0);
 }
 
+#[test]
+fn test_course_list_and_instructor_course_list_ttl_extended_on_read() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Reading before any course is registered must not panic when keys are absent.
+    assert_eq!(client.list_courses(&0u32, &10u32).len(), 0);
+    assert_eq!(client.get_courses_by_instructor(&instructor).len(), 0);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CATALOG-TTL",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CATALOG-TTL");
+
+    // Advance ledger past PERSISTENT_TTL_THRESHOLD so extend_ttl() must renew.
+    advance_below_course_ttl_threshold(&env);
+    let course_list_ttl_before = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    });
+    let instructor_list_ttl_before = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::InstructorCourseList(instructor.clone()))
+    });
+    assert!(course_list_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    assert!(instructor_list_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+
+    // list_courses() must extend CourseList TTL.
+    let courses = client.list_courses(&0u32, &10u32);
+    assert_eq!(courses.len(), 1);
+    assert_eq!(courses.get(0).unwrap(), course_id);
+    let course_list_ttl_after_list = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    });
+    assert_eq!(
+        course_list_ttl_after_list,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+
+    // get_courses_by_instructor() must extend InstructorCourseList TTL.
+    let instructor_courses = client.get_courses_by_instructor(&instructor);
+    assert_eq!(instructor_courses.len(), 1);
+    assert_eq!(instructor_courses.get(0).unwrap(), course_id);
+    let instructor_list_ttl_after = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::InstructorCourseList(instructor.clone()))
+    });
+    assert_eq!(
+        instructor_list_ttl_after,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+
+    // list_courses_by_status() must also extend CourseList TTL.
+    advance_below_course_ttl_threshold(&env);
+    let course_list_ttl_before_status = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    });
+    assert!(course_list_ttl_before_status < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+
+    let active_courses = client.list_courses_by_status(&CourseStatus::Active, &0u32, &10u32);
+    assert_eq!(active_courses.len(), 1);
+    assert_eq!(active_courses.get(0).unwrap(), course_id);
+    let course_list_ttl_after_status = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    });
+    assert_eq!(
+        course_list_ttl_after_status,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+}
+
 // ============================================================
 // ARBITRATION RECORD PERSISTENCE  (#255, #256, #257)
 // ============================================================
