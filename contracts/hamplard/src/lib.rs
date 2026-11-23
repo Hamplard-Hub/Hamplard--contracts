@@ -8028,7 +8028,6 @@ impl HamplardContract {
         EnrollmentStatus::None
     }
 
-    /// Check whether a student has completed a course
     /// Check whether a student has completed a course.
     ///
     /// Returns:
@@ -8040,23 +8039,6 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id))
             .map(|enrollment| enrollment.completed)
-            .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id.clone()))
-        {
-            if enrollment.completed {
-                return Some(true);
-            }
-            // Not yet completed — expired and active-but-incomplete both
-            // report `Some(false)`.
-            // Not yet completed — check if the enrollment window has expired
-            if let Some(course) = Self::get_course_internal(&env, &course_id) {
-                if Self::is_enrollment_expired_internal(&env, &course, &enrollment) {
-                    return Some(false); // Expired — treat as inactive
-                }
-            }
-            Some(false)
-        } else {
-            None
-        }
     }
 
     /// Return the verification status of a certificate without exposing private
