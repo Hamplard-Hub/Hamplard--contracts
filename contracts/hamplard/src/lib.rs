@@ -1026,8 +1026,6 @@ pub struct CourseStats {
 pub enum DataKey {
     /// Course record by course ID
     Course(String),
-    /// Immutable instructor address recorded at registration time
-    CourseInstructorRef(String),
     /// Enrollment record by (student_address, course_id)
     Enrollment(Address, String),
     /// Certificate record by certificate ID
@@ -1834,12 +1832,6 @@ impl HamplardContract {
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
         Self::save_course_terms(&env, &course);
 
-        Self::persist(
-            &env,
-            &DataKey::CourseInstructorRef(course_id.clone()),
-            &instructor,
-        );
-
         // Append to on-chain course catalog
         let mut catalog: Vec<String> = env
             .storage()
@@ -2403,14 +2395,6 @@ impl HamplardContract {
         course.instructor = new_instructor.clone();
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
-
-        // Keep CourseInstructorRef in sync so enroll() continues to succeed
-        // after ownership changes. Enrollment records themselves are untouched.
-        Self::persist(
-            &env,
-            &DataKey::CourseInstructorRef(course_id.clone()),
-            &new_instructor,
-        );
 
         let old_count_key = DataKey::InstructorCourseCountPersistent(previous_instructor.clone());
         let old_count = Self::read_instructor_course_count(&env, &previous_instructor);
@@ -3664,18 +3648,6 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::EntryRestricted);
         }
 
-        let registered_instructor: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::CourseInstructorRef(course_id.clone()))
-            .unwrap_or_else(|| {
-                soroban_sdk::panic_with_error!(&env, Error::InstructorReferenceInvalid)
-            });
-
-        if registered_instructor != course.instructor {
-            soroban_sdk::panic_with_error!(&env, Error::InstructorReferenceInvalid);
-        }
-
         if *student == course.instructor {
             Self::emit_enrollment_failed(env, student, course_id, "INSTRUCTOR_SELF_ENROLLMENT");
             panic!("instructor cannot enroll in own course");
@@ -4427,21 +4399,6 @@ impl HamplardContract {
 
         if Self::is_any_course_instructor_frozen(&env, &course) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        }
-
-        // Verify that the immutable instructor reference recorded at
-        // registration still matches the course's current instructor field.
-        // This is the same integrity guard that validate_enrollment() runs
-        // for enroll() — re_enroll() must enforce it too so that a tampered
-        // or inconsistent course record cannot be exploited on re-enrollment.
-        let registered_instructor: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::CourseInstructorRef(course_id.clone()))
-            .unwrap_or_else(|| panic!("course instructor reference not found"));
-
-        if registered_instructor != course.instructor {
-            panic!("course instructor reference mismatch");
         }
 
         if student == course.instructor {
