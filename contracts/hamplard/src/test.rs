@@ -13481,6 +13481,69 @@ fn test_update_course_updates_price_and_capacity_and_bumps_version() {
 }
 
 #[test]
+fn test_update_course_event_carries_old_and_new_price_and_capacity() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-UPDATE-EVENT",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-UPDATE-EVENT");
+    let before = client.get_course(&course_id).unwrap();
+
+    // Record events emitted up to this point, then clear the buffer.
+    env.events().all();
+
+    client.update_course(
+        &instructor,
+        &course_id,
+        &Some(250_000_000i128),
+        &Some(Some(25u32)),
+        &None,
+    );
+
+    let all_events = env.events().all();
+    // The last event is the course_updated one; find it by topic symbol.
+    let (topics, data) = all_events
+        .iter()
+        .rev()
+        .find(|(topics, _)| {
+            topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok())
+                .map(|s: Symbol| s == Symbol::new(&env, "course_updated"))
+                .unwrap_or(false)
+        })
+        .expect("course_updated event not emitted");
+
+    // Topics: (Symbol("course_updated"), course_id)
+    let topic_sym = Symbol::try_from_val(&env, &topics.get_unchecked(0)).unwrap();
+    assert_eq!(topic_sym, Symbol::new(&env, "course_updated"));
+
+    // Data: (course_id, new_version, caller, old_price, new_price, old_max_capacity, new_max_capacity)
+    let data_vec: soroban_sdk::Vec<soroban_sdk::Val> =
+        soroban_sdk::Vec::try_from_val(&env, &data).unwrap();
+
+    let emitted_old_price = i128::try_from_val(&env, &data_vec.get_unchecked(3)).unwrap();
+    let emitted_new_price = i128::try_from_val(&env, &data_vec.get_unchecked(4)).unwrap();
+    let emitted_old_cap: Option<u32> =
+        Option::<u32>::try_from_val(&env, &data_vec.get_unchecked(5)).unwrap();
+    let emitted_new_cap: Option<u32> =
+        Option::<u32>::try_from_val(&env, &data_vec.get_unchecked(6)).unwrap();
+
+    assert_eq!(emitted_old_price, before.price);
+    assert_eq!(emitted_new_price, 250_000_000i128);
+    assert_eq!(emitted_old_cap, before.max_capacity);
+    assert_eq!(emitted_new_cap, Some(25u32));
+}
+
+#[test]
 fn test_update_course_noop_returns_same_version() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
