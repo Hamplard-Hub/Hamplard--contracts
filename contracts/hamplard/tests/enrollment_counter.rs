@@ -54,7 +54,7 @@ fn enrollment_counter_budget() {
     for name in ["BUDGET-ONE", "BUDGET-TWO"] {
         let before = env.as_contract(&id, || env.storage().instance().all());
         env.cost_estimate().budget().reset_default();
-        client.enroll(&student, &String::from_str(&env, name));
+        client.enroll(&student, &String::from_str(&env, name), &i128::MAX);
         let cpu = env.cost_estimate().budget().cpu_instruction_cost();
         let memory = env.cost_estimate().budget().memory_bytes_cost();
         let after = env.as_contract(&id, || env.storage().instance().all());
@@ -94,7 +94,7 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
     client.set_platform_enrollment_cap(&admin, &Some(8));
     assert_eq!(client.get_total_active_enrollments(), 7);
     let course = String::from_str(&env, "BUDGET-ONE");
-    client.enroll(&student, &course);
+    client.enroll(&student, &course, &i128::MAX);
     assert_eq!(
         client
             .get_enrollment(&student, &student, &course)
@@ -106,7 +106,7 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
     let another = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&another, &1_000_000_000);
     assert!(client
-        .try_enroll(&another, &String::from_str(&env, "BUDGET-TWO"))
+        .try_enroll(&another, &String::from_str(&env, "BUDGET-TWO"), &i128::MAX)
         .is_err());
     client.mark_completed(
         &admin,
@@ -115,7 +115,7 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
         &Some(BytesN::from_array(&env, &[2; 32])),
     );
     assert_eq!(client.get_total_active_enrollments(), 7);
-    client.enroll(&another, &String::from_str(&env, "BUDGET-TWO"));
+    client.enroll(&another, &String::from_str(&env, "BUDGET-TWO"), &i128::MAX);
     assert_eq!(client.get_total_active_enrollments(), 8);
     env.as_contract(&id, || {
         assert_eq!(
