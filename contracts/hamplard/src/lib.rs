@@ -2846,6 +2846,10 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
 
+        // Snapshot the values that may change so the event can carry a diff.
+        let old_price = course.price;
+        let old_max_capacity = course.max_capacity;
+
         let mut modified = false;
 
         if let Some(price) = new_price {
@@ -2899,7 +2903,15 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_updated"), course_id.clone()),
-            (course_id, course.version, caller),
+            (
+                course_id,
+                course.version,
+                caller,
+                old_price,
+                course.price,
+                old_max_capacity,
+                course.max_capacity,
+            ),
         );
 
         course.version
@@ -2934,6 +2946,9 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
 
+        let old_max_capacity = course.max_capacity;
+        let old_price = course.price;
+
         course.max_capacity = None;
         course.version = course
             .version
@@ -2946,7 +2961,15 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_updated"), course_id.clone()),
-            (course_id, course.version, caller),
+            (
+                course_id,
+                course.version,
+                caller,
+                old_price,
+                course.price,
+                old_max_capacity,
+                course.max_capacity,
+            ),
         );
     }
 

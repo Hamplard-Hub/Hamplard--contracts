@@ -291,7 +291,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `approve_course(caller, course_id)` | Admin or Approver | Move Pending → Active; high-value courses need two distinct approvals |
 | `reject_course(caller, course_id, reason)` | Admin or Approver | Move Pending → Rejected |
 | `pause_course(caller, course_id)` / `unpause_course(caller, course_id)` | Lead instructor or Admin | Move Active ↔ Paused |
-| `update_course(caller, course_id, new_price, new_max_capacity)` | Lead instructor or Admin | Update price/capacity and increment the course version |
+| `update_course(caller, course_id, new_price, new_max_capacity, new_capacity_mode)` | Lead instructor or Admin | Update price/capacity/mode and increment the course version. Emits `course_updated` with `(course_id, new_version, caller, old_price, new_price, old_max_capacity, new_max_capacity)`. |
 | `set_co_instructors(caller, course_id, addresses, shares_bps)` | Lead instructor or Admin | Configure co-instructors before the first enrollment |
 | `set_enrollment_start_ledger` / `set_enrollment_expiry` / `set_course_expiry` | Lead instructor or Admin | Configure enrollment windows |
 | `set_prerequisite_courses` / `set_max_certificates` / `update_content_hash` | Lead instructor or Admin | Configure prerequisites, certificate cap, and content commitment |
