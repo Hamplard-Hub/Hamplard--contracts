@@ -14759,7 +14759,7 @@ fn test_verify_certificate_extends_ttl_for_valid_certificate() {
 }
 
 #[test]
-fn test_course_instructor_ref_ttl_extended_with_course() {
+fn test_course_ttl_extended_with_get_course_allows_enrollment() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -14775,7 +14775,7 @@ fn test_course_instructor_ref_ttl_extended_with_course() {
     );
 
     // Advance close to the end of the initial TTL window so get_course()
-    // triggers a renewal on both Course and CourseInstructorRef.
+    // triggers a renewal on Course.
     env.ledger().with_mut(|l| {
         l.sequence_number += HamplardContract::PERSISTENT_TTL_EXTEND_TO - 100;
     });
@@ -17247,68 +17247,6 @@ fn test_set_co_instructors_unlocked_after_all_enrollments_refunded() {
     assert_eq!(course.co_instructors.len(), 1);
     assert_eq!(course.co_instructors.get(0).unwrap().address, co_b);
     assert_eq!(course.co_instructors.get(0).unwrap().share_bps, 2_500);
-}
-
-
-// ============================================================
-// ISSUE: re_enroll() was missing CourseInstructorRef integrity check
-// ============================================================
-
-/// Regression test: re_enroll() must reject enrollment when the immutable
-/// CourseInstructorRef stored at registration no longer matches the
-/// course's current instructor field (i.e. an on-chain inconsistency).
-///
-/// Before the fix, re_enroll() skipped this check entirely. A course with
-/// a tampered or inconsistent storage state could be enrolled into via
-/// re_enroll() even though the same attempt via enroll() would correctly
-/// panic with "course instructor reference mismatch".
-///
-/// The fix adds the CourseInstructorRef lookup and comparison to re_enroll()
-/// in the same position as validate_enrollment() does for enroll().
-#[test]
-#[should_panic(expected = "course instructor reference mismatch")]
-fn test_re_enroll_rejects_course_instructor_ref_mismatch() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
-
-    // Register, approve, enroll, and complete the course normally.
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-REF-MISMATCH",
-        100_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-REF-MISMATCH");
-
-    client.enroll(&student, &course_id);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(evidence_hash(&env, "evidence-1")),
-    );
-
-    // Simulate an inconsistency: overwrite course.instructor in persistent
-    // storage with a different address while leaving CourseInstructorRef
-    // pointing to the original instructor. This is the tampered-state
-    // scenario the check is designed to catch.
-    let impostor = Address::generate(&env);
-    env.as_contract(&contract_id, || {
-        let key = DataKey::Course(course_id.clone());
-        let mut course: Course = env.storage().persistent().get(&key).unwrap();
-        course.instructor = impostor.clone();
-        env.storage().persistent().set(&key, &course);
-    });
-
-    // re_enroll() must now panic with "course instructor reference mismatch"
-    // exactly as enroll() / validate_enrollment() would.
-    client.re_enroll(&student, &course_id);
 }
 
 
