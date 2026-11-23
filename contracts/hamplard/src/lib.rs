@@ -1916,6 +1916,18 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
         }
 
+        // #380 — Reject approval if the course's token is no longer (or never
+        // was) on the whitelist.  Without this guard a course could become
+        // Active while its token is unapproved, making every subsequent
+        // enrollment fail with "course token is not approved".
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::ApprovedToken(course.token.clone()))
+        {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+        }
+
         // Enforce governance window: approve_course cannot be called
         // immediately after init(). This ensures there's a review period
         // where the community can observe admin actions before the platform
