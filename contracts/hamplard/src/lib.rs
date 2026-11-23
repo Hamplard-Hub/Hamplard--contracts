@@ -5038,17 +5038,7 @@ impl HamplardContract {
         }
 
         // Check enrollment expiry — expired enrollments cannot be completed
-        if let Some(expiry_ledgers) = enrollment.enrollment_expiry_ledgers {
-            let expiry_at = enrollment
-                .enrolled_at_ledger
-                .checked_add(expiry_ledgers)
-                .unwrap_or(u32::MAX);
-            if env.ledger().sequence() >= expiry_at {
-                soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
-            }
         if Self::is_enrollment_expired(&env, &course, &enrollment) {
-            panic!("enrollment has expired");
-        if Self::is_enrollment_expired_internal(&env, &course, &enrollment) {
             panic!("enrollment has expired");
         }
 
@@ -5063,27 +5053,19 @@ impl HamplardContract {
         );
 
         // Update active enrollments count on course
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-        if course.active_enrollments > 0 {
-            course.active_enrollments -= 1;
-            course.last_updated_ledger = env.ledger().sequence();
-            Self::persist_course(&env, &course_id, &course);
         let mut stats = Self::read_course_stats(&env, &course_id, &course);
         if stats.active_enrollments > 0 {
             stats.active_enrollments -= 1;
             Self::write_course_stats(&env, &course_id, &stats);
         }
+        course.last_updated_ledger = env.ledger().sequence();
+        Self::persist_course(&env, &course_id, &course);
 
         // Decrement platform-wide active enrollment counter
         let total_active: u32 = Self::read_total_active_enrollments(&env);
         if total_active > 0 {
             Self::write_total_active_enrollments(&env, total_active - 1);
         }
-        Self::dec_total_active(&env);
 
         Self::update_instructor_stats(&env, &course.instructor, |s| {
             s.total_completions = s
@@ -5174,13 +5156,6 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
-        let total_active: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalActiveEnrollments)
-            .unwrap_or(0);
-        if total_active > 0 {
-            env.storage()
         if enrollment.amount_paid > 0 {
             let total_active: u32 = env
                 .storage()
