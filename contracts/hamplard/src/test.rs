@@ -467,6 +467,34 @@ fn test_approve_already_active_course() {
     client.approve_course(&admin, &course_id); // second approve — should panic
 }
 
+// #380 — approve_course must reject courses whose token is not (or no longer)
+// on the whitelist, so they never become Active while unenrollable.
+#[test]
+#[should_panic(expected = "Error(Contract, #34)")]
+fn test_approve_course_with_unapproved_token_fails() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    // Register the course while the token is still approved.
+    let course_id = String::from_str(&env, "COURSE-UNAPP-001");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &50_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    // Remove the token from the whitelist before approval.
+    client.remove_approved_token(&admin, &token_id);
+
+    // Approval must now fail with CourseNotAvailable (#34).
+    client.approve_course(&admin, &course_id);
+}
+
 // ============================================================
 // ENROLLMENT & PAYMENT TESTS
 // ============================================================
