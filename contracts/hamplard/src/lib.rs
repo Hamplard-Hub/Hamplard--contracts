@@ -7420,6 +7420,8 @@ impl HamplardContract {
         request.status = RefundStatus::Approved;
         request.refund_amount = Some(actual_refund_amount);
         env.storage().persistent().set(&key, &request);
+    }
+
     /// Top up the refund reserve for `token`.
     ///
     /// Platform fees are forwarded to the treasury at enrollment, so refunding
