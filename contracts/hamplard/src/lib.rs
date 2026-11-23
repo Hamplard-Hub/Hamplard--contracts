@@ -7305,6 +7305,7 @@ impl HamplardContract {
             platform_refund,
             instructor_refund,
         }
+        env.storage().persistent().set(&key, &request);
     }
 
     /// Top up the refund reserve for `token`.
