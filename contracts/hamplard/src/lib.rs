@@ -5405,10 +5405,68 @@ impl HamplardContract {
                 Symbol::new(&env, "certificate_issued"),
                 certificate_id.clone(),
             ),
-            (certificate_id.clone(), student, course_id, admin, issued_at_ledger),
+            (
+                certificate_id.clone(),
+                student,
+                course_id,
+                admin,
+                issued_at_ledger,
+                certificate.instructor.clone(),
+                expires_at_ledger,
+            ),
         );
 
         certificate_id
+    }
+
+    /// Extend the expiry of an existing, non-revoked certificate (#419).
+    ///
+    /// Only an admin may call this. The new expiry must be in the future and
+    /// must not shorten the current validity window. Revoked certificates
+    /// (including ones with a pending, challengeable revocation) cannot be
+    /// renewed; they must be reissued instead.
+    ///
+    /// Emits `certificate_renewed` with
+    /// `(certificate_id, admin, new_expiry, ledger_sequence)`.
+    pub fn renew_certificate(
+        env: Env,
+        admin: Address,
+        certificate_id: String,
+        new_expiry: u32,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "renew_certificate");
+
+        let current_ledger = env.ledger().sequence();
+        if new_expiry <= current_ledger {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
+        }
+
+        let key = DataKey::Certificate(certificate_id.clone());
+        let mut certificate: Certificate = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError));
+        if certificate.revoked {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+        if let Some(existing) = certificate.expires_at_ledger {
+            if new_expiry <= existing {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCertificateInput);
+            }
+        }
+
+        certificate.expires_at_ledger = Some(new_expiry);
+        Self::persist(&env, &key, &certificate);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "certificate_renewed"),
+                certificate_id.clone(),
+            ),
+            (certificate_id, admin, new_expiry, current_ledger),
+        );
     }
 
     /// Admin revokes a certificate (e.g. issued in error or academic dishonesty).
