@@ -498,6 +498,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
+| `moderator_revoked`           | `previous_moderator`                        | Admin revokes or rotates the moderator    |
 | `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 | `refund_processed`            | `(student, course_id, approved, admin, refund_amount, platform_amount, instructor_amount, ledger)` | Refund request approved or rejected by admin |
 
