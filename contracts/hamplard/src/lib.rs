@@ -3648,7 +3648,6 @@ impl HamplardContract {
             .unwrap_or(false)
         {
             Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_PAUSED");
-            panic!("platform is paused");
             soroban_sdk::panic_with_error!(&env, Error::PlatformPaused);
         }
 
@@ -3667,7 +3666,6 @@ impl HamplardContract {
 
         if Self::is_admin(env, student) {
             Self::emit_enrollment_failed(env, student, course_id, "ADMIN_SELF_ENROLLMENT");
-            panic!("admin cannot enroll in courses");
             soroban_sdk::panic_with_error!(&env, Error::StudentBlocked);
         }
 
@@ -3682,13 +3680,11 @@ impl HamplardContract {
         // Issue 168: Self-enrollment guard
         if *student == env.current_contract_address() {
             Self::emit_enrollment_failed(env, student, course_id, "ADMIN_SELF_ENROLLMENT");
-            panic!("enroll: student cannot be the contract itself");
             soroban_sdk::panic_with_error!(&env, Error::EntryRestricted);
         }
 
         if *student == course.instructor {
             Self::emit_enrollment_failed(env, student, course_id, "INSTRUCTOR_SELF_ENROLLMENT");
-            panic!("instructor cannot enroll in own course");
             soroban_sdk::panic_with_error!(&env, Error::EntryRestricted);
         }
 
@@ -3715,7 +3711,6 @@ impl HamplardContract {
         if let Some(enrollment_start_ledger) = course.enrollment_start_ledger {
             if env.ledger().sequence() < enrollment_start_ledger {
                 Self::emit_enrollment_failed(env, student, course_id, "ENROLLMENT_NOT_STARTED");
-                panic!("enrollment has not started for this course");
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
             }
         }
@@ -3735,9 +3730,8 @@ impl HamplardContract {
                 CapacityMode::Concurrent => course.active_enrollments,
             };
             if count >= cap {
-                panic!("course has reached maximum enrollment capacity");
-            soroban_sdk::panic_with_error!(&env, Error::AlreadyEnrolled);
-        }
+                soroban_sdk::panic_with_error!(&env, Error::AlreadyEnrolled);
+            }
         if let Some(cap) = course.max_capacity {
             if course.total_enrollments >= cap {
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
@@ -3763,7 +3757,6 @@ impl HamplardContract {
         if let Some(expiry) = course.expires_at_ledger {
             if env.ledger().sequence() >= expiry {
                 Self::emit_enrollment_failed(env, student, course_id, "COURSE_EXPIRED");
-                panic!("course has expired");
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
             }
         }
@@ -3774,7 +3767,6 @@ impl HamplardContract {
             .has(&DataKey::ApprovedToken(course.token.clone()))
         {
             Self::emit_enrollment_failed(env, student, course_id, "UNAPPROVED_TOKEN");
-            panic!("course token is not approved");
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
@@ -3784,10 +3776,6 @@ impl HamplardContract {
         const EXPECTED_TOKEN_DECIMALS: u32 = 7;
         if token_decimals != EXPECTED_TOKEN_DECIMALS {
             Self::emit_enrollment_failed(env, student, course_id, "INVALID_TOKEN_DECIMALS");
-            panic!(
-                "token decimal precision must be {} (found {})",
-                EXPECTED_TOKEN_DECIMALS, token_decimals
-            );
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
@@ -3816,7 +3804,6 @@ impl HamplardContract {
 
             if !has_valid_certificate {
                 Self::emit_enrollment_failed(env, student, course_id, "PREREQUISITE_NOT_MET");
-                panic!("prerequisite course not completed");
                 soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
             }
         }
@@ -3830,7 +3817,6 @@ impl HamplardContract {
             let total_active: u32 = Self::read_total_active_enrollments(env);
             if total_active >= platform_cap {
                 Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_CAP_EXCEEDED");
-                panic!("platform has reached maximum total enrollment capacity");
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         // Check the platform-wide cap for paid courses only. Free courses do
         // not consume platform capacity and must remain enrollable even when
