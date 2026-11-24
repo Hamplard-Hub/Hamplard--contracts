@@ -487,7 +487,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 
 | Event name                    | Payload                                     | When                                      |
 | ----------------------------- | ------------------------------------------- | ----------------------------------------- |
-| `course_registered`           | `course_id`                                 | Instructor registers a course             |
+| `course_registered`           | `(course_id, instructor, price, token, fee_pct, ledger)` | Instructor registers a course |
 | `course_approved`             | `course_id`                                 | Admin approves a course                   |
 | `course_paused`               | `course_id`                                 | Course paused                             |
 | `course_unpaused`             | `course_id`                                 | Course unpaused                           |

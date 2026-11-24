@@ -7773,7 +7773,7 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
         &soroban_sdk::Vec::new(&env),
     );
 
-    let list = client.get_courses_by_instructor(&instructor);
+    let list = client.get_courses_by_instructor(&instructor, &0u32, &u32::MAX);
     assert_eq!(list.len(), 2);
     assert_eq!(
         list.get(0).unwrap(),
@@ -7784,7 +7784,7 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
         String::from_str(&env, "COURSE-INSTR-LIST-2")
     );
 
-    let other_list = client.get_courses_by_instructor(&other_instructor);
+    let other_list = client.get_courses_by_instructor(&other_instructor, &0u32, &u32::MAX);
     assert_eq!(other_list.len(), 1);
 
     // Pausing a course must not change the instructor's course list.
@@ -7794,14 +7794,14 @@ fn test_get_courses_by_instructor_accurate_after_registration_pause_and_archival
     let course_id_1 = String::from_str(&env, "COURSE-INSTR-LIST-1");
     client.approve_course(&admin, &course_id_1);
     client.pause_course(&instructor, &course_id_1);
-    let list_after_pause = client.get_courses_by_instructor(&instructor);
+    let list_after_pause = client.get_courses_by_instructor(&instructor, &0u32, &u32::MAX);
     assert_eq!(list_after_pause.len(), 2);
     assert_eq!(list_after_pause.get(0).unwrap(), course_id_1);
 
     // Archiving a course (must be paused, no active enrollments) must not
     // remove it from the instructor's course list either.
     client.archive_course(&admin, &sec_admin, &course_id_1, &None);
-    let list_after_archive = client.get_courses_by_instructor(&instructor);
+    let list_after_archive = client.get_courses_by_instructor(&instructor, &0u32, &u32::MAX);
     assert_eq!(list_after_archive.len(), 2);
     assert_eq!(list_after_archive.get(0).unwrap(), course_id_1);
     assert_eq!(
@@ -7816,8 +7816,42 @@ fn test_get_courses_by_instructor_empty_for_unknown_instructor() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     let unknown = Address::generate(&env);
-    let list = client.get_courses_by_instructor(&unknown);
+    let list = client.get_courses_by_instructor(&unknown, &0u32, &u32::MAX);
     assert_eq!(list.len(), 0);
+}
+
+// ============================================================
+// ISSUE #396: PAGINATED INSTRUCTOR COURSE INDEX
+// ============================================================
+
+#[test]
+fn test_get_courses_by_instructor_pagination() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let ids = [
+        "COURSE-INSTR-PAGE-1",
+        "COURSE-INSTR-PAGE-2",
+        "COURSE-INSTR-PAGE-3",
+    ];
+    for id in ids.iter() {
+        register_and_approve_course(&env, &client, &token_id, &admin, &instructor, id, 100_000_000);
+    }
+
+    let first = client.get_courses_by_instructor(&instructor, &0u32, &2u32);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first.get(0).unwrap(), String::from_str(&env, ids[0]));
+    assert_eq!(first.get(1).unwrap(), String::from_str(&env, ids[1]));
+
+    let second = client.get_courses_by_instructor(&instructor, &2u32, &2u32);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second.get(0).unwrap(), String::from_str(&env, ids[2]));
+
+    let past_end = client.get_courses_by_instructor(&instructor, &3u32, &10u32);
+    assert_eq!(past_end.len(), 0);
+
+    let all = client.get_courses_by_instructor(&instructor, &0u32, &u32::MAX);
+    assert_eq!(all.len(), 3);
 }
 
 // ============================================================
@@ -15215,7 +15249,12 @@ fn test_course_list_and_instructor_course_list_ttl_extended_on_read() {
 
     // Reading before any course is registered must not panic when keys are absent.
     assert_eq!(client.list_courses(&0u32, &10u32).len(), 0);
-    assert_eq!(client.get_courses_by_instructor(&instructor).len(), 0);
+    assert_eq!(
+        client
+            .get_courses_by_instructor(&instructor, &0u32, &u32::MAX)
+            .len(),
+        0
+    );
 
     register_and_approve_course(
         &env,
@@ -15230,58 +15269,93 @@ fn test_course_list_and_instructor_course_list_ttl_extended_on_read() {
 
     // Advance ledger past PERSISTENT_TTL_THRESHOLD so extend_ttl() must renew.
     advance_below_course_ttl_threshold(&env);
-    let course_list_ttl_before = env.as_contract(&contract_id, || {
-        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    let catalog_count_ttl_before = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey2::CourseCount)
     });
-    let instructor_list_ttl_before = env.as_contract(&contract_id, || {
+    let course_index_ttl_before = env.as_contract(&contract_id, || {
         env.storage()
             .persistent()
-            .get_ttl(&DataKey::InstructorCourseList(instructor.clone()))
+            .get_ttl(&DataKey2::CourseIndex(0))
     });
-    assert!(course_list_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
-    assert!(instructor_list_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    let instructor_count_ttl_before = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::InstructorCourseCountPersistent(instructor.clone()))
+    });
+    let instructor_index_ttl_before = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey2::InstructorCourseIndex(instructor.clone(), 0))
+    });
+    assert!(catalog_count_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    assert!(course_index_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    assert!(instructor_count_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    assert!(instructor_index_ttl_before < HamplardContract::PERSISTENT_TTL_THRESHOLD);
 
-    // list_courses() must extend CourseList TTL.
+    // list_courses() must extend the catalog count and index entry TTLs.
     let courses = client.list_courses(&0u32, &10u32);
     assert_eq!(courses.len(), 1);
     assert_eq!(courses.get(0).unwrap(), course_id);
-    let course_list_ttl_after_list = env.as_contract(&contract_id, || {
-        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    let catalog_count_ttl_after_list = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey2::CourseCount)
     });
-    assert_eq!(
-        course_list_ttl_after_list,
-        HamplardContract::PERSISTENT_TTL_EXTEND_TO
-    );
-
-    // get_courses_by_instructor() must extend InstructorCourseList TTL.
-    let instructor_courses = client.get_courses_by_instructor(&instructor);
-    assert_eq!(instructor_courses.len(), 1);
-    assert_eq!(instructor_courses.get(0).unwrap(), course_id);
-    let instructor_list_ttl_after = env.as_contract(&contract_id, || {
+    let course_index_ttl_after_list = env.as_contract(&contract_id, || {
         env.storage()
             .persistent()
-            .get_ttl(&DataKey::InstructorCourseList(instructor.clone()))
+            .get_ttl(&DataKey2::CourseIndex(0))
     });
     assert_eq!(
-        instructor_list_ttl_after,
+        catalog_count_ttl_after_list,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+    assert_eq!(
+        course_index_ttl_after_list,
         HamplardContract::PERSISTENT_TTL_EXTEND_TO
     );
 
-    // list_courses_by_status() must also extend CourseList TTL.
-    advance_below_course_ttl_threshold(&env);
-    let course_list_ttl_before_status = env.as_contract(&contract_id, || {
-        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    // get_courses_by_instructor() must extend the instructor index TTLs.
+    let instructor_courses =
+        client.get_courses_by_instructor(&instructor, &0u32, &u32::MAX);
+    assert_eq!(instructor_courses.len(), 1);
+    assert_eq!(instructor_courses.get(0).unwrap(), course_id);
+    let instructor_count_ttl_after = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::InstructorCourseCountPersistent(instructor.clone()))
     });
-    assert!(course_list_ttl_before_status < HamplardContract::PERSISTENT_TTL_THRESHOLD);
+    let instructor_index_ttl_after = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey2::InstructorCourseIndex(instructor.clone(), 0))
+    });
+    assert_eq!(
+        instructor_count_ttl_after,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+    assert_eq!(
+        instructor_index_ttl_after,
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
+
+    // list_courses_by_status() must also extend the catalog index TTL.
+    advance_below_course_ttl_threshold(&env);
+    let course_index_ttl_before_status = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey2::CourseIndex(0))
+    });
+    assert!(course_index_ttl_before_status < HamplardContract::PERSISTENT_TTL_THRESHOLD);
 
     let active_courses = client.list_courses_by_status(&CourseStatus::Active, &0u32, &10u32);
     assert_eq!(active_courses.len(), 1);
     assert_eq!(active_courses.get(0).unwrap(), course_id);
-    let course_list_ttl_after_status = env.as_contract(&contract_id, || {
-        env.storage().persistent().get_ttl(&DataKey::CourseList)
+    let course_index_ttl_after_status = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey2::CourseIndex(0))
     });
     assert_eq!(
-        course_list_ttl_after_status,
+        course_index_ttl_after_status,
         HamplardContract::PERSISTENT_TTL_EXTEND_TO
     );
 }
@@ -21975,4 +22049,59 @@ fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
     client.process_refund(&admin, &student1, &course_id, &true, &None);
 
     assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
+}
+
+// ============================================================
+// ISSUE #388: course_registered EVENT PAYLOAD
+// ============================================================
+
+#[test]
+fn test_course_registered_event_carries_course_terms() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-REGISTER-EVENT");
+    let price = 500_000_000i128;
+    let ledger_before = env.ledger().sequence();
+
+    client.register_course(
+        &instructor,
+        &course_id,
+        &price,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    let mut matched = 0u32;
+    for (contract, topics, data) in env.events().all().iter() {
+        if contract != contract_id {
+            continue;
+        }
+        let name: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if name != Symbol::new(&env, "course_registered") {
+            continue;
+        }
+        let topic_id: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
+        assert_eq!(topic_id, course_id);
+
+        let (event_id, event_instructor, event_price, event_token, event_fee, event_ledger): (
+            String,
+            Address,
+            i128,
+            Address,
+            u32,
+            u32,
+        ) = data.try_into_val(&env).unwrap();
+        assert_eq!(event_id, course_id);
+        assert_eq!(event_instructor, instructor);
+        assert_eq!(event_price, price);
+        assert_eq!(event_token, token_id);
+        assert_eq!(event_fee, client.get_course(&course_id).unwrap().platform_fee_percent);
+        assert_eq!(event_ledger, ledger_before);
+        matched += 1;
+    }
+    assert_eq!(matched, 1, "exactly one course_registered event expected");
 }

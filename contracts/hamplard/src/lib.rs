@@ -452,7 +452,6 @@ mod storage;
 mod events;
 mod errors;
 mod fees;
-mod course;
 mod enrollment;
 mod certificate;
 mod admin;
@@ -1216,6 +1215,13 @@ pub enum DataKey2 {
     /// Ordered (append-only) list of certificate IDs issued to a student (#414).
     /// Populated by `issue_certificate` and read by `get_certificates_by_student`.
     StudentCertificates(Address),
+    /// Course ID at position `u32` in the on-chain catalog (#395). Each index
+    /// is its own persistent entry so registration never rewrites the list.
+    CourseIndex(u32),
+    /// Number of indexed entries in the on-chain catalog (#395).
+    CourseCount,
+    /// Course ID at position `u32` in an instructor's course list (#396).
+    InstructorCourseIndex(Address, u32),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1747,20 +1753,21 @@ impl HamplardContract {
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
 
-        let course_count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
-        let current_count: u32 = Self::read_instructor_course_count(&env, &instructor);
         // A stored limit of 0 would block every instructor from registering
-        // (current_count >= 0 is always true). Reject it defensively so a
+        // (instructor_course_count >= 0 is always true). Reject it defensively so a
         // misconfigured update_max_courses_limit(0) cannot silently freeze
         // all registrations; use a positive limit instead.
         if max_courses == 0 {
             panic!("max courses per instructor must be greater than zero");
         }
 
-        let course_count_key = DataKey::InstructorCourseCount(instructor.clone());
-        let current_count: u32 = env.storage().instance().get(&course_count_key).unwrap_or(0);
+        // Persistent per-instructor count. This also performs the one-time
+        // migration of a legacy InstructorCourseList Vec so the next course
+        // is appended at the correct index (#396).
+        let instructor_course_count = Self::instructor_course_index_count(&env, &instructor);
+        let course_count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
 
-        if current_count >= max_courses {
+        if instructor_course_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
 
@@ -1835,41 +1842,25 @@ impl HamplardContract {
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
         Self::save_course_terms(&env, &course);
 
-        // Append to on-chain course catalog
-        let mut catalog: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::CourseList)
-            .unwrap_or_else(|| Vec::new(&env));
-        catalog.push_back(course_id.clone());
-        Self::persist(&env, &DataKey::CourseList, &catalog);
-
-        env.storage()
-            .persistent()
-            .set(&course_count_key, &(current_count + 1));
-        env.storage().persistent().extend_ttl(
-            &course_count_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
+        // Append to the indexed on-chain catalog. Only two fixed-size entries
+        // are written, so registration cost is independent of catalog size (#395).
+        let catalog_count = Self::course_catalog_count(&env);
+        Self::persist(
+            &env,
+            &DataKey2::CourseIndex(catalog_count),
+            &course_id,
         );
-        env.storage()
-            .persistent()
-            .set(&pending_count_key, &(current_pending_count + 1));
-        env.storage().persistent().extend_ttl(
-            &pending_count_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
+        Self::persist(&env, &DataKey2::CourseCount, &(catalog_count + 1));
 
-        // Append to the per-instructor course list
-        let instructor_list_key = DataKey::InstructorCourseList(instructor.clone());
-        let mut instructor_courses: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&instructor_list_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        instructor_courses.push_back(course_id.clone());
-        Self::persist(&env, &instructor_list_key, &instructor_courses);
+        Self::persist(&env, &course_count_key, &(instructor_course_count + 1));
+        Self::persist(&env, &pending_count_key, &(current_pending_count + 1));
+
+        // Append to the instructor's indexed course list (#396).
+        Self::persist(
+            &env,
+            &DataKey2::InstructorCourseIndex(instructor.clone(), instructor_course_count),
+            &course_id,
+        );
 
         // Add instructor to global registry if first course
         let mut registry: Vec<Address> = env
@@ -1892,9 +1883,19 @@ impl HamplardContract {
             Self::persist(&env, &DataKey::InstructorRegistry, &registry);
         }
 
+        // Topics stay `(course_registered, course_id)` so existing course-scoped
+        // subscriptions keep working; the data payload now carries everything
+        // an indexer needs without a get_course() round trip (#388).
         env.events().publish(
             (Symbol::new(&env, "course_registered"), course_id.clone()),
-            (course_id.clone(), instructor.clone(), env.ledger().sequence()),
+            (
+                course_id.clone(),
+                instructor.clone(),
+                price,
+                course.token.clone(),
+                fee,
+                env.ledger().sequence(),
+            ),
         );
 
         course_id
@@ -2391,7 +2392,7 @@ impl HamplardContract {
             .unwrap_or(50);
 
         let new_count_key = DataKey::InstructorCourseCountPersistent(new_instructor.clone());
-        let new_count = Self::read_instructor_course_count(&env, &new_instructor);
+        let new_count = Self::instructor_course_index_count(&env, &new_instructor);
         if new_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
@@ -2463,17 +2464,14 @@ impl HamplardContract {
             );
         }
 
-        // InstructorCourseList is append-only for the previous instructor
-        // (it records every course they ever registered). Append the course
-        // to the new instructor's list so they can query it going forward.
-        let new_list_key = DataKey::InstructorCourseList(new_instructor.clone());
-        let mut new_instructor_courses: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&new_list_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        new_instructor_courses.push_back(course_id.clone());
-        Self::persist(&env, &new_list_key, &new_instructor_courses);
+        // The previous instructor's list is append-only (it records every
+        // course they ever registered). Append the course to the new
+        // instructor's indexed list so they can query it going forward (#396).
+        Self::persist(
+            &env,
+            &DataKey2::InstructorCourseIndex(new_instructor.clone(), new_count),
+            &course_id,
+        );
 
         env.events().publish(
             (Symbol::new(&env, "course_transferred"), course_id.clone()),
@@ -6389,13 +6387,14 @@ impl HamplardContract {
         );
 
         // Pause all of the instructor's currently Active courses
-        if let Some(course_ids) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, Vec<String>>(&DataKey::InstructorCourseList(instructor.clone()))
-        {
-            for i in 0..course_ids.len() {
-                let course_id = course_ids.get(i).unwrap();
+        let instructor_course_count = Self::instructor_course_index_count(&env, &instructor);
+        for i in 0..instructor_course_count {
+            let index_key = DataKey2::InstructorCourseIndex(instructor.clone(), i);
+            if let Some(course_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, String>(&index_key)
+            {
                 if let Some(mut course) = env
                     .storage()
                     .persistent()
@@ -7427,24 +7426,46 @@ impl HamplardContract {
 
     /// Get the number of courses an instructor has registered.
     pub fn get_instructor_course_count(env: Env, instructor: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::InstructorCourseCount(instructor))
-            .unwrap_or(0)
+        Self::read_instructor_course_count(&env, &instructor)
     }
 
-    /// Get the ordered list of course IDs an instructor has registered.
-    /// The list is append-only: pausing, unpausing, or archiving a course
-    /// changes only its `Course.status` and never removes it from this
-    /// list, so it always reflects every course the instructor has ever
-    /// registered.
-    pub fn get_courses_by_instructor(env: Env, instructor: Address) -> Vec<String> {
-        let key = DataKey::InstructorCourseList(instructor);
-        Self::extend_persistent_ttl_if_exists(&env, &key);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(&env))
+    /// Get a page of course IDs an instructor has registered.
+    ///
+    /// The index is append-only: pausing, unpausing, or archiving a course
+    /// changes only its `Course.status` and never removes it from the index,
+    /// so it always reflects every course the instructor has ever registered.
+    ///
+    /// - `offset` — zero-based index of the first course to return
+    /// - `limit`  — page size, clamped to `MAX_PAGE_SIZE`
+    ///
+    /// Returns an empty page when `offset` is past the instructor's last course.
+    pub fn get_courses_by_instructor(
+        env: Env,
+        instructor: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<String> {
+        let count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+        Self::extend_persistent_ttl_if_exists(&env, &count_key);
+        let total = Self::instructor_course_index_count(&env, &instructor);
+
+        let limit = limit.min(Self::MAX_PAGE_SIZE);
+        let start = offset.min(total);
+        let end = start.saturating_add(limit).min(total);
+
+        let mut page = Vec::new(&env);
+        for i in start..end {
+            let index_key = DataKey2::InstructorCourseIndex(instructor.clone(), i);
+            Self::extend_persistent_ttl_if_exists(&env, &index_key);
+            if let Some(course_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, String>(&index_key)
+            {
+                page.push_back(course_id);
+            }
+        }
+        page
     }
 
     /// Get an instructor's on-chain reputation stats — total students
@@ -8083,15 +8104,10 @@ impl HamplardContract {
     ///
     /// Returns an empty list when `offset` is beyond the end of the catalog.
     pub fn list_courses(env: Env, offset: u32, limit: u32) -> Vec<String> {
-        let key = DataKey::CourseList;
-        Self::extend_persistent_ttl_if_exists(&env, &key);
-        let catalog: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(&env));
+        let count_key = DataKey2::CourseCount;
+        Self::extend_persistent_ttl_if_exists(&env, &count_key);
+        let total = Self::course_catalog_count(&env);
 
-        let total = catalog.len();
         let start = offset.min(total);
         let limit = limit.min(Self::MAX_PAGE_SIZE);
         // Saturating add: an oversized caller `limit` (e.g. u32::MAX) must
@@ -8100,7 +8116,15 @@ impl HamplardContract {
 
         let mut page = Vec::new(&env);
         for i in start..end {
-            page.push_back(catalog.get(i).unwrap());
+            let index_key = DataKey2::CourseIndex(i);
+            Self::extend_persistent_ttl_if_exists(&env, &index_key);
+            if let Some(course_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, String>(&index_key)
+            {
+                page.push_back(course_id);
+            }
         }
         page
     }
@@ -8120,13 +8144,9 @@ impl HamplardContract {
         offset: u32,
         limit: u32,
     ) -> Vec<String> {
-        let key = DataKey::CourseList;
-        Self::extend_persistent_ttl_if_exists(&env, &key);
-        let catalog: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(&env));
+        let count_key = DataKey2::CourseCount;
+        Self::extend_persistent_ttl_if_exists(&env, &count_key);
+        let total = Self::course_catalog_count(&env);
 
         let limit = limit.min(Self::MAX_PAGE_SIZE);
         let mut page = Vec::new(&env);
@@ -8135,7 +8155,16 @@ impl HamplardContract {
         }
 
         let mut matched: u32 = 0;
-        for course_id in catalog.iter() {
+        for i in 0..total {
+            let index_key = DataKey2::CourseIndex(i);
+            Self::extend_persistent_ttl_if_exists(&env, &index_key);
+            let Some(course_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, String>(&index_key)
+            else {
+                continue;
+            };
             let course: Option<Course> = env
                 .storage()
                 .persistent()
@@ -8246,6 +8275,64 @@ impl HamplardContract {
                 Self::PERSISTENT_TTL_EXTEND_TO,
             );
         }
+    }
+
+    /// Number of entries in the indexed on-chain catalog (#395).
+    ///
+    /// The legacy `CourseList` Vec is migrated once, on first access after an
+    /// upgrade, into `CourseIndex(u32)` entries. All later reads and writes
+    /// touch only fixed-size entries.
+    fn course_catalog_count(env: &Env) -> u32 {
+        let count_key = DataKey2::CourseCount;
+        if let Some(count) = env.storage().persistent().get::<DataKey2, u32>(&count_key) {
+            return count;
+        }
+
+        let legacy_key = DataKey::CourseList;
+        let legacy: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&legacy_key)
+            .unwrap_or_else(|| Vec::new(env));
+        for (i, course_id) in legacy.iter().enumerate() {
+            Self::persist(env, &DataKey2::CourseIndex(i as u32), &course_id);
+        }
+        Self::persist(env, &count_key, &legacy.len());
+        env.storage().persistent().remove(&legacy_key);
+        legacy.len()
+    }
+
+    /// Number of courses registered by `instructor` in the indexed list (#396).
+    ///
+    /// Migrates a legacy `InstructorCourseList` Vec on first access so the
+    /// stored count and the indexed entries stay in sync.
+    fn instructor_course_index_count(env: &Env, instructor: &Address) -> u32 {
+        let legacy_key = DataKey::InstructorCourseList(instructor.clone());
+        if let Some(legacy) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<String>>(&legacy_key)
+        {
+            for (i, course_id) in legacy.iter().enumerate() {
+                Self::persist(
+                    env,
+                    &DataKey2::InstructorCourseIndex(instructor.clone(), i as u32),
+                    &course_id,
+                );
+            }
+            let count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+            if env
+                .storage()
+                .persistent()
+                .get::<DataKey, u32>(&count_key)
+                .unwrap_or(0)
+                < legacy.len()
+            {
+                Self::persist(env, &count_key, &legacy.len());
+            }
+            env.storage().persistent().remove(&legacy_key);
+        }
+        Self::read_instructor_course_count(env, instructor)
     }
 
     /// Persist a `CourseTerms` snapshot for `course.version` (#371).
