@@ -21976,3 +21976,90 @@ fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
 
     assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
 }
+
+// ============================================================
+// ISSUE #427: PENDING ADMIN PROPOSAL EXPIRY
+// ============================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_accept_admin_rejects_expired_proposal() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    let new_sec = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::ADMIN_PROPOSAL_VALIDITY_LEDGERS;
+    });
+
+    client.accept_admin(&new_admin, &new_sec);
+}
+
+#[test]
+fn test_accept_admin_within_window_still_succeeds() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    let new_sec = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += HamplardContract::ADMIN_PROPOSAL_VALIDITY_LEDGERS - 1;
+    });
+    client.accept_admin(&new_admin, &new_sec);
+
+    assert_eq!(client.get_admin(), new_admin);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+// ============================================================
+// ISSUE #420: THIRD-PARTY CERTIFICATE OWNERSHIP CHECK
+// ============================================================
+
+#[test]
+fn test_verify_certificate_for_checks_ownership_and_validity() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    let other = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-FOR",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-VERIFY-FOR");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-FOR");
+
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof_verify_for")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Test Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-FOR"),
+        &None,
+        &None,
+    );
+
+    assert!(client.verify_certificate_for(&cert_id, &student));
+    assert!(!client.verify_certificate_for(&cert_id, &other));
+    assert!(!client.verify_certificate_for(&String::from_str(&env, "MISSING"), &student));
+}
