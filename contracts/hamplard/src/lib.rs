@@ -446,6 +446,8 @@ pub enum Error {
     UpgradeError = 49,
     InconsistentState = 50,
     InvalidMaxCoursesLimit = 51,
+    /// An approved token reported a precision other than 7 decimals (#705).
+    InvalidTokenDecimals = 52,
 }
 mod types;
 mod storage;
@@ -1216,6 +1218,8 @@ pub enum DataKey2 {
     /// Ordered (append-only) list of certificate IDs issued to a student (#414).
     /// Populated by `issue_certificate` and read by `get_certificates_by_student`.
     StudentCertificates(Address),
+    /// Token precision captured once when the token is approved (#705).
+    ApprovedTokenDecimals(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1375,6 +1379,11 @@ impl HamplardContract {
     const MAX_CO_INSTRUCTORS: u32 = 10;
     /// Revenue shares are expressed in basis points (100% = 10 000 bps).
     const MAX_SHARE_BPS: u32 = 10_000;
+    /// Token precision required for every approved token (#705).
+    const EXPECTED_TOKEN_DECIMALS: u32 = 7;
+    /// Maximum number of prerequisite courses stored on a course. The list is
+    /// walked on every enrollment, so it must remain bounded (#699).
+    const MAX_PREREQUISITE_COURSES: u32 = 10;
     /// Maximum length of a certificate revocation reason (#411)
     const MAX_REVOCATION_REASON_LEN: u32 = 64;
     /// 100% in basis points: upper bound for any single fee surcharge and for
@@ -1640,13 +1649,15 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
-        // Only an approved token is ever called. Decimals must match the
-        // expected precision so fee maths stays accurate.
-        let token_client = token::Client::new(&env, &token);
-        let token_decimals = token_client.decimals();
-        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
-        if token_decimals != EXPECTED_TOKEN_DECIMALS {
-            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+        // #705 — Precision was validated and cached when the token was
+        // approved, so registration never calls out to the token contract.
+        let token_decimals: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::ApprovedTokenDecimals(token.clone()))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTokenDecimals));
+        if token_decimals != Self::EXPECTED_TOKEN_DECIMALS {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidTokenDecimals);
         }
         if Self::is_instructor_frozen_internal(&env, &instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
@@ -3026,8 +3037,11 @@ impl HamplardContract {
     }
 
     /// Instructor or admin sets or clears the course expiry ledger.
-    /// If set to a past ledger sequence, the course will be treated as expired
-    /// and new enrollments will be rejected via validate_enrollment() and re_enroll().
+    ///
+    /// A configured expiry must be strictly after the current ledger sequence
+    /// and strictly after `enrollment_start_ledger` (when set), so setting it
+    /// can never make an otherwise enrollable course immediately unusable.
+    /// Passing `None` clears the expiry (#698).
     ///
     /// # Arguments
     /// - `caller`              — must be the course instructor or admin
@@ -3043,11 +3057,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -3065,6 +3074,19 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
 
+        // #698 — An expiry at or before "now", or one that closes enrollment
+        // before it even opens, silently makes the course unenrollable.
+        if let Some(expiry) = expires_at_ledger {
+            if expiry <= env.ledger().sequence() {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+            }
+            if let Some(start) = course.enrollment_start_ledger {
+                if expiry <= start {
+                    soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+                }
+            }
+        }
+
         course.expires_at_ledger = expires_at_ledger;
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
@@ -3079,7 +3101,9 @@ impl HamplardContract {
     /// that a student must have completed — with an issued, non-revoked
     /// certificate — before they may enroll in this course.
     ///
-    /// Pass an empty list to remove all prerequisites.
+    /// Pass an empty list to remove all prerequisites. The list is bounded to
+    /// `MAX_PREREQUISITE_COURSES`, de-duplicated, restricted to Active courses,
+    /// and may not form a direct cycle with another course (#699).
     ///
     /// # Arguments
     /// - `caller`                  — must be the course instructor or admin
@@ -3096,29 +3120,28 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
+        Self::require_admin_or_instructor(&env, &caller, &course);
 
         if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
 
+        // #699 — Bound the list because it is walked on every enrollment.
+        if prerequisite_course_ids.len() > Self::MAX_PREREQUISITE_COURSES {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
+        }
+
+        let mut unique_prerequisites: Vec<String> = Vec::new(&env);
         for i in 0..prerequisite_course_ids.len() {
             let prereq_id = prerequisite_course_ids.get(i).unwrap();
 
@@ -3126,16 +3149,33 @@ impl HamplardContract {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
             }
 
-            if !env
-                .storage()
-                .persistent()
-                .has(&DataKey::Course(prereq_id.clone()))
-            {
+            let mut duplicate = false;
+            for existing in unique_prerequisites.iter() {
+                if existing == prereq_id {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if duplicate {
+                continue;
+            }
+
+            let prereq = Self::get_course_internal(&env, &prereq_id).unwrap_or_else(|| {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite)
+            });
+            if prereq.status != CourseStatus::Active {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
             }
+            for other in prereq.prerequisite_course_ids.iter() {
+                if other == course_id.clone() {
+                    soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
+                }
+            }
+
+            unique_prerequisites.push_back(prereq_id);
         }
 
-        course.prerequisite_course_ids = prerequisite_course_ids.clone();
+        course.prerequisite_course_ids = unique_prerequisites.clone();
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
@@ -3144,7 +3184,7 @@ impl HamplardContract {
                 Symbol::new(&env, "prerequisite_courses_set"),
                 course_id.clone(),
             ),
-            (course_id, prerequisite_course_ids),
+            (course_id, unique_prerequisites),
         );
     }
 
@@ -3592,10 +3632,12 @@ impl HamplardContract {
             seen.set(id, true);
         }
 
-        // Validate every course before any mutation
+        // Validate every course before any mutation, reading each record once (#706)
         for i in 0..course_ids.len() {
             let course_id = course_ids.get(i).unwrap();
-            Self::validate_enrollment(&env, &student, &course_id);
+            let course = Self::get_course_internal(&env, &course_id)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+            Self::validate_enrollment(&env, &student, &course_id, &course);
         }
 
         // All validations passed — enroll atomically using the validated
@@ -3620,10 +3662,10 @@ impl HamplardContract {
     }
 
 
-    fn validate_enrollment(env: &Env, student: &Address, course_id: &String) {
-        let course =
-            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
-        Self::validate_enrollment_for(env, student, course_id, &course, true);
+    /// #706 — Callers read the `Course` once and pass it in so validation does
+    /// not load the same record again.
+    fn validate_enrollment(env: &Env, student: &Address, course_id: &String, course: &Course) {
+        Self::validate_enrollment_for(env, student, course_id, course, true);
     }
 
     /// The shared enrollment guard chain.
@@ -3652,8 +3694,7 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::PlatformPaused);
         }
 
-        let course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+        // #706 — `course` is supplied by the caller; do not read it again.
 
         if Self::is_student_blocked_internal(env, student) {
             Self::emit_enrollment_failed(env, student, course_id, "STUDENT_BLOCKED");
@@ -3778,18 +3819,9 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
-        // Validate token decimal precision at enrollment time to ensure fee calculations are accurate
-        let token_client = token::Client::new(env, &course.token);
-        let token_decimals = token_client.decimals();
-        const EXPECTED_TOKEN_DECIMALS: u32 = 7;
-        if token_decimals != EXPECTED_TOKEN_DECIMALS {
-            Self::emit_enrollment_failed(env, student, course_id, "INVALID_TOKEN_DECIMALS");
-            panic!(
-                "token decimal precision must be {} (found {})",
-                EXPECTED_TOKEN_DECIMALS, token_decimals
-            );
-            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-        }
+        // #705 — Token precision is validated once by add_approved_token and
+        // cached at approval time. Only whitelisted tokens reach this point,
+        // so enrollment no longer performs a cross-contract decimals() call.
 
         // Every prerequisite course must have an issued, non-revoked
         // certificate on record for this student before enrollment proceeds.
@@ -3878,12 +3910,11 @@ impl HamplardContract {
     }
 
     fn enroll_internal(env: &Env, student: &Address, course_id: &String, max_price: i128) {
-        Self::validate_enrollment(env, student, course_id);
-
+        // #706 — One course read per enrollment, passed through validation
+        // and the payment path instead of being fetched three times.
         let mut course = Self::get_course_internal(env, course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-        let mut course =
-            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
+        Self::validate_enrollment(env, student, course_id, &course);
 
         // #361 — Guard against a price change between the price the student
         // approved and execution: revert before any payment is attempted when
@@ -6161,6 +6192,10 @@ impl HamplardContract {
     }
 
     /// Admin adds a token contract address to the enrollment whitelist.
+    ///
+    /// The token must report exactly 7 decimals. Precision is checked here,
+    /// once, and cached under `DataKey2::ApprovedTokenDecimals` so neither
+    /// course registration nor enrollment needs a cross-contract call (#705).
     pub fn add_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "add_approved_token");
@@ -6173,6 +6208,18 @@ impl HamplardContract {
         {
             return;
         }
+
+        // #705 — Reject unsupported precision with a dedicated error before
+        // the token enters the whitelist. CourseNotAvailable is reserved for
+        // courses that cannot be enrolled in.
+        let token_decimals = token::Client::new(&env, &token).decimals();
+        if token_decimals != Self::EXPECTED_TOKEN_DECIMALS {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidTokenDecimals);
+        }
+        env.storage().instance().set(
+            &DataKey2::ApprovedTokenDecimals(token.clone()),
+            &token_decimals,
+        );
 
         env.storage()
             .instance()
@@ -6270,6 +6317,10 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey::BtcEthToken(token.clone()));
+        // #705 — Drop the cached precision alongside the approval flag.
+        env.storage()
+            .instance()
+            .remove(&DataKey2::ApprovedTokenDecimals(token.clone()));
 
         // Remove the token from the ordered list maintained for get_approved_tokens().
         let list: Vec<Address> = env
