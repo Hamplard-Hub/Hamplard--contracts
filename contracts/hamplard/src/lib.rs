@@ -1557,11 +1557,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -1966,11 +1961,6 @@ impl HamplardContract {
             }
         }
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let delay = env
             .storage()
             .instance()
@@ -2075,11 +2065,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         if course.status != CourseStatus::Pending {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
@@ -2230,11 +2215,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -2283,11 +2263,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -2364,11 +2339,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         if instructor != course.instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
@@ -2538,11 +2508,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         if !matches!(
             &course.status,
@@ -2835,11 +2800,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -2935,11 +2895,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3005,11 +2960,6 @@ impl HamplardContract {
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
         Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3054,11 +3004,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -3108,11 +3053,6 @@ impl HamplardContract {
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
         Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3180,11 +3120,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3241,11 +3176,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
@@ -5303,11 +5233,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         // Check per-course certificate limit against *live* certificates
         // (issued minus revoked).  Revocations free a slot so it can be reused.
