@@ -172,15 +172,15 @@
 //!   and therefore cannot receive certificates for that work.
 //!
 //! ## Admin Expiry Policy
-//! - `set_admin_expiry()` called by both admins sets a ledger sequence at which the admin role expires
+//! - `set_admin_expiry()` called by both admins sets an expiry 17,280–1,000,000 ledgers ahead
 //! - Once the current ledger sequence reaches or exceeds the expiry value:
 //!   - All single-admin operations (`approve_course`, `block_student`, `issue_certificate`, etc.)
 //!     automatically fail with "admin role has expired"
-//!   - All multi-admin operations (`archive_course`, `transfer_admin`, `set_admin_expiry`, etc.)
+//!   - All multi-admin operations (`archive_course`, `set_admin_expiry`, etc.)
 //!     automatically fail with "admin role has expired"
 //!   - The only recovery is for the expired admins to call `transfer_admin()` to nominate a new pair,
 //!     and the new pair calls `accept_admin()` — this resets the admin expiry to None
-//! - Expiry may be cleared by calling `set_admin_expiry()` with `None` before it takes effect
+//! - `transfer_admin()` is allowed for the current pair after expiry as a recovery path
 //!
 //! ## Payment Guarantees
 //! - On enrollment the full course price is transferred from the student atomically.
@@ -1312,6 +1312,10 @@ impl HamplardContract {
     /// sequences (~17,280 ledgers ≈ 1 day at 5s/ledger). Used when the
     /// admin has not configured a custom value via `set_upgrade_timelock`.
     const DEFAULT_UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+    /// Keep a full review window even when admins configure the upgrade delay.
+    const MIN_UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+    /// Prevent an accidental configuration from making upgrades unusable.
+    const MAX_UPGRADE_TIMELOCK_LEDGERS: u32 = 1_000_000;
     /// Cooldown period in ledger sequences after a course is archived
     /// before the same course ID can be re-registered. This prevents
     /// confusion where a new course inherits the identity of an archived
@@ -1353,6 +1357,9 @@ impl HamplardContract {
     /// `transfer_admin()` calls. Prevents rapid admin key rotation
     /// after a compromise (~17,280 ledgers ≈ 1 day at 5s/ledger). (#176)
     const MIN_ADMIN_TRANSFER_COOLDOWN: u32 = 17_280;
+    /// Admin expiry must leave at least one transfer cooldown for recovery.
+    const MIN_ADMIN_EXPIRY_DELAY_LEDGERS: u32 = 17_280;
+    const MAX_ADMIN_EXPIRY_DELAY_LEDGERS: u32 = 1_000_000;
     /// Time-lock delay in ledger sequences before a proposed treasury address
     /// change takes effect (~17,280 ledgers ≈ 1 day at 5s/ledger).
     /// Gives monitors and admins sufficient time to detect and react to a
@@ -1590,7 +1597,7 @@ impl HamplardContract {
     ///
     /// # Arguments
     /// - `instructor`       — instructor's Stellar address (must sign)
-    /// - `course_id`        — unique ID matching the backend DB record
+    /// - `course_id`        — unique, case-sensitive ID stored as supplied
     /// - `price`            — enrollment price in USDC stroops
     /// - `token`            — USDC Stellar Asset Contract address; must already
     ///   be on the enrollment whitelist (`add_approved_token`), otherwise
@@ -1600,20 +1607,21 @@ impl HamplardContract {
     ///   must be at least the token's current fee and is charged at enrollment
     ///   as a floor on the live per-token fee.
     /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
-    fn normalize_course_id(env: &Env, input: &String) -> String {
-        let raw = input.to_bytes();
-        let mut out = Bytes::new(env);
-        let mut i = 0;
-        while i < raw.len() {
-            let b = raw.get(i).unwrap();
-            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
-                panic!("course_id must not contain whitespace");
-            }
-            out.push_back(if b'A' <= b && b <= b'Z' { b + 32 } else { b });
-            i += 1;
+    fn validate_course_id(env: &Env, input: &String) -> String {
+        if input.is_empty() || input.len() > Self::MAX_COURSE_ID_LEN {
+            soroban_sdk::panic_with_error!(env, Error::InvalidCourseInput);
         }
-        if out.len() == 0 { panic!("course_id must not be empty"); }
-        String::from_bytes(env, &out)
+
+        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
+        let id_bytes = &mut id_bytes[..input.len() as usize];
+        input.copy_into_slice(id_bytes);
+        for byte in id_bytes.iter() {
+            if !(0x20..=0x7E).contains(byte) || *byte == b'`' || *byte == b'~' {
+                soroban_sdk::panic_with_error!(env, Error::InvalidCourseInput);
+            }
+        }
+
+        input.clone()
     }
 
     pub fn register_course(
@@ -1628,7 +1636,7 @@ impl HamplardContract {
         categories: Vec<String>,
     ) -> String {
         instructor.require_auth();
-        let course_id = Self::normalize_course_id(&env, &course_id);
+        let course_id = Self::validate_course_id(&env, &course_id);
 
         // #391 - Check the whitelist BEFORE any cross-contract call, so an
         // attacker-supplied token contract never executes inside registration.
@@ -1652,41 +1660,10 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
-        if course_id.is_empty() {
-            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
-        }
-
-        if course_id.len() > Self::MAX_COURSE_ID_LEN {
-            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
-        }
-
         // `Some(0)` would make the course permanently unenrollable
         // (`total_enrollments >= 0` is always true); use `None` for unlimited.
         if max_capacity == Some(0) {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
-        }
-
-        // Validate course ID contains only allowed characters.
-        // Allowed: printable ASCII (0x20-0x7E) excluding backtick and tilde
-        // which can cause issues in some off-chain parsers.
-        // This prevents null bytes, control characters, and problematic
-        // Unicode that could break off-chain parsers or create unreproducible
-        // storage keys.
-        // `String` only exposes its bytes through `copy_into_slice()`, which
-        // requires an exactly-sized buffer. The length was already bounded by
-        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
-        let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
-        let id_bytes = &mut id_bytes[..course_id.len() as usize];
-        course_id.copy_into_slice(id_bytes);
-
-        for byte in id_bytes.iter() {
-            // Allow printable ASCII: space (0x20) through tilde (0x7E)
-            // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
-            if *byte < 0x20 || *byte > 0x7E {
-                soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
-            if !(0x20..=0x7E).contains(byte) {
-                panic!("course_id contains invalid characters (must be printable ASCII)");
-            }
         }
 
         // Validate categories (#165)
@@ -5825,7 +5802,7 @@ impl HamplardContract {
     ) {
         admin1.require_auth();
         admin2.require_auth();
-        Self::require_multi_admin(&env, &admin1, &admin2);
+        Self::require_multi_admin_identity(&env, &admin1, &admin2);
 
         let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         let current_sec_admin: Address = env
@@ -6567,9 +6544,8 @@ impl HamplardContract {
             .unwrap_or(50)
     }
 
-    /// Set the admin role expiry ledger sequence.
-    /// When the current ledger exceeds this value, admin operations are blocked.
-    /// Pass `None` to remove the expiry (admin role remains valid indefinitely).
+    /// Set the admin role expiry ledger sequence 17,280–1,000,000 ledgers ahead.
+    /// Pass `None` to remove the expiry before it takes effect.
     pub fn set_admin_expiry(env: Env, admin1: Address, admin2: Address, expires_at: Option<u32>) {
         admin1.require_auth();
         admin2.require_auth();
@@ -6578,7 +6554,10 @@ impl HamplardContract {
         let old_expiry: Option<u32> = env.storage().instance().get(&DataKey::AdminExpiresAt);
 
         if let Some(expiry) = expires_at {
-            if expiry <= env.ledger().sequence() {
+            let delay = expiry.saturating_sub(env.ledger().sequence());
+            if delay < Self::MIN_ADMIN_EXPIRY_DELAY_LEDGERS
+                || delay > Self::MAX_ADMIN_EXPIRY_DELAY_LEDGERS
+            {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
             }
             env.storage()
@@ -7531,6 +7510,11 @@ impl HamplardContract {
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
 
         let timelock = Self::get_upgrade_timelock(env.clone());
+        if !(Self::MIN_UPGRADE_TIMELOCK_LEDGERS..=Self::MAX_UPGRADE_TIMELOCK_LEDGERS)
+            .contains(&timelock)
+        {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
+        }
         let proposed_at_ledger = env.ledger().sequence();
         let effective_ledger = proposed_at_ledger
             .checked_add(timelock)
@@ -7623,7 +7607,7 @@ impl HamplardContract {
             .update_current_contract_wasm(pending.new_wasm_hash);
     }
 
-    /// Configure the upgrade governance time-lock, in ledger sequences.
+    /// Configure the upgrade governance time-lock, bounded to 17,280–1,000,000 ledgers.
     /// Requires both admin signatures. Does not affect an already-pending
     /// upgrade's `effective_ledger` — propose a new upgrade to apply a
     /// changed time-lock.
@@ -7631,6 +7615,12 @@ impl HamplardContract {
         admin1.require_auth();
         admin2.require_auth();
         Self::require_multi_admin(&env, &admin1, &admin2);
+
+        if !(Self::MIN_UPGRADE_TIMELOCK_LEDGERS..=Self::MAX_UPGRADE_TIMELOCK_LEDGERS)
+            .contains(&ledgers)
+        {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
+        }
 
         env.storage()
             .instance()
@@ -7972,66 +7962,26 @@ impl HamplardContract {
     /// - `CertificateStatus::Valid` otherwise (including while a revocation is still
     ///   pending within its challenge period, provided the certificate has not expired)
     pub fn get_certificate_status(env: Env, certificate_id: String) -> CertificateStatus {
+        let key = DataKey::Certificate(certificate_id.clone());
         let Some(cert) = env
             .storage()
             .persistent()
-            .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
+            .get::<DataKey, Certificate>(&key)
         else {
             return CertificateStatus::NotFound;
         };
-
-        if cert.revoked {
-            match cert.revocation_deadline {
-                // Revocation is permanent once the challenge period has elapsed,
-                // or immediately if no deadline was recorded (legacy/direct revocation).
-                Some(deadline) if env.ledger().sequence() < deadline => {}
-                _ => return CertificateStatus::Revoked,
-    /// A certificate with a pending revocation (revoked == true but
-    /// revocation_deadline in the future) is still considered valid until
-    /// the challenge period expires.
-    ///
-    /// When invoked in an on-chain transaction and the certificate is valid,
-    /// its persistent storage TTL is extended. Note that read-only RPC
-    /// simulations do not persist TTL extensions; verifiers or keepers should
-    /// submit `extend_certificate_ttl` on-chain to keep certificates live.
-    pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
-        let key = DataKey::Certificate(certificate_id);
-        if let Some(cert) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, Certificate>(&key)
-        {
-            if cert.revoked {
-                // Revocation is permanent only after the challenge period expires
-                if let Some(deadline) = cert.revocation_deadline {
-                    if env.ledger().sequence() >= deadline {
-                        return false;
-                    }
-                    // Within challenge period — still valid (pending revocation)
-                    env.storage().persistent().extend_ttl(
-                        &key,
-                        Self::PERSISTENT_TTL_THRESHOLD,
-                        Self::PERSISTENT_TTL_EXTEND_TO,
-                    );
-                    return true;
-                }
-                // Revoked without a deadline (legacy or direct revocation)
-                return false;
-            }
-        }
 
         if let Some(expiry) = cert.expires_at_ledger {
             if env.ledger().sequence() >= expiry {
                 return CertificateStatus::Expired;
             }
-            env.storage().persistent().extend_ttl(
-                &key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
-            true
-        } else {
-            false
+        }
+
+        if cert.revoked {
+            match cert.revocation_deadline {
+                Some(deadline) if env.ledger().sequence() < deadline => {}
+                _ => return CertificateStatus::Revoked,
+            }
         }
 
         CertificateStatus::Valid
@@ -8042,9 +7992,19 @@ impl HamplardContract {
     ///
     /// A certificate with a pending revocation (revoked == true but
     /// revocation_deadline in the future) is still considered valid until
-    /// the challenge period expires.
+    /// the challenge period expires, provided it has not expired.
     pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
-        Self::get_certificate_status(env, certificate_id) == CertificateStatus::Valid
+        let key = DataKey::Certificate(certificate_id.clone());
+        let is_valid =
+            Self::get_certificate_status(env.clone(), certificate_id) == CertificateStatus::Valid;
+        if is_valid {
+            env.storage().persistent().extend_ttl(
+                &key,
+                Self::PERSISTENT_TTL_THRESHOLD,
+                Self::PERSISTENT_TTL_EXTEND_TO,
+            );
+        }
+        is_valid
     }
 
     /// Permissionlessly extend the persistent storage TTL of an existing
@@ -8546,7 +8506,7 @@ impl HamplardContract {
         }
     }
 
-    fn require_multi_admin(env: &Env, caller1: &Address, caller2: &Address) {
+    fn require_multi_admin_identity(env: &Env, caller1: &Address, caller2: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         let secondary_admin: Address = env
             .storage()
@@ -8565,6 +8525,10 @@ impl HamplardContract {
         } else {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
+    }
+
+    fn require_multi_admin(env: &Env, caller1: &Address, caller2: &Address) {
+        Self::require_multi_admin_identity(env, caller1, caller2);
 
         // Check if admin role has expired
         if let Some(expires_at) = env
