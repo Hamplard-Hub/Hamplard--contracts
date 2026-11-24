@@ -385,7 +385,6 @@ use soroban_sdk::{
     Symbol, Val, Vec,
     contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
-use soroban_sdk::contractevent;
 
 /// Stable contract error codes returned by every failure path.
 ///
@@ -462,9 +461,6 @@ pub use types::*;
 // identify which build is live after an upgrade.
 soroban_sdk::contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
 soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamplard");
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
-    Symbol, Vec,
-};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -581,10 +577,9 @@ pub struct RiskFeeApplied {
     pub student: Address,
 }
 
-#[contractevent]
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct RiskFeeAppliedEvent {
-    #[topic]
     pub payment_amount: i128,
     pub base_fee_bps: u32,
     pub risk_surcharge_bps: u32,
@@ -614,10 +609,9 @@ pub struct EnrollmentFailed {
     pub ledger_sequence: u32,
 }
 
-#[contractevent]
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct InitializedEvent {
-    #[topic]
     pub admin: Address,
     pub secondary_admin: Address,
     pub treasury: Address,
@@ -1247,10 +1241,9 @@ pub struct PendingUpgrade {
     pub effective_ledger: u32,
 }
 
-#[contractevent]
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct CourseRegisteredEvent {
-    #[topic]
     pub course_id: String,
 }
 
@@ -1495,15 +1488,17 @@ impl HamplardContract {
             .instance()
             .set(&DataKey::InitLedger, &env.ledger().sequence());
 
-        InitializedEvent {
-            admin: admin.clone(),
-            secondary_admin,
-            treasury,
-            default_fee_pct,
-            max_courses_per_instructor,
-            refund_window_ledgers,
-        }
-        .publish(&env);
+        env.events().publish(
+            (Symbol::new(&env, "initialized"), admin.clone()),
+            (
+                admin,
+                secondary_admin,
+                treasury,
+                default_fee_pct,
+                max_courses_per_instructor,
+                refund_window_ledgers,
+            ),
+        );
     }
 
     /// Admin sets (or rotates) the moderator address.
