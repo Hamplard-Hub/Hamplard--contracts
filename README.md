@@ -303,9 +303,9 @@ Initialises the contract atomically at deployment time. The admin must sign.
 
 | Function | Signer | Description |
 |---|---|---|
-| `enroll(student, course_id)` | Student | Pay course price; platform fee is forwarded and instructor earnings are credited |
-| `batch_enroll(student, course_ids)` | Student | Enroll in up to 50 courses in one transaction |
-| `re_enroll(student, course_id)` | Student | Re-enroll after a completed course, archiving the previous enrollment |
+| `enroll(student, course_id, max_price) -> bool` | Student | Pay course price; `true` on success, `false` after a payment failure event |
+| `batch_enroll(student, course_ids, max_price)` | Student | Enroll in up to 50 courses in one transaction |
+| `re_enroll(student, course_id, max_price) -> bool` | Student | Re-enroll after a completed or expired course, archiving the previous attempt; same `bool` semantics as `enroll()` |
 | `withdraw_earnings(instructor, token, amount, destination)` | Instructor | Withdraw a positive `amount` of accumulated earnings (`amount <= 0` panics) |
 | `withdraw_all_earnings(instructor, token, destination)` | Instructor | Withdraw the full accumulated earnings balance |
 | `request_refund(student, course_id)` | Student | Open a refund request within the configured window |

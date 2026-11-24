@@ -6730,6 +6730,67 @@ fn test_re_enroll_after_completion_succeeds() {
     assert_eq!(course.total_enrollments, 2);
 }
 
+// ============================================================
+// ISSUES #641 / #360 / #359 / #353: RE-ENROLL MERGE RESOLUTION
+// ============================================================
+
+#[test]
+fn test_enroll_and_re_enroll_return_bool_and_update_counters_once() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &10_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-BOOL",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-BOOL");
+
+    assert!(client.enroll(&student, &course_id, &i128::MAX));
+    assert_eq!(client.get_total_active_enrollments(), 1);
+
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "evidence_bool")),
+    );
+
+    assert!(client.re_enroll(&student, &course_id, &i128::MAX));
+    assert_eq!(client.get_course(&course_id).unwrap().total_enrollments, 2);
+    // The completed attempt had already released its active slot; the new
+    // attempt must add exactly one, not two (#641).
+    assert_eq!(client.get_total_active_enrollments(), 1);
+}
+
+#[test]
+#[should_panic(expected = "admin cannot enroll in courses")]
+fn test_re_enroll_rejects_admin_address() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REENROLL-ADMIN",
+        500_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-REENROLL-ADMIN");
+
+    // re_enroll must clear the same admin guard as enroll (#353).
+    client.re_enroll(&admin, &course_id, &i128::MAX);
+}
+
 #[test]
 fn test_re_enroll_archives_original_completion_and_certificate() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
