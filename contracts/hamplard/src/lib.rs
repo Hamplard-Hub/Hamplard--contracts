@@ -2533,10 +2533,8 @@ impl HamplardContract {
         // the current price exceeds the student's stated maximum.
         Self::assert_price_within_limit(course.price, max_price);
 
-        if !matches!(
-            &course.status,
-            &CourseStatus::Paused | &CourseStatus::Pending | &CourseStatus::Rejected
-        ) {
+        // #696 — Only Paused courses may be archived, per documented safety flow.
+        if course.status != CourseStatus::Paused {
             soroban_sdk::panic_with_error!(&env, Error::CourseMustBePausedToArchive);
         }
 
@@ -2709,10 +2707,6 @@ impl HamplardContract {
             return;
         }
 
-        // #376 — Capture the status before we overwrite it; we need to know
-        // whether to also release the pending slot.
-        let pre_archive_status = course.status.clone();
-
         course.status = CourseStatus::Archived;
         course.archived_at_ledger = Some(env.ledger().sequence());
         course.last_updated_ledger = env.ledger().sequence();
@@ -2740,26 +2734,17 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
-        // If the archived course was still Pending, release the pending slot too.
-        if pre_archive_status == CourseStatus::Pending {
-            let pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
-            let pending_count =
-                Self::read_instructor_pending_course_count(&env, &course.instructor);
-            let new_pending_count = pending_count
-                .checked_sub(1)
-                .unwrap_or_else(|| {
-                    soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow)
-                });
-            env.storage()
-                .persistent()
-                .set(&pending_key, &new_pending_count);
-            env.storage().persistent().extend_ttl(
-                &pending_key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
-        }
+        // #697 — Remove per-course storage entries that are no longer needed
+        // once a course is archived to avoid persistent rent leakage.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CourseWaitlist(course_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CourseFailureCount(course_id.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey2::HighValueCourseApproval(course_id.clone()));
 
         // Include refund accounting in the archive event so indexers can reconcile
         // the operation without replaying every enrollment history entry.
@@ -2868,6 +2853,19 @@ impl HamplardContract {
         if let Some(mode) = new_capacity_mode {
             course.capacity_mode = mode;
             modified = true;
+            // #702 — switching mode redefines which counter max_capacity caps.
+            // Validate against the existing cap when no new cap is supplied.
+            if new_max_capacity.is_none() {
+                if let Some(cap) = course.max_capacity {
+                    let current_enrollments = match course.capacity_mode {
+                        CapacityMode::Lifetime => course.total_enrollments,
+                        CapacityMode::Concurrent => course.active_enrollments,
+                    };
+                    if cap < current_enrollments {
+                        soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+                    }
+                }
+            }
         }
 
         if let Some(capacity) = new_max_capacity {
@@ -3565,6 +3563,9 @@ impl HamplardContract {
     /// - If `course_ids` contains duplicates
     /// - If `course_ids.len()` exceeds `MAX_BATCH_SIZE`
     /// - If any course fails validation
+    /// Enroll a student in multiple courses atomically.
+    ///
+    /// `max_price` is applied per course (each course price must be <= `max_price`).
     pub fn batch_enroll(
         env: Env,
         student: Address,
@@ -3598,16 +3599,19 @@ impl HamplardContract {
             Self::validate_enrollment(&env, &student, &course_id);
         }
 
-        // All validations passed — enroll atomically using the validated
-        // fast-path to avoid re-running the same validation inside
-        // enroll_internal().
+        // All validations passed — enroll atomically. Use the same internal
+        // enrollment path as single enroll so risk flags, circuit breaker,
+        // and student enrollment counts stay consistent. (#704)
         let mut total_paid = 0i128;
         for i in 0..course_ids.len() {
             let course_id = course_ids.get(i).unwrap();
-            let amount_paid =
-                Self::enroll_internal_validated(&env, &student, &course_id, max_price);
+            Self::enroll_internal(&env, &student, &course_id, max_price);
             total_paid = total_paid
-                .checked_add(amount_paid)
+                .checked_add(
+                    Self::get_course_internal(&env, &course_id)
+                        .map(|c| c.price)
+                        .unwrap_or(0),
+                )
                 .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
         }
 
@@ -4194,207 +4198,8 @@ impl HamplardContract {
         );
     }
 
-    /// Like `enroll_internal`, but skips the `validate_enrollment()` guard.
-    ///
-    /// This is used by `batch_enroll()` after it has already validated every
-    /// course in the batch up front, avoiding the duplicate validation cost
-    /// that previously doubled the read/CPU work per course.
-    ///
-    /// # Safety
-    ///
-    /// Callers must ensure `validate_enrollment()` was already called for
-    /// this `(student, course_id)` pair in the same transaction. Direct
-    /// external callers must use `enroll_internal()` instead.
-    fn enroll_internal_validated(env: &Env, student: &Address, course_id: &String) -> i128 {
-        let mut course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-    fn enroll_internal_validated(
-        env: &Env,
-        student: &Address,
-        course_id: &String,
-        max_price: i128,
-    ) -> i128 {
-        let mut course =
-            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
-
-        // #361 — See enroll_internal().
-        Self::assert_price_within_limit(course.price, max_price);
-
-        let token_client = token::Client::new(env, &course.token);
-
-        if course.status != CourseStatus::Active {
-            env.events().publish(
-                (Symbol::new(env, "enrollment_rejected"), course_id.clone()),
-                EnrollmentRejected {
-                    course_id: course_id.clone(),
-                    student: student.clone(),
-                    status: course.status.clone(),
-                    ledger_sequence: env.ledger().sequence(),
-                },
-            );
-            soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-        }
-
-        let (instructor_amount, platform_amount) = Self::deduct_fee(
-            env,
-            &course.token,
-            course.price,
-            course_fee_override_bps,
-            false,
-            false,
-        );
-
-        let treasury = Self::effective_treasury(env);
-        let mut treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-
-        if let Some(pending) = env
-            .storage()
-            .instance()
-            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
-        {
-            if env.ledger().sequence() >= pending.effective_ledger {
-                treasury = pending.address.clone();
-                env.storage().instance().set(&DataKey::Treasury, &treasury);
-                env.storage().instance().remove(&DataKey::PendingTreasury);
-            }
-        }
-        let treasury: Address = Self::read_treasury(env);
-
-        let actual_amount_paid = if course.price > 0 {
-            let balance_before = token_client.balance(&env.current_contract_address());
-            token_client.transfer(student, &env.current_contract_address(), &course.price);
-            let balance_after = token_client.balance(&env.current_contract_address());
-
-            let actual_received = balance_after
-                .checked_sub(balance_before)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-
-            if actual_received != course.price {
-                soroban_sdk::panic_with_error!(&env, Error::TransferAmountMismatch);
-            }
-
-            // #368 — Accumulate the platform fee in-contract (same as enroll_internal).
-            if platform_amount > 0 {
-                token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
-                Self::increment_platform_fees_collected(env, &course.token, platform_amount);
-                env.events().publish(
-                    (
-                        Symbol::new(env, "platform_fee_accrued"),
-                        course_id.clone(),
-                    ),
-                    (course.token.clone(), platform_amount, new_total, env.ledger().sequence()),
-                );
-            }
-
-            if instructor_amount > 0 {
-                Self::credit_instructor_shares(env, &course, instructor_amount);
-            }
-
-            actual_received
-        } else {
-            0
-        };
-
-        let enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
-        let enrollment = Enrollment {
-            student: student.clone(),
-            course_id: course_id.clone(),
-            amount_paid: actual_amount_paid,
-            enrolled_at_ledger: env.ledger().sequence(),
-            completed: false,
-            certificate_issued: false,
-            certificate_id: None,
-            evidence_hash: None,
-            is_refunded: false,
-            course_version: course.version,
-            content_hash: course.content_hash.clone(),
-            platform_amount,
-            instructor_amount,
-            enrollment_ref: enrollment_ref.clone(),
-            completed_at_ledger: None,
-            enrollment_expiry_ledgers: course.enrollment_expiry_ledgers,
-        };
-
-        Self::persist(
-            &env,
-            &DataKey::Enrollment(student.clone(), course_id.clone()),
-            &enrollment,
-        );
-
-        let mut stats = Self::read_course_stats(&env, &course_id, &course);
-        stats.total_enrollments = stats
-            .total_enrollments
-            .checked_add(1)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        stats.active_enrollments = stats
-            .active_enrollments
-            .checked_add(1)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        stats.total_earned = stats
-            .total_earned
-            .checked_add(course.price)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        course.last_updated_ledger = env.ledger().sequence();
-        Self::persist_course(&env, &course_id, &course);
-        Self::write_course_stats(&env, &course_id, &stats);
-
-        let total_active: u32 = Self::read_total_active_enrollments(env);
-        Self::write_total_active_enrollments(
-            env,
-            total_active
-                .checked_add(1)
-                .expect("platform enrollment counter overflow"),
-        );
-        Self::inc_total_active(&env);
-        // Increment the platform-wide paid-enrollment counter. Free courses
-        // are intentionally excluded so they cannot exhaust paid capacity.
-        if course.price > 0 {
-            let total_active: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalActiveEnrollments)
-                .unwrap_or(0);
-            env.storage().instance().set(
-                &DataKey::TotalActiveEnrollments,
-                &(total_active
-                    .checked_add(1)
-                    .unwrap_or_else(|| panic!("platform enrollment counter overflow"))),
-            );
-        }
-
-        Self::update_instructor_stats(env, &course.instructor, |s| {
-            s.total_students = s
-                .total_students
-                .checked_add(1)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        });
-        if course.price > 0 {
-            Self::update_instructor_stats(env, &course.instructor, |s| {
-                s.total_students = s.total_students.checked_add(1)
-                    .unwrap_or_else(|| panic!("instructor stats overflow"));
-            });
-        }
-
-        env.events().publish(
-            (Symbol::new(env, "student_enrolled"), course_id.clone()),
-            (
-                student.clone(),
-                course_id.clone(),
-                course.price,
-                platform_amount,
-                instructor_amount,
-                env.ledger().sequence(),
-                treasury.clone(),
-                Self::payout_breakdown(env, &course, instructor_amount),
-            ),
-        );
-
-        actual_amount_paid
-    }
+    /// #704 — batch enroll now uses `enroll_internal` so payment/recording,
+    /// risk flags, circuit breaker, and student enrollment counts stay aligned.
     ///
     /// Unlike `enroll()`, this is allowed even though an `Enrollment` record
     /// already exists for this (student, course_id) pair when that record is
