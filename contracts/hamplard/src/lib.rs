@@ -379,13 +379,9 @@
 //!   `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)`
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
-    Symbol, Vec,
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, IntoVal, Map, String,
-    Symbol, Val, Vec,
-    contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes,
+    BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
-use soroban_sdk::contractevent;
 
 /// Stable contract error codes returned by every failure path.
 ///
@@ -462,9 +458,6 @@ pub use types::*;
 // identify which build is live after an upgrade.
 soroban_sdk::contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
 soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamplard");
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
-    Symbol, Vec,
-};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -1100,11 +1093,6 @@ pub enum DataKey {
     /// Archived past `Enrollment` records for a (student, course_id) pair,
     /// preserved when a completed or expired student re-enrolls via
     /// `re_enroll()`.
-    EnrollmentHistory(Address, String),
-    /// Ordered list of all registered course IDs (on-chain catalog)
-    CourseList,
-    /// Archived past `Enrollment` records for a (student, course_id) pair,
-    /// preserved when a completed student re-enrolls via `re_enroll()`.
     EnrollmentHistory(Address, String),
     /// Aggregate reputation stats for an instructor (total students,
     /// completions, certificates issued) — see `InstructorStats`.
@@ -2824,11 +2812,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -2843,6 +2826,12 @@ impl HamplardContract {
 
         if course.status == CourseStatus::Archived {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
+        }
+        // A rejected course has no live listing to update; changing its terms
+        // or bumping its version would emit a misleading course_updated event.
+        // Re-submission creates a new course record instead (#386).
+        if course.status == CourseStatus::Rejected {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotActive);
         }
 
         // Snapshot the values that may change so the event can carry a diff.
