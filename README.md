@@ -310,6 +310,8 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `withdraw_all_earnings(instructor, token, destination)` | Instructor | Withdraw the full accumulated earnings balance |
 | `request_refund(student, course_id)` | Student | Open a refund request within the configured window |
 | `process_refund(admin, student, course_id, approved, refund_amount)` | Admin | Approve or reject a refund and debit each revenue recipient proportionally |
+| `claim_refund(student, course_id)` | Student | Claim a pending refund after its processing deadline; blocked students cannot self-approve |
+| `fund_refund_reserve(funder, token, amount)` | Funder | Prefund platform-fee refunds, which are paid from the reserve rather than the treasury |
 
 ### Completion and certificates
 
@@ -340,7 +342,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `accept_admin(new_admin, new_secondary_admin)` | Both new admins | Accept the proposed admin pair |
 | `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update; rejected while another is pending (`cancel_treasury_update` first) |
 | `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger |
-| `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency token sweep |
+| `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency sweep limited to surplus after instructor earnings, arbitration fees, and refund reserves |
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
 | `update_default_fee`, `update_max_courses_limit`, `update_refund_window` | Admin | Global parameters |
 | `block_student` / `unblock_student`, `freeze_instructor` / `unfreeze_instructor` | Admin | Moderation controls |
@@ -417,31 +419,31 @@ The platform fee percentage can be:
 
 ## Refunds
 
-Hamplard supports **admin-initiated refunds** through course archival. This is the only refund mechanism in the contract.
+Refunds can be issued by an admin through course archival or `process_refund()`. A student may also claim a pending refund after its processing deadline.
 
 ### How Refunds Work
 
-When both admins call `archive_course()` with a `students_to_refund` list, the contract refunds each listed student their full enrollment payment:
+When both admins call `archive_course()` with a `students_to_refund` list, or an admin approves a refund request, the contract refunds the enrollment payment:
 
 ```
 Original enrollment: 100 USDC
 platform_fee_percent: 20
 
-Platform fee (from treasury):     20 USDC → student
-Instructor share (from instructor): 80 USDC → student
+Platform fee (from refund reserve): 20 USDC → student
+Instructor shares (from earnings): 80 USDC → student
 Total refunded:                  100 USDC
 ```
 
-Refunds are only applied to **incomplete** enrollments (where `completed == false`). Students who have already completed the course are not refunded.
+The platform fee is forwarded to the treasury at enrollment, so its refund must be backed by `fund_refund_reserve()`; refund execution does not debit the treasury. The instructor portion is debited proportionally from the lead instructor and each co-instructor's recorded earnings. Refunds apply only to **incomplete** enrollments (`completed == false`).
 
 ### Refund Window
 
-There is no time-based refund window. Refunds can be initiated at any point:
+Admins may refund eligible enrollments at any point through course archival:
 - During the course (if students want to drop out)
 - After the course ends (if issues with content or instruction)
 - The course must be **paused first**, then archived with the refund list
 
-This gives admins maximum flexibility to handle dispute resolution and quality control issues.
+Student refund requests are subject to the configured refund window. If a pending request is not processed before its snapshotted deadline, the student can self-approve it unless the student is blocked.
 
 ### Multi-Admin Authorization
 
@@ -741,7 +743,8 @@ stellar contract invoke \
 - **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` sets a ledger sequence after which every admin operation panics with "admin role has expired" — a dead-man's switch that can be read via `get_admin_expiry()` and cleared by passing `None`.
 - **Scoped approvers**: Admins can delegate course moderation via `add_approver` / `remove_approver`. Approvers may approve and reject courses, but have no access to treasury, fee, or admin-transfer functions — and unlike the admin role, approver authority does not expire.
 - **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` reverses it. Frozen instructors cannot operate while the platform keeps student funds safe.
-- **Student blocklist**: `block_student` bans an address from enrolling in any course; `unblock_student` lifts the ban.
+- **Student blocklist**: `block_student` bans an address from enrolling in any course or self-approving a refund; `unblock_student` lifts the ban.
+- **Emergency withdrawal accounting**: `withdraw_tokens` can sweep only token balance above tracked instructor earnings, open arbitration fees, and refund reserves.
 - **No double enrollment**: The contract checks for an existing enrollment record before processing payment. A student cannot be charged twice for the same course.
 - **Price protection**: `enroll()`, `batch_enroll()` and `re_enroll()` require a `max_price` and revert if the course's current price exceeds it, so a price change between a student's quote and execution cannot charge them more than they approved.
 - **Atomic payment split**: Both the platform and instructor transfers happen in the same transaction. There is no intermediate escrow that could be exploited.

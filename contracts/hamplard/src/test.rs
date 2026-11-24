@@ -2369,6 +2369,7 @@ fn test_archive_course_emits_refund_issued_per_student() {
     client.enroll(&student_b, &course_id);
     client.pause_course(&admin, &course_id);
 
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 20 / 100 * 2);
     let refund_students = Vec::from_array(&env, [student_a.clone(), student_b.clone()]);
     env.mock_all_auths_allowing_non_root_auth();
     client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
@@ -2440,6 +2441,7 @@ fn test_archive_course_emits_refund_issued_per_student() {
     client.enroll(&student_b, &course_id);
     client.pause_course(&admin, &course_id);
 
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 20 / 100 * 2);
     let refund_students = Vec::from_array(&env, [student_a.clone(), student_b.clone()]);
     env.mock_all_auths_allowing_non_root_auth();
     client.archive_course(&admin, &sec_admin, &course_id, &Some(refund_students));
@@ -2515,6 +2517,7 @@ fn test_archive_course_incremental_refunds() {
         client.enroll(student, &course_id, &i128::MAX);
     }
 
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 20 / 100 * 5);
     client.pause_course(&admin, &course_id);
 
     // First refund batch: 2 of 5 students
@@ -15875,6 +15878,38 @@ fn test_withdraw_tokens_preserves_arbitration_fees() {
     assert_eq!(client.get_arbitration_fees_held(&token_id), held);
 }
 
+#[test]
+fn test_withdraw_tokens_preserves_refund_reserve() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let reserve = 10_000_000i128;
+    let surplus = 500_000_000i128;
+
+    fund_refund_reserve_for_test(&env, &client, &token_id, reserve);
+    token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &surplus);
+
+    assert_eq!(client.get_total_liabilities(&token_id), reserve);
+    assert_eq!(client.get_surplus_balance(&token_id), surplus);
+
+    let destination = Address::generate(&env);
+    assert!(client
+        .try_withdraw_tokens(
+            &admin,
+            &sec_admin,
+            &token_id,
+            &(surplus + 1),
+            &destination,
+        )
+        .is_err());
+
+    client.withdraw_tokens(&admin, &sec_admin, &token_id, &surplus, &destination);
+
+    assert_eq!(token_client.balance(&destination), surplus);
+    assert_eq!(token_client.balance(&contract_id), reserve);
+    assert_eq!(client.get_refund_reserve(&token_id), reserve);
+}
+
 // ============================================================
 // ESCALATION AUTHORIZATION  (#464)
 // ============================================================
@@ -16192,6 +16227,7 @@ fn test_claim_refund_after_deadline_succeeds() {
 
     client.enroll(&student, &course_id);
     client.request_refund(&student, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, 200_000_000);
 
     // Advance past the snapshotted deadline (requested_at + 10).
     env.ledger().with_mut(|l| {
@@ -16208,6 +16244,44 @@ fn test_claim_refund_after_deadline_succeeds() {
 
     let request = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(request.status, RefundStatus::Approved);
+}
+
+#[test]
+fn test_blocked_student_cannot_claim_refund() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+    client.set_refund_processing_deadline(&admin, &10u32);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CLAIM-BLOCKED",
+        1_000_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CLAIM-BLOCKED");
+    client.enroll(&student, &course_id);
+    client.request_refund(&student, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, 200_000_000);
+    let balance_before_claim = token::Client::new(&env, &token_id).balance(&student);
+    client.block_student(&admin, &student, &String::from_str(&env, "policy violation"));
+    env.ledger().with_mut(|ledger| ledger.sequence_number += 11);
+
+    assert!(client.try_claim_refund(&student, &course_id).is_err());
+    assert!(client.is_enrolled(&student, &course_id));
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&student),
+        balance_before_claim
+    );
+    assert_eq!(client.get_refund_reserve(&token_id), 200_000_000);
+    assert_eq!(
+        client.get_refund_request(&student, &course_id).unwrap().status,
+        RefundStatus::Pending
+    );
 }
 
 /// Before the deadline elapses the student cannot self-approve — the admin
@@ -17454,8 +17528,27 @@ fn test_refund_debits_each_co_instructor_share() {
     );
 
     client.request_refund(&student, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, 200_000_000);
     env.mock_all_auths_allowing_non_root_auth();
     client.process_refund(&admin, &student, &course_id, &true, &None);
+
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_a, &token_id),
+        0
+    );
+    assert_eq!(
+        client.get_instructor_earnings(&co_instructor_b, &token_id),
+        0
+    );
+    assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
+
+    let archive_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&archive_student, &1_000_000_000);
+    client.enroll(&archive_student, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, 200_000_000);
+    client.pause_course(&admin, &course_id);
+    let students = soroban_sdk::vec![&env, archive_student];
+    client.archive_course(&admin, &_sec_admin, &course_id, &Some(students));
 
     assert_eq!(
         client.get_instructor_earnings(&co_instructor_a, &token_id),
@@ -17674,6 +17767,7 @@ fn test_archive_course_refunds_update_course_refund_stats() {
     client.enroll(&student_b, &course_id);
     client.pause_course(&admin, &course_id);
 
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 20 / 100 * 2);
     let mut refund_students = soroban_sdk::Vec::new(&env);
     refund_students.push_back(student_a.clone());
     refund_students.push_back(student_b.clone());
@@ -17714,6 +17808,7 @@ fn test_archive_course_incremental_batches_accumulate_refund_stats() {
     for student in &students {
         client.enroll(student, &course_id);
     }
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 20 / 100 * 5);
     client.pause_course(&admin, &course_id);
 
     let mut batch1 = soroban_sdk::Vec::new(&env);
@@ -18331,6 +18426,7 @@ fn benchmark_archive_course_with_10_refunds() {
         students.push_back(student);
     }
 
+    fund_refund_reserve_for_test(&env, &client, &token_id, 20_000_000 * 10);
     client.pause_course(&admin, &course_id);
     env.mock_all_auths_allowing_non_root_auth();
     client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
@@ -20317,13 +20413,15 @@ fn test_archive_course_refund_reverses_exact_split_with_fee_config_and_risk() {
     assert_eq!(token_client.balance(&treasury), price * 17 / 100);
 
     client.pause_course(&admin, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 17 / 100);
     let mut students = soroban_sdk::Vec::new(&env);
     students.push_back(student.clone());
     env.mock_all_auths_allowing_non_root_auth();
     client.archive_course(&admin, &sec_admin, &course_id, &Some(students));
 
     assert_eq!(token_client.balance(&student), price);
-    assert_eq!(token_client.balance(&treasury), 0);
+    assert_eq!(token_client.balance(&treasury), price * 17 / 100);
+    assert_eq!(client.get_refund_reserve(&token_id), 0);
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
 }
 
@@ -20344,6 +20442,7 @@ fn test_archive_course_refund_resolves_pending_refund_request() {
     assert_eq!(pending_req.status, RefundStatus::Pending);
 
     client.pause_course(&admin, &course_id);
+    fund_refund_reserve_for_test(&env, &client, &token_id, price * 17 / 100);
     let mut students = soroban_sdk::Vec::new(&env);
     students.push_back(student.clone());
     env.mock_all_auths_allowing_non_root_auth();
@@ -21863,9 +21962,11 @@ fn test_instructor_stats_total_students_decremented_on_archive_refund() {
     // Schedule treasury update and request the refund before it matures.
     client.update_treasury(&admin, &sec_admin, &new_treasury);
     client.request_refund(&student, &course_id);
+    let platform_fee = price * 20 / 100;
+    fund_refund_reserve_for_test(&env, &client, &token_id, platform_fee);
 
-    // Fund both treasuries so the transfer won't fail regardless of which is
-    // used; we'll detect the wrong one by checking balances after.
+    // Fund both treasuries and the refund reserve; the refund must not debit
+    // either treasury after the refund reserve is funded.
     asset_client.mint(&treasury, &price);
     asset_client.mint(&new_treasury, &price);
     let old_treasury_balance_before = token_client.balance(&treasury);
@@ -21880,10 +21981,8 @@ fn test_instructor_stats_total_students_decremented_on_archive_refund() {
     // Student self-approves — this takes the apply_refund_approval path.
     client.claim_refund(&student, &course_id);
 
-    let platform_fee = price * 20 / 100; // 20% default fee
-
-    // The old treasury balance must be unchanged — the platform-fee share
-    // of the refund was drawn from the new (now effective) treasury.
+    // Both treasury balances remain unchanged because the platform share was
+    // paid from the reserve.
     assert_eq!(
         token_client.balance(&treasury),
         old_treasury_balance_before,
@@ -21891,9 +21990,10 @@ fn test_instructor_stats_total_students_decremented_on_archive_refund() {
     );
     assert_eq!(
         token_client.balance(&new_treasury),
-        new_treasury_balance_before - platform_fee,
-        "new (effective) treasury should be debited for the platform-fee refund"
+        new_treasury_balance_before,
+        "new treasury should not be debited for the platform-fee refund"
     );
+    assert_eq!(client.get_refund_reserve(&token_id), 0);
 #[test]
 fn test_get_instructor_earning_tokens_tracks_credit_debit_and_withdrawal() {
 fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
