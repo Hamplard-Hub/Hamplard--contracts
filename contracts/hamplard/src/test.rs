@@ -15825,6 +15825,93 @@ fn test_arbitration_fees_held_tracked_per_token() {
     );
 }
 
+/// #663 — TotalArbitrationFees must increment exactly once per escalation
+/// and decrement exactly once per resolution; it must stay in sync with
+/// ArbitrationFeesHeld throughout the full lifecycle.
+#[test]
+fn test_arbitration_fee_not_double_counted_on_escalation_and_resolution() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 4_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-663",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-663");
+
+    assert_eq!(client.get_total_arbitration_fees(&token_id), 0);
+    assert_eq!(client.get_arbitration_fees_held(&token_id), 0);
+
+    client.escalate_to_arbitration(&student, &course_id);
+
+    // Each counter must equal exactly fee_per_case — not 2×.
+    assert_eq!(
+        client.get_total_arbitration_fees(&token_id),
+        fee_per_case,
+        "TotalArbitrationFees must increment exactly once per escalation"
+    );
+    assert_eq!(
+        client.get_arbitration_fees_held(&token_id),
+        fee_per_case,
+        "ArbitrationFeesHeld must increment exactly once per escalation"
+    );
+
+    client.resolve_arbitration(&admin, &student, &course_id, &true);
+
+    assert_eq!(
+        client.get_total_arbitration_fees(&token_id),
+        0,
+        "TotalArbitrationFees must decrement exactly once per resolution"
+    );
+    assert_eq!(
+        client.get_arbitration_fees_held(&token_id),
+        0,
+        "ArbitrationFeesHeld must decrement exactly once per resolution"
+    );
+}
+
+/// #663 — get_total_liabilities must count the arbitration fee once, not twice.
+#[test]
+fn test_total_liabilities_counts_arbitration_fee_once() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 3_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-663-LIA",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-663-LIA");
+
+    let liabilities_before = client.get_total_liabilities(&token_id);
+    client.escalate_to_arbitration(&student, &course_id);
+
+    assert_eq!(
+        client.get_total_liabilities(&token_id) - liabilities_before,
+        fee_per_case,
+        "total liabilities must increase by exactly fee_per_case after one escalation, not 2×"
+    );
+
+    client.resolve_arbitration(&admin, &student, &course_id, &false);
+
+    assert_eq!(
+        client.get_total_liabilities(&token_id),
+        liabilities_before,
+        "total liabilities must return to pre-escalation value after resolution"
+    );
+}
+
 /// #467 — emergency sweeps must leave arbitration fees reserved for open cases.
 #[test]
 fn test_withdraw_tokens_preserves_arbitration_fees() {

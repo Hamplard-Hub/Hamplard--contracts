@@ -9763,14 +9763,6 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("overflow computing total arbitration fees"));
         env.storage().instance().set(&arb_key, &new_arb);
 
-        // Track total outstanding arbitration fees for this token
-        let arb_key = DataKey2::TotalArbitrationFees(course.token.clone());
-        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
-        let new_arb = current_arb
-            .checked_add(config.fee_per_case)
-            .unwrap_or_else(|| panic!("overflow computing total arbitration fees"));
-        env.storage().instance().set(&arb_key, &new_arb);
-
         env.events().publish(
             (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
             (caller, course_id, config.fee_per_case),
@@ -9848,16 +9840,6 @@ impl HamplardContract {
         }
 
         Self::persist(&env, &case_key, &case);
-
-        // Decrement total outstanding arbitration fees for this token
-        let arb_key = DataKey2::TotalArbitrationFees(case.token.clone());
-        let current_arb: i128 = env.storage().instance().get(&arb_key).unwrap_or(0);
-        let new_arb = current_arb.saturating_sub(case.fee_paid);
-        if new_arb == 0 {
-            env.storage().instance().remove(&arb_key);
-        } else {
-            env.storage().instance().set(&arb_key, &new_arb);
-        }
 
         // Decrement total outstanding arbitration fees for this token
         let arb_key = DataKey2::TotalArbitrationFees(case.token.clone());
