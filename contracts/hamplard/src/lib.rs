@@ -448,14 +448,9 @@ pub enum Error {
     InvalidMaxCoursesLimit = 51,
 }
 mod types;
-mod storage;
 mod events;
-mod errors;
 mod fees;
 mod course;
-mod enrollment;
-mod certificate;
-mod admin;
 
 pub use types::*;
 // Embed version and source metadata into the deployed Wasm so operators can
@@ -1101,11 +1096,6 @@ pub enum DataKey {
     /// preserved when a completed or expired student re-enrolls via
     /// `re_enroll()`.
     EnrollmentHistory(Address, String),
-    /// Ordered list of all registered course IDs (on-chain catalog)
-    CourseList,
-    /// Archived past `Enrollment` records for a (student, course_id) pair,
-    /// preserved when a completed student re-enrolls via `re_enroll()`.
-    EnrollmentHistory(Address, String),
     /// Aggregate reputation stats for an instructor (total students,
     /// completions, certificates issued) — see `InstructorStats`.
     InstructorStats(Address),
@@ -1154,30 +1144,9 @@ pub enum DataKey {
     /// Ledger sequence when init() was called — used to enforce
     /// a governance window before approve_course() can be called.
     InitLedger,
-    /// Ledger sequence of the last successful transfer_admin() call.
-    /// Used to enforce a minimum cooldown between consecutive admin key
-    /// rotations, preventing rapid-rotation attacks after a compromise.
-    LastAdminTransferLedger,
-    /// Per-course consecutive enrollment failure counter.
-    /// Incremented each time enroll_internal() panics due to a token
-    /// transfer failure for a specific course. Reset to 0 on a successful
-    /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
-    /// course is automatically paused.
-    CourseFailureCount(String),
-    /// Tokens classified as BTC/ETH-denominated for risk-surcharge pricing.
-    BtcEthToken(Address),
-    /// Ordered list of all whitelisted token addresses.
-    /// Maintained in sync with `ApprovedToken(Address)` entries so that
-    /// `get_approved_tokens()` can enumerate them without an index scan.
-    ApprovedTokenList,
-    /// Lifetime enrollment count per student (new-customer risk flag).
-    StudentEnrollmentCount(Address),
-    /// Persistent per-instructor course count (migrated out of instance
-    /// storage so instance size no longer grows with the instructor count).
-    InstructorCourseCountPersistent(Address),
-    /// Persistent per-instructor pending course count (migrated out of
-    /// instance storage so instance size no longer grows with the instructor count).
-    InstructorPendingCourseCountPersistent(Address),
+    // The seven newest keys live in `DataKey2` below so `DataKey` stays within
+    // the 50-case #[contracttype] limit. Their order here is unchanged for all
+    // keys still declared in this enum, preserving deployed storage encodings.
 }
 
 /// Overflow keys split out to avoid the #[contracttype] variant-count limit.
@@ -1216,6 +1185,21 @@ pub enum DataKey2 {
     /// Ordered (append-only) list of certificate IDs issued to a student (#414).
     /// Populated by `issue_certificate` and read by `get_certificates_by_student`.
     StudentCertificates(Address),
+    // ---- Newest keys moved here from DataKey (#633) ----
+    /// Ledger sequence of the last successful transfer_admin() call.
+    LastAdminTransferLedger,
+    /// Per-course consecutive enrollment failure counter (#178).
+    CourseFailureCount(String),
+    /// Tokens classified as BTC/ETH-denominated for risk-surcharge pricing.
+    BtcEthToken(Address),
+    /// Ordered list of all whitelisted token addresses.
+    ApprovedTokenList,
+    /// Lifetime enrollment count per student (new-customer risk flag).
+    StudentEnrollmentCount(Address),
+    /// Persistent per-instructor course count (migrated out of instance storage).
+    InstructorCourseCountPersistent(Address),
+    /// Persistent per-instructor pending course count (migrated out of instance storage).
+    InstructorPendingCourseCountPersistent(Address),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1666,26 +1650,19 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
         }
 
-        // Validate course ID contains only allowed characters.
-        // Allowed: printable ASCII (0x20-0x7E) excluding backtick and tilde
-        // which can cause issues in some off-chain parsers.
+        // Validate course ID contains only printable ASCII (0x20-0x7E).
         // This prevents null bytes, control characters, and problematic
         // Unicode that could break off-chain parsers or create unreproducible
-        // storage keys.
-        // `String` only exposes its bytes through `copy_into_slice()`, which
-        // requires an exactly-sized buffer. The length was already bounded by
-        // the MAX_COURSE_ID_LEN check above, so a fixed buffer is safe.
+        // storage keys. `String` exposes bytes via `copy_into_slice()`, which
+        // requires an exactly-sized buffer; the length was bounded above by
+        // MAX_COURSE_ID_LEN, so a fixed buffer is safe.
         let mut id_bytes = [0u8; Self::MAX_COURSE_ID_LEN as usize];
         let id_bytes = &mut id_bytes[..course_id.len() as usize];
         course_id.copy_into_slice(id_bytes);
 
         for byte in id_bytes.iter() {
-            // Allow printable ASCII: space (0x20) through tilde (0x7E)
-            // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
-            if *byte < 0x20 || *byte > 0x7E {
-                soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
             if !(0x20..=0x7E).contains(byte) {
-                panic!("course_id contains invalid characters (must be printable ASCII)");
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
             }
         }
 
@@ -1747,7 +1724,7 @@ impl HamplardContract {
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
 
-        let course_count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+        let course_count_key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
         let current_count: u32 = Self::read_instructor_course_count(&env, &instructor);
         // A stored limit of 0 would block every instructor from registering
         // (current_count >= 0 is always true). Reject it defensively so a
@@ -1765,7 +1742,7 @@ impl HamplardContract {
         }
 
         let pending_count_key =
-            DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+            DataKey2::InstructorPendingCourseCountPersistent(instructor.clone());
         let current_pending_count = Self::read_instructor_pending_course_count(&env, &instructor);
 
         if current_pending_count >= Self::effective_max_pending_courses(&env, max_courses) {
@@ -2007,7 +1984,7 @@ impl HamplardContract {
         Self::persist_course(&env, &course_id, &course);
 
         let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+            DataKey2::InstructorPendingCourseCountPersistent(course.instructor.clone());
         let pending_count = Self::read_instructor_pending_course_count(&env, &course.instructor);
         let new_pending_count = pending_count
             .checked_sub(1)
@@ -2081,7 +2058,7 @@ impl HamplardContract {
         // #376 — Decrement the total course count so a rejected course does
         // not permanently occupy a slot against MaxCoursesPerInstructor.
         let count_key =
-            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+            DataKey2::InstructorCourseCountPersistent(course.instructor.clone());
         let count = Self::read_instructor_course_count(&env, &course.instructor);
         let new_count = count
             .checked_sub(1)
@@ -2097,7 +2074,7 @@ impl HamplardContract {
 
         // The course was Pending when rejected, so also release the pending slot.
         let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+            DataKey2::InstructorPendingCourseCountPersistent(course.instructor.clone());
         let pending_count =
             Self::read_instructor_pending_course_count(&env, &course.instructor);
         let new_pending_count = pending_count
@@ -2183,7 +2160,7 @@ impl HamplardContract {
 
         // Increment both the total and pending counters.
         let count_key =
-            DataKey::InstructorCourseCountPersistent(instructor.clone());
+            DataKey2::InstructorCourseCountPersistent(instructor.clone());
         env.storage()
             .persistent()
             .set(&count_key, &(current_count + 1));
@@ -2194,7 +2171,7 @@ impl HamplardContract {
         );
 
         let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+            DataKey2::InstructorPendingCourseCountPersistent(instructor.clone());
         env.storage()
             .persistent()
             .set(&pending_key, &(current_pending + 1));
@@ -2390,7 +2367,7 @@ impl HamplardContract {
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
 
-        let new_count_key = DataKey::InstructorCourseCountPersistent(new_instructor.clone());
+        let new_count_key = DataKey2::InstructorCourseCountPersistent(new_instructor.clone());
         let new_count = Self::read_instructor_course_count(&env, &new_instructor);
         if new_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
@@ -2398,7 +2375,7 @@ impl HamplardContract {
 
         if course.status == CourseStatus::Pending {
             let new_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(new_instructor.clone());
+                DataKey2::InstructorPendingCourseCountPersistent(new_instructor.clone());
             let new_pending = Self::read_instructor_pending_course_count(&env, &new_instructor);
             if new_pending >= Self::effective_max_pending_courses(&env, max_courses) {
                 soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
@@ -2411,7 +2388,7 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
-        let old_count_key = DataKey::InstructorCourseCountPersistent(previous_instructor.clone());
+        let old_count_key = DataKey2::InstructorCourseCountPersistent(previous_instructor.clone());
         let old_count = Self::read_instructor_course_count(&env, &previous_instructor);
         let decremented_old = old_count
             .checked_sub(1)
@@ -2435,7 +2412,7 @@ impl HamplardContract {
 
         if course.status == CourseStatus::Pending {
             let old_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(previous_instructor.clone());
+                DataKey2::InstructorPendingCourseCountPersistent(previous_instructor.clone());
             let old_pending =
                 Self::read_instructor_pending_course_count(&env, &previous_instructor);
             let decremented_pending = old_pending
@@ -2451,7 +2428,7 @@ impl HamplardContract {
             );
 
             let new_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(new_instructor.clone());
+                DataKey2::InstructorPendingCourseCountPersistent(new_instructor.clone());
             let new_pending = Self::read_instructor_pending_course_count(&env, &new_instructor);
             env.storage()
                 .persistent()
@@ -2726,7 +2703,7 @@ impl HamplardContract {
         // #376 — Decrement the total course count so an archived course does
         // not permanently occupy a slot against MaxCoursesPerInstructor.
         let count_key =
-            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+            DataKey2::InstructorCourseCountPersistent(course.instructor.clone());
         let count = Self::read_instructor_course_count(&env, &course.instructor);
         let new_count = count
             .checked_sub(1)
@@ -2743,7 +2720,7 @@ impl HamplardContract {
         // If the archived course was still Pending, release the pending slot too.
         if pre_archive_status == CourseStatus::Pending {
             let pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+                DataKey2::InstructorPendingCourseCountPersistent(course.instructor.clone());
             let pending_count =
                 Self::read_instructor_pending_course_count(&env, &course.instructor);
             let new_pending_count = pending_count
@@ -3897,7 +3874,7 @@ impl HamplardContract {
         // course now (before any token interaction) and abort. This prevents the
         // contract from repeatedly attempting a doomed transfer on a broken token
         // contract and wasting student gas fees.
-        let failure_key = DataKey::CourseFailureCount(course_id.clone());
+        let failure_key = DataKey2::CourseFailureCount(course_id.clone());
         let current_failures: u32 = env.storage().persistent().get(&failure_key).unwrap_or(0);
         if current_failures >= Self::CIRCUIT_BREAKER_THRESHOLD
             && course.status == CourseStatus::Active
@@ -3986,7 +3963,7 @@ impl HamplardContract {
         // stored in persistent storage. Because Soroban reverts all state on panic,
         // we must increment the failure counter BEFORE attempting the transfer and
         // then clear/decrement it AFTER a successful transfer.
-        let failure_key = DataKey::CourseFailureCount(course_id.clone());
+        let failure_key = DataKey2::CourseFailureCount(course_id.clone());
         let failure_count: u32 = env.storage().persistent().get(&failure_key).unwrap_or(0);
 
         // Pre-increment: if the transfer below panics, this increment is committed
@@ -5872,7 +5849,7 @@ impl HamplardContract {
         if let Some(last_transfer_ledger) = env
             .storage()
             .instance()
-            .get::<DataKey, u32>(&DataKey::LastAdminTransferLedger)
+            .get::<DataKey2, u32>(&DataKey2::LastAdminTransferLedger)
         {
             let elapsed = current_ledger.saturating_sub(last_transfer_ledger);
             if elapsed < Self::MIN_ADMIN_TRANSFER_COOLDOWN {
@@ -5883,7 +5860,7 @@ impl HamplardContract {
         // Record this transfer's ledger sequence for the next cooldown check.
         env.storage()
             .instance()
-            .set(&DataKey::LastAdminTransferLedger, &current_ledger);
+            .set(&DataKey2::LastAdminTransferLedger, &current_ledger);
 
         env.storage()
             .instance()
@@ -6182,12 +6159,12 @@ impl HamplardContract {
         let mut list: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env));
         list.push_back(token.clone());
         env.storage()
             .instance()
-            .set(&DataKey::ApprovedTokenList, &list);
+            .set(&DataKey2::ApprovedTokenList, &list);
 
         env.events().publish(
             (Symbol::new(&env, "token_whitelisted"), admin.clone()),
@@ -6212,11 +6189,11 @@ impl HamplardContract {
         if is_btc_eth {
             env.storage()
                 .instance()
-                .set(&DataKey::BtcEthToken(token.clone()), &true);
+                .set(&DataKey2::BtcEthToken(token.clone()), &true);
         } else {
             env.storage()
                 .instance()
-                .remove(&DataKey::BtcEthToken(token.clone()));
+                .remove(&DataKey2::BtcEthToken(token.clone()));
         }
 
         env.events().publish(
@@ -6250,7 +6227,7 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "get_approved_tokens");
         env.storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -6269,13 +6246,13 @@ impl HamplardContract {
             .remove(&DataKey::ApprovedToken(token.clone()));
         env.storage()
             .instance()
-            .remove(&DataKey::BtcEthToken(token.clone()));
+            .remove(&DataKey2::BtcEthToken(token.clone()));
 
         // Remove the token from the ordered list maintained for get_approved_tokens().
         let list: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env));
         let mut updated = Vec::new(&env);
         for i in 0..list.len() {
@@ -6286,7 +6263,7 @@ impl HamplardContract {
         }
         env.storage()
             .instance()
-            .set(&DataKey::ApprovedTokenList, &updated);
+            .set(&DataKey2::ApprovedTokenList, &updated);
 
         env.events().publish(
             (
@@ -8365,7 +8342,7 @@ impl HamplardContract {
     fn get_student_enrollment_count_internal(env: &Env, student: &Address) -> u32 {
         env.storage()
             .persistent()
-            .get(&DataKey::StudentEnrollmentCount(student.clone()))
+            .get(&DataKey2::StudentEnrollmentCount(student.clone()))
             .unwrap_or(0)
     }
 
@@ -8399,7 +8376,7 @@ impl HamplardContract {
     }
 
     fn increment_student_enrollment_count(env: &Env, student: &Address) {
-        let key = DataKey::StudentEnrollmentCount(student.clone());
+        let key = DataKey2::StudentEnrollmentCount(student.clone());
         let count = Self::get_student_enrollment_count_internal(env, student)
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
@@ -8416,7 +8393,7 @@ impl HamplardContract {
     fn is_btc_eth_token_internal(env: &Env, token: &Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::BtcEthToken(token.clone()))
+            .get(&DataKey2::BtcEthToken(token.clone()))
             .unwrap_or(false)
     }
 
@@ -8815,8 +8792,8 @@ impl HamplardContract {
     /// entry for instructors whose counters were written before the
     /// storage-layout migration. See `migrate_instructor_counters`.
     fn read_instructor_course_count(env: &Env, instructor: &Address) -> u32 {
-        let key = DataKey::InstructorCourseCountPersistent(instructor.clone());
-        if let Some(count) = env.storage().persistent().get::<DataKey, u32>(&key) {
+        let key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
+        if let Some(count) = env.storage().persistent().get::<DataKey2, u32>(&key) {
             return count;
         }
         env.storage()
@@ -8831,8 +8808,8 @@ impl HamplardContract {
     /// entry for instructors whose counters were written before the
     /// storage-layout migration. See `migrate_instructor_counters`.
     fn read_instructor_pending_course_count(env: &Env, instructor: &Address) -> u32 {
-        let key = DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
-        if let Some(count) = env.storage().persistent().get::<DataKey, u32>(&key) {
+        let key = DataKey2::InstructorPendingCourseCountPersistent(instructor.clone());
+        if let Some(count) = env.storage().persistent().get::<DataKey2, u32>(&key) {
             return count;
         }
         env.storage()
@@ -8859,7 +8836,7 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "migrate_instructor_counters");
 
         for instructor in instructors.iter() {
-            let course_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+            let course_key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
             if !env.storage().persistent().has(&course_key) {
                 let legacy_key = DataKey::InstructorCourseCountLegacy(instructor.clone());
                 if let Some(count) = env.storage().instance().get::<DataKey, u32>(&legacy_key) {
@@ -8876,7 +8853,7 @@ impl HamplardContract {
                 .remove(&DataKey::InstructorCourseCountLegacy(instructor.clone()));
 
             let pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+                DataKey2::InstructorPendingCourseCountPersistent(instructor.clone());
             if !env.storage().persistent().has(&pending_key) {
                 let legacy_key =
                     DataKey::InstructorPendingCourseCountLegacy(instructor.clone());

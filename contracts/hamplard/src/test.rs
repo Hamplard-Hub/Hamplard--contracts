@@ -14574,7 +14574,7 @@ fn test_circuit_breaker_trips_after_threshold_failures() {
     // Simulate 5 consecutive prior failures by writing the counter directly.
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-TRIP")),
+            &DataKey2::CourseFailureCount(String::from_str(&env, "CB-TRIP")),
             &5u32,
         );
     });
@@ -14600,7 +14600,7 @@ fn test_circuit_breaker_does_not_trip_below_threshold() {
     // 4 failures — one below the threshold of 5.
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-BELOW")),
+            &DataKey2::CourseFailureCount(String::from_str(&env, "CB-BELOW")),
             &4u32,
         );
     });
@@ -14613,7 +14613,7 @@ fn test_circuit_breaker_does_not_trip_below_threshold() {
         let count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::CourseFailureCount(String::from_str(
+            .get(&DataKey2::CourseFailureCount(String::from_str(
                 &env, "CB-BELOW",
             )))
             .unwrap_or(0);
@@ -14640,7 +14640,7 @@ fn test_circuit_breaker_course_can_be_unpaused_by_instructor() {
     // Simulate circuit breaker state: threshold failures + course paused.
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-UNPAUSE")),
+            &DataKey2::CourseFailureCount(String::from_str(&env, "CB-UNPAUSE")),
             &5u32,
         );
         let mut course: Course = env

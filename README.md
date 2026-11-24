@@ -90,6 +90,8 @@ After a student completes a course (verified off-chain by the backend), the admi
 
 > **Keeping Certificates Live (TTL):** Certificate entries are stored in Soroban persistent storage with an initial TTL of ~6.3M ledgers (~1 year). Read-only RPC simulations of `verify_certificate(certificate_id)` do not persist TTL extensions on-chain. To prevent archival, anyone (verifiers, students, issuers, or keeper bots) can call the permissionless `extend_certificate_ttl(certificate_id)` entrypoint on-chain to renew a certificate's TTL, or submit `verify_certificate(certificate_id)` as an on-chain transaction (which also extends the TTL for valid certificates).
 
+> **Storage key enums:** `#[contracttype]` unions are limited to 50 cases. The original `DataKey` enum (50 variants, in their original order) holds the long-standing keys; the overflow enum `DataKey2` holds arbitration, course-terms, certificate-index and the seven newest keys (`LastAdminTransferLedger`, `CourseFailureCount`, `BtcEthToken`, `ApprovedTokenList`, `StudentEnrollmentCount`, `InstructorCourseCountPersistent`, `InstructorPendingCourseCountPersistent`). Keys are never reordered within an enum, so deployed storage encodings for existing keys are unchanged.
+
 **4. Refunds**
 Both admins can jointly issue refunds by archiving a course and specifying which students to refund. Refunds return the full enrollment amount to students with incomplete enrollments. This provides dispute resolution and quality control mechanisms without requiring a time window.
 
