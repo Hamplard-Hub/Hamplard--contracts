@@ -8196,6 +8196,8 @@ impl HamplardContract {
         }
 
         treasury
+    }
+
     /// Emit the shared per-student refund event used by both
     /// `process_refund()` and `archive_course()`.
     fn emit_refund_issued(
@@ -8217,6 +8219,8 @@ impl HamplardContract {
                 env.ledger().sequence(),
             ),
         );
+    }
+
     /// Persist a value and extend its TTL in one step.
     ///
     /// Every persistent write must go through this helper so a key can never
