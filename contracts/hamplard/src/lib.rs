@@ -1054,9 +1054,9 @@ pub enum DataKey {
     PlatformPaused,
     /// Withdrawable instructor earnings per (instructor, token) pair (in stroops)
     InstructorEarnings(Address, Address),
-    /// Lifetime net instructor earnings across all tokens (in stroops).
-    /// Increases when instructor revenue is credited and decreases on refunds.
-    /// Withdrawals do not change this value.
+    /// Legacy per-instructor lifetime earnings accumulator. Retained for
+    /// storage-layout compatibility only; lifetime earnings are tracked
+    /// token-scoped in `InstructorLifetimeEarnings` (#645).
     InstructorTotalEarnings(Address),
     /// Lifetime net earnings per (instructor, token) pair (in stroops).
     /// Withdrawals do not reduce this counter; refunds do. Keeping the key
@@ -4729,7 +4729,7 @@ impl HamplardContract {
     ///
     /// Frozen instructors cannot withdraw until an admin unfreezes them.
     /// Withdrawals reduce `get_instructor_earnings()` but do not change
-    /// `get_instructor_total_earnings()`.
+    /// `get_instructor_lifetime_earnings()`.
     ///
     /// Emits `earnings_withdrawn`:
     /// - Topics: `("earnings_withdrawn", instructor, token)`
@@ -4763,7 +4763,7 @@ impl HamplardContract {
     /// Frozen instructors cannot withdraw until an admin unfreezes them.
     /// Returns without transferring when the available balance is zero.
     /// Withdrawals reduce `get_instructor_earnings()` but do not change
-    /// `get_instructor_total_earnings()`.
+    /// `get_instructor_lifetime_earnings()`.
     pub fn withdraw_all_earnings(
         env: Env,
         instructor: Address,
@@ -4876,13 +4876,6 @@ impl HamplardContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-    /// Get the instructor's lifetime net earnings across all tokens.
-    ///
-    /// This is a cumulative figure: it increases when instructor revenue is
-    /// credited and decreases when a refund debits the instructor's share.
-    /// Withdrawing earnings does **not** reduce this value. Use
-    /// `get_instructor_earnings()` for the currently withdrawable balance.
-    pub fn get_instructor_total_earnings(env: Env, instructor: Address) -> i128 {
     /// Get lifetime net earnings for an instructor in a specific token.
     ///
     /// This counter is credited on enrollment and debited on refunds, and is
@@ -8770,20 +8763,13 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
-            .unwrap_or_else(|| panic!("overflow computing instructor earnings"));
         Self::persist(&env, &key, &new_balance);
         if new_balance > 0 {
             Self::add_instructor_earning_token(env, instructor, token);
         }
-        // Also update the per-instructor total earnings accumulator
-        // Also update the lifetime net earnings accumulator.
-        let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
-        let current_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
-        let new_total = current_total
-            .checked_add(amount)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage().persistent().set(&total_key, &new_total);
-        // Update the token-scoped lifetime net earnings accumulator.
+        // Update the token-scoped lifetime net earnings accumulator. The
+        // counter is per-token so amounts denominated in different assets are
+        // never added together (#645).
         let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
         let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
         let new_lifetime = current_lifetime
@@ -8805,8 +8791,6 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&outstanding_key, &new_outstanding);
-            .unwrap_or_else(|| panic!("overflow computing instructor total earnings"));
-        Self::persist(&env, &total_key, &new_total);
     }
 
     /// Read an instructor's total course count.
@@ -8908,17 +8892,15 @@ impl HamplardContract {
         } else {
             Self::persist(&env, &key, &new_balance);
         }
-        // Also decrement the per-instructor total earnings accumulator
-        let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
-        let current_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
-        if amount > current_total {
-            soroban_sdk::panic_with_error!(&env, Error::InconsistentState);
-        }
-        let new_total = current_total - amount;
-        if new_total == 0 {
-            env.storage().persistent().remove(&total_key);
+        // Refunds reduce the token-scoped lifetime net earnings accumulator.
+        // Withdrawals never touch this counter (#645).
+        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
+        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
+        let new_lifetime = current_lifetime.saturating_sub(amount);
+        if new_lifetime == 0 {
+            env.storage().persistent().remove(&lifetime_key);
         } else {
-            Self::persist(&env, &total_key, &new_total);
+            env.storage().persistent().set(&lifetime_key, &new_lifetime);
         }
 
         // Decrement total outstanding instructor earnings for this token
@@ -9078,28 +9060,6 @@ impl HamplardContract {
         } else {
             env.storage().persistent().set(&key, &new_balance);
         }
-        // Refunds reduce lifetime net earnings as well as the withdrawable
-        // balance. Withdrawals never touch this accumulator.
-        let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
-        let current_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
-        if amount > current_total {
-            panic!("inconsistent instructor total earnings state");
-        }
-        let new_total = current_total - amount;
-        if new_total == 0 {
-            env.storage().persistent().remove(&total_key);
-        // Decrement the token-scoped lifetime net earnings accumulator. Use a
-        // saturating subtraction so refunds for enrollments created before this
-        // key existed cannot be blocked by an unmigrated (zero) counter.
-        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
-        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
-        let new_lifetime = current_lifetime.saturating_sub(amount);
-        if new_lifetime == 0 {
-            env.storage().persistent().remove(&lifetime_key);
-        } else {
-            env.storage().persistent().set(&lifetime_key, &new_lifetime);
-        }
-
         // Decrement total outstanding instructor earnings for this token
         let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
         let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);

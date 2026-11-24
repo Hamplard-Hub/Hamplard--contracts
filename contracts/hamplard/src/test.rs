@@ -18519,7 +18519,7 @@ fn test_frozen_instructor_cannot_withdraw_until_unfrozen() {
 }
 
 #[test]
-fn test_instructor_total_earnings_is_lifetime_net_across_withdraw_and_refund() {
+fn test_instructor_lifetime_earnings_is_net_across_withdraw_and_refund() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let student = Address::generate(&env);
@@ -18541,7 +18541,7 @@ fn test_instructor_total_earnings_is_lifetime_net_across_withdraw_and_refund() {
     let instructor_share = price * 80 / 100;
     let platform_share = price - instructor_share;
     assert_eq!(
-        client.get_instructor_total_earnings(&instructor),
+        client.get_instructor_lifetime_earnings(&instructor, &token_id),
         instructor_share
     );
 
@@ -18553,7 +18553,7 @@ fn test_instructor_total_earnings_is_lifetime_net_across_withdraw_and_refund() {
     );
     // Withdrawals must not reduce lifetime net earnings.
     assert_eq!(
-        client.get_instructor_total_earnings(&instructor),
+        client.get_instructor_lifetime_earnings(&instructor, &token_id),
         instructor_share
     );
 
@@ -18567,7 +18567,7 @@ fn test_instructor_total_earnings_is_lifetime_net_across_withdraw_and_refund() {
 
     assert_eq!(client.get_instructor_earnings(&instructor, &token_id), 0);
     assert_eq!(
-        client.get_instructor_total_earnings(&instructor),
+        client.get_instructor_lifetime_earnings(&instructor, &token_id),
         instructor_share - instructor_refund
     );
     assert_eq!(
