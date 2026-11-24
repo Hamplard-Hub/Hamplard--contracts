@@ -9370,6 +9370,11 @@ impl HamplardContract {
     }
 
     /// Get the current risk fee configuration.
+    ///
+    /// Returns the stored configuration, or the default configuration when
+    /// none has been set. Risk scoring and fee deduction only apply a stored
+    /// configuration; an unset configuration yields no surcharge even though
+    /// this getter returns defaults.
     pub fn get_risk_fee_config(env: Env) -> RiskFeeConfig {
         Self::risk_fee_config(&env)
     }
@@ -9401,6 +9406,7 @@ impl HamplardContract {
     /// - `payment_amount` — the payment amount in stroops
     ///
     /// Returns a `RiskScore` with score (0-100) and surcharge_bps to add.
+    /// Disabled risk pricing or a missing stored `RiskFeeConfig` yields zero.
     pub fn calculate_risk_score(
         env: Env,
         student: Address,
@@ -9455,7 +9461,7 @@ impl HamplardContract {
 
     /// Computes the risk score and total surcharge (bps) for a payment.
     /// Surcharges only apply when risk pricing is enabled and a
-    /// `RiskFeeConfig` is available (stored override or the default).
+    /// `RiskFeeConfig` is stored; missing configuration yields no surcharge.
     fn risk_score_internal(
         env: &Env,
         payment_amount: i128,
@@ -9476,39 +9482,6 @@ impl HamplardContract {
             is_new_customer,
             is_btc_eth,
         );
-        if !enabled {
-            return RiskScore {
-                score: 0,
-                surcharge_bps: 0,
-            };
-        }
-
-        // Use the same config source as `calculate_risk_score()` /
-        // `get_risk_fee_config()`: a stored override if present, otherwise
-        // the default RiskFeeConfig. This keeps quotes and charges in sync
-        // when risk pricing is enabled without a stored config.
-        let config = Self::get_risk_fee_config(env);
-
-        let mut score: u32 = 0;
-        let mut surcharge_bps: u32 = 0;
-
-        // Large payment surcharge
-        if payment_amount > config.large_payment_threshold {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.large_payment_surcharge_bps);
-        }
-
-        // New customer surcharge
-        if is_new_customer {
-            score = score.saturating_add(40);
-            surcharge_bps = surcharge_bps.saturating_add(config.new_customer_surcharge_bps);
-        }
-
-        // BTC/ETH surcharge
-        if is_btc_eth {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.btc_eth_surcharge_bps);
-        }
 
         RiskScore {
             score,
@@ -9552,11 +9525,6 @@ impl HamplardContract {
         // Cap at 100% (10000 bps)
         let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps).min(10000);
 
-        // Compute platform fee: amount * effective_bps / 10000
-        let platform_fee = payment_amount
-            .checked_mul(effective_fee_bps as i128)
-            .map(|v| v / 10000)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
         // Compute platform fee: amount * effective_bps / 10000. Both the
         // quote and the charge use this helper, so overflow always panics
         // with the same message instead of silently quoting a zero fee.
@@ -9639,18 +9607,6 @@ impl HamplardContract {
             return (0, 0, None);
         }
 
-        let breakdown =
-            Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
-        // An explicit registration-time override is a floor on the live fee.
-        let platform_fee = if let Some(override_bps) = course_fee_override_bps {
-            let floor = amount
-                .checked_mul(override_bps as i128)
-                .map(|v| v / 10000)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-            breakdown.platform_fee.max(floor)
-        } else {
-            breakdown.platform_fee
-        };
         let breakdown = Self::compute_fee_breakdown(
             env,
             token,
