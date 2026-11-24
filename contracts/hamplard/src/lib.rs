@@ -4205,9 +4205,6 @@ impl HamplardContract {
     /// Callers must ensure `validate_enrollment()` was already called for
     /// this `(student, course_id)` pair in the same transaction. Direct
     /// external callers must use `enroll_internal()` instead.
-    fn enroll_internal_validated(env: &Env, student: &Address, course_id: &String) -> i128 {
-        let mut course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
     fn enroll_internal_validated(
         env: &Env,
         student: &Address,
