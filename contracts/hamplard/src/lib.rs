@@ -3950,7 +3950,7 @@ impl HamplardContract {
             env,
             &course.token,
             course.price,
-            course_fee_override_bps,
+            Self::course_fee_override_bps(env, course_id),
             is_new_customer,
             is_btc_eth,
         );
@@ -4239,7 +4239,7 @@ impl HamplardContract {
             env,
             &course.token,
             course.price,
-            course_fee_override_bps,
+            Self::course_fee_override_bps(env, course_id),
             false,
             false,
         );
@@ -4512,7 +4512,7 @@ impl HamplardContract {
             &env,
             &course.token,
             course.price,
-            course_fee_override_bps,
+            Self::course_fee_override_bps(&env, &course_id),
             is_new_customer,
             is_btc_eth,
         );
@@ -8921,6 +8921,18 @@ impl HamplardContract {
             Self::persist(&env, &total_key, &new_total);
         }
 
+        // Decrement the token-scoped lifetime net earnings accumulator. Use a
+        // saturating subtraction so refunds for enrollments created before this
+        // key existed cannot be blocked by an unmigrated (zero) counter.
+        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
+        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
+        let new_lifetime = current_lifetime.saturating_sub(amount);
+        if new_lifetime == 0 {
+            env.storage().persistent().remove(&lifetime_key);
+        } else {
+            Self::persist(&env, &lifetime_key, &new_lifetime);
+        }
+
         // Decrement total outstanding instructor earnings for this token
         let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
         let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
@@ -9077,39 +9089,6 @@ impl HamplardContract {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &new_balance);
-        }
-        // Refunds reduce lifetime net earnings as well as the withdrawable
-        // balance. Withdrawals never touch this accumulator.
-        let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
-        let current_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
-        if amount > current_total {
-            panic!("inconsistent instructor total earnings state");
-        }
-        let new_total = current_total - amount;
-        if new_total == 0 {
-            env.storage().persistent().remove(&total_key);
-        // Decrement the token-scoped lifetime net earnings accumulator. Use a
-        // saturating subtraction so refunds for enrollments created before this
-        // key existed cannot be blocked by an unmigrated (zero) counter.
-        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
-        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
-        let new_lifetime = current_lifetime.saturating_sub(amount);
-        if new_lifetime == 0 {
-            env.storage().persistent().remove(&lifetime_key);
-        } else {
-            env.storage().persistent().set(&lifetime_key, &new_lifetime);
-        }
-
-        // Decrement total outstanding instructor earnings for this token
-        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
-        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
-        let new_outstanding = current_outstanding.saturating_sub(amount);
-        if new_outstanding == 0 {
-            env.storage().instance().remove(&outstanding_key);
-        } else {
-            env.storage()
-                .instance()
-                .set(&outstanding_key, &new_outstanding);
         }
     }
 

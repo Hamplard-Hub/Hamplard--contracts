@@ -762,6 +762,97 @@ fn test_enroll_fee_honors_registered_override_as_floor() {
 }
 
 #[test]
+fn test_batch_enroll_honors_registered_override_as_floor() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+
+    // Register course with custom 40% fee
+    client.register_course(
+        &instructor,
+        &String::from_str(&env, "COURSE-BATCH-OVERRIDE"),
+        &price,
+        &token_id,
+        &40u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.update_default_fee(&admin, &10u32);
+    client.approve_course(&admin, &String::from_str(&env, "COURSE-BATCH-OVERRIDE"));
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+
+    let mut course_ids = soroban_sdk::Vec::new(&env);
+    course_ids.push_back(String::from_str(&env, "COURSE-BATCH-OVERRIDE"));
+    client.batch_enroll(&student, &course_ids, &i128::MAX);
+
+    let platform_share = price * 40 / 100;
+    let instructor_share = price - platform_share;
+    assert_eq!(token_client.balance(&treasury), platform_share);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share,
+    );
+}
+
+#[test]
+fn test_re_enroll_honors_registered_override_as_floor() {
+    let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let price: i128 = 1_000_000_000;
+    let course_id = String::from_str(&env, "COURSE-RE-OVERRIDE");
+
+    // Register course with custom 40% fee
+    client.register_course(
+        &instructor,
+        &course_id,
+        &price,
+        &token_id,
+        &40u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.update_default_fee(&admin, &10u32);
+    client.approve_course(&admin, &course_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "re-override")),
+    );
+
+    let treasury_before = token_client.balance(&treasury);
+    client.re_enroll(&student, &course_id);
+
+    let platform_share = price * 40 / 100;
+    assert_eq!(
+        token_client.balance(&treasury) - treasury_before,
+        platform_share,
+        "re-enrollment must honor registered fee override floor"
+    );
+}
+
+#[test]
 fn test_enroll_zero_price_free_course() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -15822,6 +15913,43 @@ fn test_arbitration_fees_held_tracked_per_token() {
         client.get_arbitration_fees_held(&token_id),
         0,
         "resolving a case must release its reserved fee"
+    );
+}
+
+#[test]
+fn test_debit_arbitration_fees_held_isolated() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let fee_per_case = 5_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-ISOLATED",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-ISOLATED");
+
+    client.escalate_to_arbitration(&student, &course_id);
+    assert_eq!(client.get_arbitration_fees_held(&token_id), fee_per_case);
+
+    let instructor_lifetime_before = client.get_instructor_lifetime_earnings(&instructor, &token_id);
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.resolve_arbitration(&admin, &student, &course_id, &true);
+
+    assert_eq!(
+        client.get_arbitration_fees_held(&token_id),
+        0,
+        "resolving arbitration must release held fees"
+    );
+    assert_eq!(
+        client.get_instructor_lifetime_earnings(&instructor, &token_id),
+        instructor_lifetime_before,
+        "arbitration resolution must not alter instructor lifetime earnings"
     );
 }
 
