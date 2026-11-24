@@ -3278,6 +3278,50 @@ fn test_two_step_admin_transfer_success() {
 }
 
 #[test]
+fn test_admin_transfer_clears_the_previous_moderator() {
+    let (env, contract_id, token_id, admin, sec_admin, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-ROTATION");
+
+    client.set_moderator(&admin, &moderator);
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    let new_admin = Address::generate(&env);
+    let new_sec_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec_admin);
+    client.accept_admin(&new_admin, &new_sec_admin);
+
+    assert_eq!(client.get_moderator(), None);
+    assert!(client
+        .try_approve_course(&moderator, &course_id)
+        .is_err());
+}
+
+#[test]
+fn test_admin_can_revoke_the_moderator_explicitly() {
+    let (env, contract_id, _, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+
+    client.set_moderator(&admin, &moderator);
+    assert_eq!(client.get_moderator(), Some(moderator));
+
+    client.revoke_moderator(&admin);
+
+    assert_eq!(client.get_moderator(), None);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_accept_admin_without_proposal_fails() {
     let (env, contract_id, _, _, sec_admin, _, _) = setup();
@@ -12599,6 +12643,40 @@ fn test_risk_fee_applied_event_absent_without_surcharge() {
 }
 
 #[test]
+fn test_resolve_risk_flags_reads_enrollment_and_token_state() {
+    let (env, contract_id, token_id, admin, _, _, _) = setup();
+    let student = Address::generate(&env);
+
+    assert_eq!(
+        env.as_contract(&contract_id, || {
+            HamplardContract::resolve_risk_flags(&env, &student, &token_id)
+        }),
+        (true, false),
+    );
+
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.set_token_btc_eth(&admin, &token_id, &true);
+    assert_eq!(
+        env.as_contract(&contract_id, || {
+            HamplardContract::resolve_risk_flags(&env, &student, &token_id)
+        }),
+        (true, true),
+    );
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::StudentEnrollmentCount(student.clone()), &1u32);
+    });
+    assert_eq!(
+        env.as_contract(&contract_id, || {
+            HamplardContract::resolve_risk_flags(&env, &student, &token_id)
+        }),
+        (false, true),
+    );
+}
+
+#[test]
 #[should_panic(expected = "large_payment_threshold cannot be negative")]
 fn test_set_risk_fee_config_rejects_negative_threshold() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
@@ -12725,6 +12803,27 @@ fn test_issue456_quote_and_deduction_panic_identically_on_overflow() {
         deduction_text.contains(shared_panic),
         "unexpected deduction panic: {deduction_text}"
     );
+}
+
+#[test]
+fn test_set_fee_config_accepts_an_approved_token() {
+    let (env, contract_id, token_id, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_fee_config(&admin, &token_id, &750u32);
+
+    assert_eq!(client.get_fee_config(&token_id).fee_bps, 750);
+}
+
+#[test]
+fn test_set_fee_config_rejects_an_unapproved_token() {
+    let (env, contract_id, _, admin, _, _, _) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let unapproved_token = Address::generate(&env);
+
+    assert!(client
+        .try_set_fee_config(&admin, &unapproved_token, &750u32)
+        .is_err());
 }
 
 #[test]
@@ -17961,6 +18060,49 @@ fn test_lifetime_capacity_default_unchanged_counts_completed_students() {
 
     // In Lifetime mode this must still be rejected — total_enrollments == cap.
     client.enroll(&student_b, &course_id);
+}
+
+#[test]
+fn test_concurrent_capacity_with_a_free_seat_rejects_waitlist_join() {
+    let (env, contract_id, token_id, admin, _, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-CONCURRENT-WAITLIST");
+
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &Some(1u32),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(&admin, &course_id);
+    client.update_course(
+        &instructor,
+        &course_id,
+        &None,
+        &None,
+        &Some(crate::CapacityMode::Concurrent),
+    );
+
+    let asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let student_a = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    asset_client.mint(&student_a, &1_000_000_000i128);
+    client.enroll(&student_a, &course_id);
+    client.mark_completed(
+        &admin,
+        &student_a,
+        &course_id,
+        &Some(evidence_hash(&env, "completed")),
+    );
+
+    assert!(client.try_join_waitlist(&student_b, &course_id).is_err());
 }
 
 

@@ -153,6 +153,7 @@
 //!
 //! ## Moderator Role
 //! - `set_moderator` — sets the moderator address (admin only)
+//! - `revoke_moderator` — revokes the configured moderator (admin only)
 //! - The moderator may perform day-to-day moderation: `approve_course`,
 //!   `reject_course`, `pause_course`, `block_student`, `unblock_student`,
 //!   and `mark_completed`.
@@ -1518,6 +1519,27 @@ impl HamplardContract {
             (Symbol::new(&env, "moderator_set"), admin.clone()),
             moderator,
         );
+    }
+
+    /// Revoke the configured moderator. The admin retains moderation privileges.
+    pub fn revoke_moderator(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "revoke_moderator");
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
+
+        if let Some(moderator) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Moderator)
+        {
+            env.storage().instance().remove(&DataKey::Moderator);
+            env.events().publish(
+                (Symbol::new(&env, "moderator_revoked"), admin),
+                moderator,
+            );
+        }
     }
 
     /// Returns the current moderator address, if one has been configured.
@@ -5942,6 +5964,10 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::SecondaryAdmin)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig));
+        let previous_moderator: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Moderator);
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage()
@@ -5951,6 +5977,7 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey::PendingSecondaryAdmin);
+        env.storage().instance().remove(&DataKey::Moderator);
 
         // Clear the admin expiry when new admins take over
         // This ensures the new admin pair starts fresh without inheriting
@@ -5969,6 +5996,12 @@ impl HamplardContract {
                 ledger_sequence,
             ),
         );
+        if let Some(moderator) = previous_moderator {
+            env.events().publish(
+                (Symbol::new(&env, "moderator_revoked"), new_admin.clone()),
+                moderator,
+            );
+        }
     }
 
     /// Update the platform treasury address.
@@ -9147,21 +9180,21 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
         }
 
-        let old_fee_bps: Option<u32> = env
-            .storage()
-            .instance()
-            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig(token.clone()))
-            .map(|c| c.fee_bps);
         // Reject tokens that are not on the approved list — a per-token fee
         // override for an unapproved token would be dead configuration that
         // is easy to mistake for a live one.
         if !env
             .storage()
-            .persistent()
+            .instance()
             .has(&DataKey::ApprovedToken(token.clone()))
         {
             panic!("token is not approved");
         }
+        let old_fee_bps: Option<u32> = env
+            .storage()
+            .instance()
+            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig(token.clone()))
+            .map(|c| c.fee_bps);
 
         let config = FeeConfig { fee_bps };
         env.storage()
@@ -9445,12 +9478,11 @@ impl HamplardContract {
     /// previews and enroll()/re_enroll(), so a quote can never diverge from
     /// the actual charge.
     ///
-    /// The contract does not yet persist per-student enrollment history or a
-    /// BTC/ETH classification for tokens, so enrollment has always charged
-    /// both flags as `false`. When that state is added, it must be read here
-    /// so previews and enrollment pick it up together.
-    fn resolve_risk_flags(_env: &Env, _student: &Address, _token: &Address) -> (bool, bool) {
-        (false, false)
+    fn resolve_risk_flags(env: &Env, student: &Address, token: &Address) -> (bool, bool) {
+        (
+            Self::get_student_enrollment_count_internal(env, student) == 0,
+            Self::is_btc_eth_token_internal(env, token),
+        )
     }
 
     /// Computes the risk score and total surcharge (bps) for a payment.
@@ -9947,7 +9979,11 @@ impl HamplardContract {
 
         // Check if course is at capacity
         if let Some(cap) = course.max_capacity {
-            if course.total_enrollments < cap {
+            let count = match course.capacity_mode {
+                CapacityMode::Lifetime => course.total_enrollments,
+                CapacityMode::Concurrent => course.active_enrollments,
+            };
+            if count < cap {
                 soroban_sdk::panic_with_error!(&env, Error::WaitlistError);
             }
         } else {
