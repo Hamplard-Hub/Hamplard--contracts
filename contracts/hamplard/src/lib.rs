@@ -6678,10 +6678,6 @@ impl HamplardContract {
             return count;
         }
         env.storage().instance().get(&key).unwrap_or(0)
-    /// Get the current total active paid enrollments platform-wide.
-    /// Free-course enrollments are excluded.
-    pub fn get_total_active_enrollments(env: Env) -> u32 {
-        Self::read_total_active_enrollments(&env)
     }
 
     fn write_total_active_enrollments(env: &Env, count: u32) {
