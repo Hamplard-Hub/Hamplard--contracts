@@ -93,6 +93,33 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
     });
     client.set_platform_enrollment_cap(&admin, &Some(8));
     assert_eq!(client.get_total_active_enrollments(), 7);
+
+    let free_instructor = Address::generate(&env);
+    let free_course = String::from_str(&env, "BUDGET-FREE");
+    client.register_course(
+        &free_instructor,
+        &free_course,
+        &0,
+        &token_id,
+        &0,
+        &None,
+        &BytesN::from_array(&env, &[2; 32]),
+        &Vec::new(&env),
+    );
+    env.ledger().with_mut(|ledger| ledger.sequence_number += 1);
+    client.approve_course(&admin, &free_course);
+    client.enroll(&student, &free_course);
+    assert_eq!(client.get_total_active_enrollments(), 7);
+    env.as_contract(&id, || {
+        assert_eq!(
+            env.storage()
+                .instance()
+                .get::<_, u32>(&DataKey::TotalActiveEnrollments),
+            Some(7),
+            "a free enrollment must not migrate or mutate the paid counter"
+        );
+    });
+
     let course = String::from_str(&env, "BUDGET-ONE");
     client.enroll(&student, &course);
     assert_eq!(
@@ -100,7 +127,7 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
             .get_enrollment(&student, &student, &course)
             .unwrap()
             .enrollment_ref,
-        String::from_str(&env, "42")
+        String::from_str(&env, "43")
     );
     assert_eq!(client.get_total_active_enrollments(), 8);
     let another = Address::generate(&env);
@@ -128,13 +155,14 @@ fn legacy_count_survives_migration_and_completion_preserves_cap() {
             env.storage()
                 .instance()
                 .get::<_, u32>(&DataKey::TotalActiveEnrollments),
-            Some(7)
+            None,
+            "the first paid counter mutation removes the legacy instance value"
         );
         assert_eq!(
             env.storage()
                 .persistent()
                 .get::<_, u32>(&DataKey::EnrollmentRefCounter),
-            Some(44)
+            Some(45)
         );
         assert_eq!(
             env.storage()
