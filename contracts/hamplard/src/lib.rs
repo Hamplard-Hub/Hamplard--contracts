@@ -8399,13 +8399,6 @@ impl HamplardContract {
         let count = Self::get_student_enrollment_count_internal(env, student)
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage().persistent().set(&key, &count);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("student enrollment count overflow"));
         Self::persist(&env, &key, &count);
     }
 
@@ -8760,13 +8753,6 @@ impl HamplardContract {
         let new_balance = current
             .checked_add(amount)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage().persistent().set(&key, &new_balance);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("overflow computing instructor earnings"));
         Self::persist(&env, &key, &new_balance);
         if new_balance > 0 {
             Self::add_instructor_earning_token(env, instructor, token);
