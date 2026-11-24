@@ -1927,8 +1927,7 @@ fn test_instructor_stats_aggregate_across_courses() {
     assert_eq!(cert_a.course_version, course_a_record.version);
     assert_eq!(cert_a.content_hash, course_a_record.content_hash);
 
-    // #407 - revocation removes the certificate from the instructor's count,
-    // and a successful challenge restores it.
+    // A challenge remains disputed until an admin overturns the revocation.
     client.revoke_certificate(
         &admin,
         &String::from_str(&env, "CERT-STATS-A"),
@@ -1937,6 +1936,8 @@ fn test_instructor_stats_aggregate_across_courses() {
     assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 1);
 
     client.challenge_revocation(&alice, &String::from_str(&env, "CERT-STATS-A"));
+    assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 1);
+    client.resolve_revocation_challenge(&admin, &String::from_str(&env, "CERT-STATS-A"), &false);
     assert_eq!(client.get_instructor_stats(&instructor).total_certificates, 2);
 }
 
@@ -9690,12 +9691,7 @@ fn test_re_enroll_insufficient_balance_emits_event() {
 }
 
 #[test]
-fn test_enroll_failure_does_not_increment_circuit_breaker_counter() {
-    // The circuit breaker counter is incremented BEFORE the transfer attempt
-    // and reset to 0 AFTER a successful transfer. When try_transfer fails,
-    // the function returns early, leaving the pre-incremented counter in place.
-    // This test verifies that repeated failures eventually trigger the circuit breaker.
-    
+fn test_failed_enrollment_does_not_trip_course_or_persist_failure_counter() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -9710,35 +9706,25 @@ fn test_enroll_failure_does_not_increment_circuit_breaker_counter() {
     );
 
     let course_id = String::from_str(&env, "COURSE-CIRCUIT");
-    
-    // Attempt enrollment 5 times with insufficient balance
-    // Each failure leaves the pre-incremented counter in persistent storage
-    for i in 0..5 {
+    for _ in 0..6 {
         let student = Address::generate(&env);
         token::StellarAssetClient::new(&env, &token_id).mint(&student, &100);
-        client.enroll(&student, &course_id);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.enroll(&student, &course_id);
+        }));
+        assert!(result.is_err(), "an underfunded enrollment must fail");
     }
 
-    // The 6th attempt should trigger the circuit breaker panic (threshold is 5)
-    let student_6 = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student_6, &100);
-    
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.enroll(&student_6, &course_id);
-    }));
-    
-    assert!(
-        result.is_err(),
-        "circuit breaker should trip after threshold consecutive failures"
-    );
-
-    // Verify the course was auto-paused
     let course = client.get_course(&course_id).unwrap();
-    assert_eq!(
-        course.status,
-        CourseStatus::Paused,
-        "course must be paused by circuit breaker"
-    );
+    assert_eq!(course.status, CourseStatus::Active);
+    env.as_contract(&contract_id, || {
+        let failures: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CourseFailureCount(course_id.clone()))
+            .unwrap_or(0);
+        assert_eq!(failures, 0);
+    });
 }
 
 // ============================================================
@@ -11459,14 +11445,26 @@ fn test_issue_146_student_can_challenge_pending_revocation() {
     // Revoke
     client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "TEST"));
 
-    // Student challenges within window — should succeed
+    // A holder's challenge is recorded for admin review and cannot restore the
+    // certificate by itself.
     client.challenge_revocation(&student, &cert_id);
 
-    // Revocation cancelled — certificate is valid again
+    let cert = client.get_certificate(&admin, &cert_id);
+    assert!(cert.revoked);
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Disputed
+    );
+    assert!(!client.verify_certificate(&cert_id));
+    assert_eq!(client.get_course(&course_id).unwrap().certificates_issued, 0);
+
+    client.resolve_revocation_challenge(&admin, &cert_id, &false);
     let cert = client.get_certificate(&admin, &cert_id);
     assert!(!cert.revoked);
     assert!(cert.revocation_deadline.is_none());
     assert!(client.verify_certificate(&cert_id));
+    assert_eq!(client.get_course(&course_id).unwrap().certificates_issued, 1);
+    assert_eq!(client.get_course(&course_id).unwrap().certificates_revoked, 0);
 }
 
 #[test]
@@ -11734,7 +11732,12 @@ fn test_issue_146_challenge_boundary_condition() {
     });
     client.challenge_revocation(&student, &cert_id);
 
-    // Certificate should be valid again
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Disputed
+    );
+    assert!(!client.verify_certificate(&cert_id));
+    client.resolve_revocation_challenge(&admin, &cert_id, &false);
     assert!(client.verify_certificate(&cert_id));
 }
 
@@ -11775,8 +11778,10 @@ fn test_issue_146_rerevocation_after_successful_challenge() {
     // First revocation
     client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "FIRST"));
 
-    // Student challenges successfully
+    // The challenge remains unresolved until an admin acts.
     client.challenge_revocation(&student, &cert_id);
+    assert!(client.get_certificate(&admin, &cert_id).revoked);
+    client.resolve_revocation_challenge(&admin, &cert_id, &false);
     assert!(!client.get_certificate(&admin, &cert_id).revoked);
 
     // Admin can revoke again (new challenge period)
@@ -11788,6 +11793,13 @@ fn test_issue_146_rerevocation_after_successful_challenge() {
     assert_eq!(
         cert.revocation_reason,
         Some(String::from_str(&env, "SECOND"))
+    );
+
+    client.challenge_revocation(&student, &cert_id);
+    client.resolve_revocation_challenge(&admin, &cert_id, &true);
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Revoked
     );
 }
 
@@ -14233,17 +14245,24 @@ fn test_bulk_revoked_certificate_can_still_be_challenged_and_re_revoked() {
     client.bulk_revoke_course_certificates(&admin, &course_id);
     assert!(client.get_certificate(&admin, &cert_id).revoked);
 
-    // The holder gets exactly the same dispute rights as a targeted
-    // revocation — the revocation is only pending, not immediate.
+    // The holder gets the same dispute rights as a targeted revocation, but
+    // only an admin can decide whether it is overturned.
     client.challenge_revocation(&student, &cert_id);
     let cert = client.get_certificate(&admin, &cert_id);
-    assert!(!cert.revoked);
-    assert_eq!(cert.revoked_by, None);
-    assert_eq!(cert.revocation_reason, None);
-    assert_eq!(cert.revocation_deadline, None);
-    assert!(client.verify_certificate(&cert_id));
+    assert!(cert.revoked);
+    assert!(cert.revoked_by.is_some());
+    assert!(cert.revocation_reason.is_some());
+    assert!(cert.revocation_deadline.is_some());
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Disputed
+    );
+    assert!(!client.verify_certificate(&cert_id));
 
-    // With the challenge accepted, the course can be bulk-revoked again.
+    client.resolve_revocation_challenge(&admin, &cert_id, &false);
+    assert!(!client.get_certificate(&admin, &cert_id).revoked);
+
+    // With the revocation overturned, the course can be bulk-revoked again.
     assert_eq!(
         client.bulk_revoke_course_certificates(&admin, &course_id),
         1
@@ -14553,79 +14572,8 @@ fn test_transfer_admin_first_call_never_blocked() {
     client.transfer_admin(&admin, &sec_admin, &a, &s);
 }
 
-// ============================================================
-// ISSUE #178 — Circuit breaker: auto-pause after threshold failures
-// ============================================================
-
 #[test]
-#[should_panic(expected = "Error(Contract, #36)")]
-fn test_circuit_breaker_trips_after_threshold_failures() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "CB-TRIP",
-        100_000_000,
-    );
-    // Simulate 5 consecutive prior failures by writing the counter directly.
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-TRIP")),
-            &5u32,
-        );
-    });
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &500_000_000i128);
-    // This call must trip the circuit breaker.
-    client.enroll(&student, &String::from_str(&env, "CB-TRIP"), &i128::MAX);
-}
-
-#[test]
-fn test_circuit_breaker_does_not_trip_below_threshold() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "CB-BELOW",
-        100_000_000,
-    );
-    // 4 failures — one below the threshold of 5.
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-BELOW")),
-            &4u32,
-        );
-    });
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &500_000_000i128);
-    // Must succeed.
-    client.enroll(&student, &String::from_str(&env, "CB-BELOW"), &i128::MAX);
-    // After success the failure counter must be reset to 0.
-    env.as_contract(&contract_id, || {
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::CourseFailureCount(String::from_str(
-                &env, "CB-BELOW",
-            )))
-            .unwrap_or(0);
-        assert_eq!(
-            count, 0,
-            "failure counter must reset to 0 after successful enrollment"
-        );
-    });
-}
-
-#[test]
-fn test_circuit_breaker_course_can_be_unpaused_by_instructor() {
+fn test_paused_course_can_be_unpaused_by_instructor() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     register_and_approve_course(
@@ -14637,12 +14585,8 @@ fn test_circuit_breaker_course_can_be_unpaused_by_instructor() {
         "CB-UNPAUSE",
         100_000_000,
     );
-    // Simulate circuit breaker state: threshold failures + course paused.
+    // Manually pause the course to verify the instructor can restore it.
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(
-            &DataKey::CourseFailureCount(String::from_str(&env, "CB-UNPAUSE")),
-            &5u32,
-        );
         let mut course: Course = env
             .storage()
             .persistent()
@@ -14834,6 +14778,15 @@ fn certificate_ttl(env: &Env, contract_id: &Address, cert_id: &String) -> u32 {
     })
 }
 
+fn revocation_challenge_ttl(env: &Env, contract_id: &Address, cert_id: &String) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::RevocationChallenge(cert_id.clone()))
+    })
+}
+
 #[test]
 fn test_extend_certificate_ttl_keeps_certificate_live() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
@@ -14867,13 +14820,20 @@ fn test_extend_certificate_ttl_keeps_certificate_live() {
         &None,
         &None,
     );
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "TEST"));
+    client.challenge_revocation(&student, &cert_id);
 
-    // Advance ledger so certificate TTL drops below PERSISTENT_TTL_THRESHOLD
+    // Advance ledger so the certificate and dispute record TTLs drop below
+    // PERSISTENT_TTL_THRESHOLD.
     env.ledger().with_mut(|l| {
         l.sequence_number += 400_000;
     });
     assert!(
         certificate_ttl(&env, &contract_id, &cert_id) < HamplardContract::PERSISTENT_TTL_THRESHOLD
+    );
+    assert!(
+        revocation_challenge_ttl(&env, &contract_id, &cert_id)
+            < HamplardContract::PERSISTENT_TTL_THRESHOLD
     );
 
     // Permissionless bump: works with no auths mocked
@@ -14884,12 +14844,21 @@ fn test_extend_certificate_ttl_keeps_certificate_live() {
         certificate_ttl(&env, &contract_id, &cert_id),
         HamplardContract::PERSISTENT_TTL_EXTEND_TO
     );
+    assert_eq!(
+        revocation_challenge_ttl(&env, &contract_id, &cert_id),
+        HamplardContract::PERSISTENT_TTL_EXTEND_TO
+    );
 
-    // Advance past the original ~6.3M-ledger window; certificate must still verify
+    // Advance past the original ~6.3M-ledger window; the unresolved dispute
+    // remains present and the certificate remains unverifiable.
     env.ledger().with_mut(|l| {
         l.sequence_number += 6_000_000;
     });
-    assert!(client.verify_certificate(&cert_id));
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Disputed
+    );
+    assert!(!client.verify_certificate(&cert_id));
 }
 
 #[test]
@@ -19376,6 +19345,17 @@ fn test_targeted_auth_completion_and_certificate_entrypoints() {
         &client,
         &contract_id,
         &admin,
+        "resolve_revocation_challenge",
+        (admin.clone(), certificate_id.clone(), false),
+        resolve_revocation_challenge(&admin, &certificate_id, &false)
+    );
+    assert_only_auths(&env, &[admin.clone()]);
+
+    invoke_with_auth!(
+        &env,
+        &client,
+        &contract_id,
+        &admin,
         "bulk_revoke_course_certificates",
         (admin.clone(), course_id.clone()),
         bulk_revoke_course_certificates(&admin, &course_id)
@@ -20185,12 +20165,35 @@ fn test_set_risk_fee_config_rejects_btc_eth_surcharge_above_max() {
 }
 
 #[test]
-#[should_panic(expected = "default fee plus risk surcharges cannot exceed 10000 bps")]
+#[should_panic(expected = "fee plus risk surcharges cannot exceed 10000 bps")]
 fn test_set_risk_fee_config_rejects_combined_total_above_max() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     // 2000 (default fee) + 8001 = 10001 bps.
     client.set_risk_fee_config(&admin, &4000u32, &0i128, &2000u32, &2001u32);
+}
+
+#[test]
+fn test_update_default_fee_rechecks_risk_surcharge_limit() {
+    let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.set_risk_fee_config(&admin, &8000u32, &0i128, &0u32, &0u32);
+
+    assert!(client.try_update_default_fee(&admin, &21u32).is_err());
+    assert_eq!(client.get_platform_fee(&admin), 20);
+}
+
+#[test]
+fn test_set_fee_config_rechecks_risk_surcharge_limit() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    client.set_risk_fee_config(&admin, &6000u32, &0i128, &1000u32, &1000u32);
+    client.set_fee_config(&admin, &token_id, &2000u32);
+
+    assert!(client
+        .try_set_fee_config(&admin, &token_id, &2001u32)
+        .is_err());
+    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2000);
 }
 
 #[test]

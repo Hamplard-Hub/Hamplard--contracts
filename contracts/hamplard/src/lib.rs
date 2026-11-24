@@ -136,7 +136,7 @@
 //! - `enroll` / `batch_enroll` / `re_enroll` — pay and enroll (blocked students
 //!   and frozen instructors are rejected)
 //! - `request_refund` — request a refund inside the configured window
-//! - `challenge_revocation` — challenge a pending certificate revocation
+//! - `challenge_revocation` — dispute a pending certificate revocation
 //! - `escalate_to_arbitration` — open an arbitration case and pay its fee
 //! - `join_waitlist` / `leave_waitlist` — manage a capacity waitlist
 //! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
@@ -888,9 +888,7 @@ pub struct Certificate {
     /// Ledger sequence when the certificate was issued
     pub issued_at_ledger: u32,
     /// Whether this certificate has been revoked (e.g. cheating).
-    /// One-way and append-only: once `true`, no function may set this back
-    /// to `false`. See `revoke_certificate` / `bulk_revoke_course_certificates`
-    /// for the write paths (both go through `apply_revocation`).
+    /// Admin review may restore it after resolving a holder's challenge.
     pub revoked: bool,
     /// Admin address that performed the revocation, if revoked
     pub revoked_by: Option<Address>,
@@ -920,9 +918,9 @@ pub struct Certificate {
     /// multisig and contract-based accounts cannot produce a usable signature
     /// for this field.
     pub instructor_attestation: Option<BytesN<64>>,
-    /// Ledger sequence after which a pending revocation becomes permanent.
-    /// `Some(seq)` means revocation is pending and challengeable until
-    /// the current ledger reaches `seq`. `None` means no pending revocation.
+    /// Ledger sequence after which an unchallenged revocation becomes permanent.
+    /// `Some(seq)` means revocation is pending and challengeable until the
+    /// current ledger reaches `seq`. `None` means no pending revocation.
     pub revocation_deadline: Option<u32>,
     /// ID of the replacement certificate issued after this one was revoked
     /// for `ISSUED_IN_ERROR`.  Set by `issue_certificate` when it creates a
@@ -938,12 +936,14 @@ pub struct Certificate {
 pub enum CertificateStatus {
     /// No certificate exists with the given ID.
     NotFound,
-    /// Certificate exists, is not permanently revoked, and has not expired.
+    /// Certificate exists, is not disputed or permanently revoked, and has not expired.
     Valid,
     /// Certificate has been permanently revoked.
     Revoked,
     /// Certificate has passed its `expires_at_ledger` sequence.
     Expired,
+    /// A pending revocation has been challenged and awaits admin resolution.
+    Disputed,
 }
 
 /// Pending platform treasury update with effective ledger sequence
@@ -1158,14 +1158,12 @@ pub enum DataKey {
     /// Used to enforce a minimum cooldown between consecutive admin key
     /// rotations, preventing rapid-rotation attacks after a compromise.
     LastAdminTransferLedger,
-    /// Per-course consecutive enrollment failure counter.
-    /// Incremented each time enroll_internal() panics due to a token
-    /// transfer failure for a specific course. Reset to 0 on a successful
-    /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
-    /// course is automatically paused.
+    /// Legacy per-course failure-counter key retained for storage compatibility.
     CourseFailureCount(String),
     /// Tokens classified as BTC/ETH-denominated for risk-surcharge pricing.
     BtcEthToken(Address),
+    /// Pending admin review of a challenged certificate revocation.
+    RevocationChallenge(String),
     /// Ordered list of all whitelisted token addresses.
     /// Maintained in sync with `ApprovedToken(Address)` entries so that
     /// `get_approved_tokens()` can enumerate them without an index scan.
@@ -1358,10 +1356,6 @@ impl HamplardContract {
     /// Gives monitors and admins sufficient time to detect and react to a
     /// malicious treasury change.
     pub const TREASURY_UPDATE_DELAY_LEDGERS: u32 = 17_280;
-    /// Number of consecutive enrollment failures (token-transfer errors)
-    /// after which a course is automatically paused as a circuit breaker.
-    /// Reset to 0 on a successful enrollment. (#178)
-    const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
     /// Upper bound for the platform-wide minimum completion duration.
     /// At 5 seconds per ledger this is roughly 58 days. Without an upper
     /// bound an extreme value would make every newly registered course
@@ -1852,6 +1846,7 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_THRESHOLD,
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
+        Self::extend_persistent_ttl_if_exists(&env, &challenge_key);
         env.storage()
             .persistent()
             .set(&pending_count_key, &(current_pending_count + 1));
@@ -2551,14 +2546,6 @@ impl HamplardContract {
 
         if let Some(ref students) = students_to_refund {
             let token_client = token::Client::new(&env, &course.token);
-
-            let treasury = Self::effective_treasury(&env);
-            let treasury: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Treasury)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-            let treasury: Address = Self::read_treasury(&env);
 
             for student in students.iter() {
                 let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
@@ -3892,29 +3879,6 @@ impl HamplardContract {
 
         let token_client = token::Client::new(env, &course.token);
 
-        // #178 — Circuit breaker early-exit: if a prior failed invocation has already
-        // pushed the per-course failure counter to the threshold, auto-pause the
-        // course now (before any token interaction) and abort. This prevents the
-        // contract from repeatedly attempting a doomed transfer on a broken token
-        // contract and wasting student gas fees.
-        let failure_key = DataKey::CourseFailureCount(course_id.clone());
-        let current_failures: u32 = env.storage().persistent().get(&failure_key).unwrap_or(0);
-        if current_failures >= Self::CIRCUIT_BREAKER_THRESHOLD
-            && course.status == CourseStatus::Active
-        {
-            course.status = CourseStatus::Paused;
-            course.last_updated_ledger = env.ledger().sequence();
-            Self::persist_course(&env, &course_id, &course);
-            env.events().publish(
-                (
-                    Symbol::new(env, "course_circuit_breaker_tripped"),
-                    course_id.clone(),
-                ),
-                (course_id.clone(), current_failures, env.ledger().sequence()),
-            );
-            soroban_sdk::panic_with_error!(&env, Error::CircuitBreakerTripped);
-        }
-
         // Atomicity guarantee: Soroban executes a single contract invocation
         // (and everything it calls) as one atomic unit — no other
         // transaction can observe or mutate this course's state between the
@@ -3955,58 +3919,10 @@ impl HamplardContract {
             is_btc_eth,
         );
 
-        // Fetch treasury, applying any pending treasury update if effective
-        let treasury = Self::effective_treasury(env);
-        let mut treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-
-        if let Some(pending) = env
-            .storage()
-            .instance()
-            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
-        {
-            if env.ledger().sequence() >= pending.effective_ledger {
-                treasury = pending.address.clone();
-                env.storage().instance().set(&DataKey::Treasury, &treasury);
-                env.storage().instance().remove(&DataKey::PendingTreasury);
-            }
-        }
         let treasury: Address = Self::read_treasury(env);
 
         // Transfer full price from student to contract, then distribute platform fee.
         //
-        // #178 — Circuit breaker: if the token transfer panics (e.g. broken token
-        // contract, zero balance on the contract side, or a token-level pause),
-        // the Soroban runtime will revert the entire transaction so we never reach
-        // the failure-counter increment. Instead we track the number of *successful*
-        // path executions vs panics externally by using a per-course failure counter
-        // stored in persistent storage. Because Soroban reverts all state on panic,
-        // we must increment the failure counter BEFORE attempting the transfer and
-        // then clear/decrement it AFTER a successful transfer.
-        let failure_key = DataKey::CourseFailureCount(course_id.clone());
-        let failure_count: u32 = env.storage().persistent().get(&failure_key).unwrap_or(0);
-
-        // Pre-increment: if the transfer below panics, this increment is committed
-        // because Soroban reverts the *caller's* transaction, not the storage writes
-        // that already landed in a prior successful invocation. The counter therefore
-        // accumulates across failed calls to the same course.
-        let new_failure_count = failure_count
-            .checked_add(1)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage()
-            .persistent()
-            .set(&failure_key, &new_failure_count);
-        env.storage().persistent().extend_ttl(
-            &failure_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("failure counter overflow"));
-        Self::persist(&env, &failure_key, &new_failure_count);
-
         let actual_amount_paid = if course.price > 0 {
             // Verify actual transfer amount by checking balance before and after.
             // If the token rejects the payment, emit the failure trace and exit
@@ -4056,42 +3972,6 @@ impl HamplardContract {
         } else {
             0
         };
-
-        // Transfer succeeded — reset the circuit-breaker failure counter.
-        // Also check whether the pre-incremented count crossed the threshold:
-        // if CIRCUIT_BREAKER_THRESHOLD consecutive calls all failed before this
-        // success, the course will have been paused by a prior invocation, so
-        // this success can still proceed (the course status check in
-        // validate_enrollment would have rejected it if it were Paused).
-        Self::persist(&env, &failure_key, &0u32);
-
-        // If the pre-incremented failure count hit the threshold (meaning this
-        // successful call was preceded by CIRCUIT_BREAKER_THRESHOLD-1 failures),
-        // check whether we should auto-pause. In practice the course would already
-        // be Paused from the last failing invocation reaching the threshold, but
-        // we guard here for completeness. The real auto-pause path fires in the
-        // failure branch below — reached only when the transfer above panics and
-        // Soroban reverts this transaction, leaving the incremented counter in
-        // storage. On the *next* call, new_failure_count will equal the threshold
-        // and we auto-pause before even attempting a transfer.
-        if new_failure_count >= Self::CIRCUIT_BREAKER_THRESHOLD
-            && course.status == CourseStatus::Active
-        {
-            course.status = CourseStatus::Paused;
-            course.last_updated_ledger = env.ledger().sequence();
-            Self::persist_course(&env, &course_id, &course);
-            env.events().publish(
-                (
-                    Symbol::new(&env, "course_circuit_breaker_tripped"),
-                    course_id.clone(),
-                ),
-                (
-                    course_id.clone(),
-                    new_failure_count,
-                    env.ledger().sequence(),
-                ),
-            );
-        }
 
         // Record enrollment
         let enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
@@ -4244,24 +4124,6 @@ impl HamplardContract {
             false,
         );
 
-        let treasury = Self::effective_treasury(env);
-        let mut treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-
-        if let Some(pending) = env
-            .storage()
-            .instance()
-            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
-        {
-            if env.ledger().sequence() >= pending.effective_ledger {
-                treasury = pending.address.clone();
-                env.storage().instance().set(&DataKey::Treasury, &treasury);
-                env.storage().instance().remove(&DataKey::PendingTreasury);
-            }
-        }
         let treasury: Address = Self::read_treasury(env);
 
         let actual_amount_paid = if course.price > 0 {
@@ -4517,24 +4379,6 @@ impl HamplardContract {
             is_btc_eth,
         );
 
-        let treasury = Self::effective_treasury(&env);
-        let mut treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-
-        if let Some(pending) = env
-            .storage()
-            .instance()
-            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
-        {
-            if env.ledger().sequence() >= pending.effective_ledger {
-                treasury = pending.address.clone();
-                env.storage().instance().set(&DataKey::Treasury, &treasury);
-                env.storage().instance().remove(&DataKey::PendingTreasury);
-            }
-        }
         let treasury: Address = Self::read_treasury(env);
 
         if course.price > 0 {
@@ -5414,8 +5258,8 @@ impl HamplardContract {
     /// Admin revokes a certificate (e.g. issued in error or academic dishonesty).
     /// Revocation is not immediate — it enters a pending state during which the
     /// certificate holder may dispute the revocation via `challenge_revocation()`.
-    /// After the configured challenge period (measured in ledger sequences) expires
-    /// without a successful challenge, the revocation becomes permanent.
+    /// An unresolved dispute requires an admin decision; an unchallenged
+    /// revocation becomes permanent when the configured challenge period expires.
     ///
     /// Revoked certificates remain on-chain for audit purposes but are flagged.
     /// The revoking admin's address, the ledger sequence, and a reason code are
@@ -5631,9 +5475,8 @@ impl HamplardContract {
     /// Student challenges a pending certificate revocation.
     ///
     /// During the configured challenge period (measured in ledger sequences),
-    /// the certificate holder may dispute a pending revocation. If the challenge
-    /// is submitted before the revocation deadline, the pending revocation is
-    /// cancelled and the certificate is restored to a valid state.
+    /// the certificate holder may dispute a pending revocation. A disputed
+    /// certificate cannot be verified until an admin resolves the challenge.
     ///
     /// # Arguments
     /// - `student`        — must be the certificate holder
@@ -5641,7 +5484,7 @@ impl HamplardContract {
     pub fn challenge_revocation(env: Env, student: Address, certificate_id: String) {
         student.require_auth();
 
-        let mut cert = env
+        let cert = env
             .storage()
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id.clone()))
@@ -5668,22 +5511,11 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CertificateError);
         }
 
-        // Cancel the pending revocation
-        cert.revoked = false;
-        cert.revoked_by = None;
-        cert.revocation_ledger = None;
-        cert.revocation_reason = None;
-        cert.revocation_deadline = None;
-
-        // #407 - revocation cancelled, so the certificate counts again.
-        Self::update_instructor_stats(&env, &cert.instructor, |s| {
-            s.total_certificates = s
-                .total_certificates
-                .checked_add(1)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        });
-
-        Self::persist(&env, &DataKey::Certificate(certificate_id.clone()), &cert);
+        let challenge_key = DataKey::RevocationChallenge(certificate_id.clone());
+        if env.storage().persistent().has(&challenge_key) {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+        Self::persist(&env, &challenge_key, &current_ledger);
 
         env.events().publish(
             (
@@ -5691,6 +5523,82 @@ impl HamplardContract {
                 certificate_id.clone(),
             ),
             (student, certificate_id, current_ledger),
+        );
+    }
+
+    /// Resolve a certificate revocation challenge.
+    ///
+    /// Upholding the revocation makes it permanent immediately. Overturning
+    /// it restores the certificate and its instructor's active-certificate
+    /// count.
+    pub fn resolve_revocation_challenge(
+        env: Env,
+        admin: Address,
+        certificate_id: String,
+        uphold_revocation: bool,
+    ) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "resolve_revocation_challenge");
+
+        let certificate_key = DataKey::Certificate(certificate_id.clone());
+        let mut cert: Certificate = env
+            .storage()
+            .persistent()
+            .get(&certificate_key)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError));
+        let challenge_key = DataKey::RevocationChallenge(certificate_id.clone());
+        if !cert.revoked || !env.storage().persistent().has(&challenge_key) {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if uphold_revocation {
+            cert.revocation_deadline = Some(current_ledger);
+        } else {
+            cert.revoked = false;
+            cert.revoked_by = None;
+            cert.revocation_ledger = None;
+            cert.revocation_reason = None;
+            cert.revocation_deadline = None;
+            Self::update_instructor_stats(&env, &cert.instructor, |stats| {
+                stats.total_certificates = stats
+                    .total_certificates
+                    .checked_add(1)
+                    .unwrap_or_else(|| {
+                        soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
+                    });
+            });
+            let course_key = DataKey::Course(cert.course_id.clone());
+            if let Some(mut course) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Course>(&course_key)
+            {
+                course.certificates_revoked = course
+                    .certificates_revoked
+                    .checked_sub(1)
+                    .unwrap_or_else(|| {
+                        soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
+                    });
+                course.certificates_issued = course
+                    .certificates_issued
+                    .checked_add(1)
+                    .unwrap_or_else(|| {
+                        soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
+                    });
+                course.last_updated_ledger = current_ledger;
+                Self::persist(&env, &course_key, &course);
+            }
+        }
+
+        Self::persist(&env, &certificate_key, &cert);
+        env.storage().persistent().remove(&challenge_key);
+        env.events().publish(
+            (
+                Symbol::new(&env, "revocation_challenge_resolved"),
+                certificate_id.clone(),
+            ),
+            (admin, uphold_revocation, current_ledger),
         );
     }
 
@@ -6131,6 +6039,10 @@ impl HamplardContract {
         if new_fee_pct > 100 {
             soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
         }
+        Self::validate_fee_bps_with_risk(
+            new_fee_pct * 100,
+            &Self::risk_fee_config(&env),
+        );
 
         // #175 — Reject a same-value update before writing or emitting an event.
         let current_fee: u32 = env
@@ -7963,86 +7875,47 @@ impl HamplardContract {
     /// Return the verification status of a certificate without exposing private
     /// certificate data.
     ///
-    /// Returns:
-    /// - `CertificateStatus::NotFound` if no certificate exists for `certificate_id`
-    /// - `CertificateStatus::Revoked` if the certificate has been permanently revoked
-    ///   (either directly or after its `revocation_deadline` challenge period elapsed)
-    /// - `CertificateStatus::Expired` if the certificate has reached or passed its
-    ///   `expires_at_ledger` sequence
-    /// - `CertificateStatus::Valid` otherwise (including while a revocation is still
-    ///   pending within its challenge period, provided the certificate has not expired)
+    /// A challenged revocation reports `Disputed` and remains unresolved until
+    /// an admin calls `resolve_revocation_challenge()`.
     pub fn get_certificate_status(env: Env, certificate_id: String) -> CertificateStatus {
+        let certificate_key = DataKey::Certificate(certificate_id.clone());
         let Some(cert) = env
             .storage()
             .persistent()
-            .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
+            .get::<DataKey, Certificate>(&certificate_key)
         else {
             return CertificateStatus::NotFound;
         };
+        Self::extend_persistent_ttl_if_exists(&env, &certificate_key);
+        let challenge_key = DataKey::RevocationChallenge(certificate_id.clone());
+        Self::extend_persistent_ttl_if_exists(&env, &challenge_key);
 
-        if cert.revoked {
-            match cert.revocation_deadline {
-                // Revocation is permanent once the challenge period has elapsed,
-                // or immediately if no deadline was recorded (legacy/direct revocation).
-                Some(deadline) if env.ledger().sequence() < deadline => {}
-                _ => return CertificateStatus::Revoked,
-    /// A certificate with a pending revocation (revoked == true but
-    /// revocation_deadline in the future) is still considered valid until
-    /// the challenge period expires.
-    ///
-    /// When invoked in an on-chain transaction and the certificate is valid,
-    /// its persistent storage TTL is extended. Note that read-only RPC
-    /// simulations do not persist TTL extensions; verifiers or keepers should
-    /// submit `extend_certificate_ttl` on-chain to keep certificates live.
-    pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
-        let key = DataKey::Certificate(certificate_id);
-        if let Some(cert) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, Certificate>(&key)
+        let current_ledger = env.ledger().sequence();
+        if cert
+            .expires_at_ledger
+            .is_some_and(|expiry| current_ledger >= expiry)
         {
-            if cert.revoked {
-                // Revocation is permanent only after the challenge period expires
-                if let Some(deadline) = cert.revocation_deadline {
-                    if env.ledger().sequence() >= deadline {
-                        return false;
-                    }
-                    // Within challenge period — still valid (pending revocation)
-                    env.storage().persistent().extend_ttl(
-                        &key,
-                        Self::PERSISTENT_TTL_THRESHOLD,
-                        Self::PERSISTENT_TTL_EXTEND_TO,
-                    );
-                    return true;
-                }
-                // Revoked without a deadline (legacy or direct revocation)
-                return false;
-            }
+            return CertificateStatus::Expired;
         }
 
-        if let Some(expiry) = cert.expires_at_ledger {
-            if env.ledger().sequence() >= expiry {
-                return CertificateStatus::Expired;
+        if cert.revoked {
+            if env.storage().persistent().has(&challenge_key) {
+                return CertificateStatus::Disputed;
             }
-            env.storage().persistent().extend_ttl(
-                &key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
-            true
-        } else {
-            false
+
+            if cert
+                .revocation_deadline
+                .is_some_and(|deadline| current_ledger < deadline)
+            {
+                return CertificateStatus::Valid;
+            }
+            return CertificateStatus::Revoked;
         }
 
         CertificateStatus::Valid
     }
 
-    /// Verify a certificate — returns true if it exists, has not been
-    /// permanently revoked, and has not expired.
-    ///
-    /// A certificate with a pending revocation (revoked == true but
-    /// revocation_deadline in the future) is still considered valid until
-    /// the challenge period expires.
+    /// Verify that a certificate is valid and has no unresolved revocation.
     pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
         Self::get_certificate_status(env, certificate_id) == CertificateStatus::Valid
     }
@@ -8057,7 +7930,8 @@ impl HamplardContract {
     /// Panics with `Error::CertificateError` if the certificate does not exist
     /// in live persistent storage.
     pub fn extend_certificate_ttl(env: Env, certificate_id: String) {
-        let key = DataKey::Certificate(certificate_id);
+        let key = DataKey::Certificate(certificate_id.clone());
+        let challenge_key = DataKey::RevocationChallenge(certificate_id);
         if !env.storage().persistent().has(&key) {
             soroban_sdk::panic_with_error!(&env, Error::CertificateError);
         }
@@ -8169,33 +8043,6 @@ impl HamplardContract {
     // INTERNAL HELPERS
     // ----------------------------------------------------------
 
-    /// Resolve the effective treasury address, promoting a matured
-    /// `PendingTreasury` update if its `effective_ledger` has been reached.
-    ///
-    /// When a pending update matures it is committed to `DataKey::Treasury`
-    /// and `DataKey::PendingTreasury` is cleared so subsequent calls in the
-    /// same transaction (and all future calls) see the new address without
-    /// re-reading the pending record.
-    fn effective_treasury(env: &Env) -> Address {
-        let mut treasury: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| panic!("treasury not set"));
-
-        if let Some(pending) = env
-            .storage()
-            .instance()
-            .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
-        {
-            if env.ledger().sequence() >= pending.effective_ledger {
-                treasury = pending.address.clone();
-                env.storage().instance().set(&DataKey::Treasury, &treasury);
-                env.storage().instance().remove(&DataKey::PendingTreasury);
-            }
-        }
-
-        treasury
     /// Emit the shared per-student refund event used by both
     /// `process_refund()` and `archive_course()`.
     fn emit_refund_issued(
@@ -9146,6 +8993,7 @@ impl HamplardContract {
         if fee_bps > 10000 {
             soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
         }
+        Self::validate_fee_bps_with_risk(fee_bps, &Self::risk_fee_config(&env));
 
         let old_fee_bps: Option<u32> = env
             .storage()
@@ -9333,20 +9181,12 @@ impl HamplardContract {
             panic!("btc_eth_surcharge_bps cannot exceed 10000");
         }
 
-        // Each term is <= 10000 here, so these additions cannot overflow u32.
         let default_fee_bps: u32 = env
             .storage()
             .instance()
             .get::<DataKey, u32>(&DataKey::DefaultFee)
             .unwrap_or(20u32)
             * 100;
-        let worst_case_bps = default_fee_bps
-            + large_payment_surcharge_bps
-            + new_customer_surcharge_bps
-            + btc_eth_surcharge_bps;
-        if worst_case_bps > Self::MAX_FEE_BPS {
-            panic!("default fee plus risk surcharges cannot exceed 10000 bps");
-        }
 
         let config = RiskFeeConfig {
             large_payment_surcharge_bps,
@@ -9354,6 +9194,7 @@ impl HamplardContract {
             new_customer_surcharge_bps,
             btc_eth_surcharge_bps,
         };
+        Self::validate_fee_bps_with_risk(default_fee_bps, &config);
         env.storage()
             .instance()
             .set(&DataKey::RiskFeeConfig, &config);
@@ -9386,6 +9227,17 @@ impl HamplardContract {
                 new_customer_surcharge_bps: 0,
                 btc_eth_surcharge_bps: 0,
             })
+    }
+
+    fn validate_fee_bps_with_risk(base_fee_bps: u32, risk: &RiskFeeConfig) {
+        let worst_case_bps = base_fee_bps
+            .checked_add(risk.large_payment_surcharge_bps)
+            .and_then(|total| total.checked_add(risk.new_customer_surcharge_bps))
+            .and_then(|total| total.checked_add(risk.btc_eth_surcharge_bps))
+            .unwrap_or(u32::MAX);
+        if worst_case_bps > Self::MAX_FEE_BPS {
+            panic!("fee plus risk surcharges cannot exceed 10000 bps");
+        }
     }
 
     /// Calculate a risk score and surcharge for a student's payment in `token`.
