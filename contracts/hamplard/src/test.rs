@@ -16623,6 +16623,87 @@ fn test_withdraw_tokens_caps_withdrawal_to_surplus_above_liabilities() {
 }
 
 #[test]
+fn test_withdraw_earnings_decrements_liability_total_once() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+
+    let price = 1_000_000_000i128;
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-WITHDRAW-LIABILITY",
+        price,
+    );
+    let course_id = String::from_str(&env, "COURSE-WITHDRAW-LIABILITY");
+    client.enroll(&student, &course_id, &i128::MAX);
+
+    let instructor_share = price * 80 / 100;
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        instructor_share
+    );
+    assert_eq!(client.get_outstanding_earnings(&token_id), instructor_share);
+    assert_eq!(client.get_total_liabilities(&token_id), instructor_share);
+
+    let withdraw_amount = 300_000_000i128;
+    client.withdraw_earnings(&instructor, &token_id, &withdraw_amount, &None);
+
+    let remaining = instructor_share - withdraw_amount;
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        remaining
+    );
+    assert_eq!(client.get_outstanding_earnings(&token_id), remaining);
+    assert_eq!(client.get_total_liabilities(&token_id), remaining);
+    assert_eq!(client.get_surplus_balance(&token_id), 0);
+
+    // A second instructor's earnings must remain fully reserved.
+    let instructor_b = Address::generate(&env);
+    let student_b = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student_b, &price);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor_b,
+        "COURSE-WITHDRAW-LIABILITY-B",
+        price,
+    );
+    let course_id_b = String::from_str(&env, "COURSE-WITHDRAW-LIABILITY-B");
+    client.enroll(&student_b, &course_id_b, &i128::MAX);
+
+    assert_eq!(
+        client.get_instructor_earnings(&instructor_b, &token_id),
+        instructor_share
+    );
+    assert_eq!(
+        client.get_outstanding_earnings(&token_id),
+        remaining + instructor_share
+    );
+    assert_eq!(
+        client.get_total_liabilities(&token_id),
+        remaining + instructor_share
+    );
+    assert_eq!(client.get_surplus_balance(&token_id), 0);
+
+    // withdraw_tokens must not sweep funds still owed to instructors.
+    let destination = Address::generate(&env);
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.withdraw_tokens(&admin, &sec_admin, &token_id, &1i128, &destination);
+    }));
+    assert!(
+        res.is_err(),
+        "withdraw_tokens must not sweep owed instructor earnings"
+    );
+}
+
+#[test]
 #[should_panic(expected = "withdraw_tokens: cannot withdraw below tracked liabilities")]
 fn test_withdraw_tokens_cannot_drain_arbitration_fee_liabilities() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
