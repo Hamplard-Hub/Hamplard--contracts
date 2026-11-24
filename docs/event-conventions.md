@@ -47,7 +47,7 @@ compliance. The slot layout follows the canonical schema above.
 
 | # | Event | `data` tuple |
 |---|---|---|
-| 1 | `course_registered` | `(course_id, instructor, ledger_seq)` |
+| 1 | `course_registered` | `(course_id, instructor, price, token, fee_pct, ledger_seq)` |
 | 2 | `course_archived` | `(course_id, admin1, admin2, ledger_seq)` |
 | 3 | `batch_enrolled` | `(student, course_ids, total_paid, ledger_seq)` |
 | 4 | `course_completed` | `(course_id, student, admin, completion_ledger)` |
