@@ -447,17 +447,14 @@ pub enum Error {
     InconsistentState = 50,
     InvalidMaxCoursesLimit = 51,
 }
-mod types;
 mod storage;
 mod events;
 mod errors;
-mod fees;
 mod course;
 mod enrollment;
 mod certificate;
 mod admin;
 
-pub use types::*;
 // Embed version and source metadata into the deployed Wasm so operators can
 // identify which build is live after an upgrade.
 soroban_sdk::contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -2993,23 +2990,12 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
+        // One authorization path and one frozen-instructor guard (#639).
         Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         course.enrollment_expiry_ledgers = expiry_ledgers;
@@ -3096,23 +3082,12 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
+        // One authorization path and one frozen-instructor guard (#639).
         Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {
@@ -3169,28 +3144,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-
+        // One authorization path and one frozen-instructor guard (#639).
         // A frozen instructor may not alter the content commitment, but an
         // admin may still update it as an administrative intervention.
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         Self::require_admin_or_instructor(&env, &caller, &course);
-
-        // A frozen instructor may not alter the content commitment, but an
-        // admin may still update it as an administrative intervention.
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
         if course.status == CourseStatus::Archived {
