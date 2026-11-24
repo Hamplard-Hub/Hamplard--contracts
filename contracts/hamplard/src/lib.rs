@@ -966,6 +966,22 @@ pub enum RefundStatus {
     Cancelled,
 }
 
+/// Lifecycle status of an enrollment returned by `get_enrollment_status`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentStatus {
+    /// No enrollment exists for this student/course pair.
+    None,
+    /// Enrollment exists and is currently active.
+    Active,
+    /// Enrollment exists and has been marked completed.
+    Completed,
+    /// Enrollment exists but is past its effective expiry policy.
+    Expired,
+    /// Enrollment has been refunded.
+    Refunded,
+}
+
 /// A refund request record
 #[contracttype]
 #[derive(Clone)]

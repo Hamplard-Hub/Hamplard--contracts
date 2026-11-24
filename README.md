@@ -253,6 +253,7 @@ pub struct Certificate {
 | `ArbitrationCase` | On-chain dispute record with fee, token, and resolution status |
 | `TreasuryUpdate` | Pending treasury address plus its effective ledger |
 | `PendingUpgrade` | Proposed Wasm hash and upgrade time-lock ledger |
+| `EnrollmentStatus` | Enrollment lifecycle view returned by `get_enrollment_status` |
 | `InstructorStats` | Aggregate students, completions, and certificates per instructor |
 
 ### `CourseStatus` state machine
@@ -355,6 +356,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `quote_enrollment(course_id, student)` | `(price, platform_fee, instructor_share)` using the current enrollment fee calculation |
 | `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
 | `is_enrolled(student, course_id)` | `bool` |
+| `get_enrollment_status(student, course_id)` | `EnrollmentStatus` |
 | `has_completed(student, course_id)` | `Option<bool>` |
 | `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired (extends TTL when called on-chain for a valid cert) |
 | `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
