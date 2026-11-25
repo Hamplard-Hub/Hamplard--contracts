@@ -21976,3 +21976,177 @@ fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
 
     assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
 }
+
+#[test]
+fn test_leave_waitlist_persists_remaining_students() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-WAITLIST-REMAINING");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-WAITLIST-REMAINING",
+        100_000_000,
+    );
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)));
+
+    let enrolled = Address::generate(&env);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&enrolled, &1_000_000_000);
+    client.enroll(&enrolled, &course_id);
+    client.join_waitlist(&first, &course_id);
+    client.join_waitlist(&second, &course_id);
+
+    client.leave_waitlist(&first, &course_id);
+
+    let waitlist = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(waitlist.len(), 1);
+    assert_eq!(waitlist.get(0).unwrap(), second);
+}
+
+#[test]
+fn test_leave_waitlist_removes_key_when_empty() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-WAITLIST-EMPTY");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-WAITLIST-EMPTY",
+        100_000_000,
+    );
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)));
+
+    let enrolled = Address::generate(&env);
+    let waitlisted = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&enrolled, &1_000_000_000);
+    client.enroll(&enrolled, &course_id);
+    client.join_waitlist(&waitlisted, &course_id);
+
+    client.leave_waitlist(&waitlisted, &course_id);
+
+    assert!(client.get_waitlist(&course_id).is_none());
+}
+
+#[test]
+fn test_moderator_can_approve_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-APPROVE");
+
+    client.set_moderator(&admin, &moderator);
+    assert_eq!(client.get_moderator(), Some(moderator.clone()));
+
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.approve_course(&moderator, &course_id);
+
+    assert_eq!(
+        client.get_course(&course_id).unwrap().status,
+        CourseStatus::Active
+    );
+}
+
+#[test]
+fn test_moderator_can_reject_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-REJECT");
+
+    client.set_moderator(&admin, &moderator);
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(
+        &moderator,
+        &course_id,
+        &String::from_str(&env, "CONTENT_POLICY_VIOLATION"),
+    );
+
+    assert_eq!(
+        client.get_course(&course_id).unwrap().status,
+        CourseStatus::Rejected
+    );
+}
+
+#[test]
+fn test_expired_admin_approve_fails_but_moderator_approve_succeeds() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-EXPIRY");
+    let expiry = env.ledger().sequence() + 10;
+
+    client.set_moderator(&admin, &moderator);
+    client.set_admin_expiry(&admin, &sec_admin, &Some(expiry));
+    env.ledger().with_mut(|l| {
+        l.sequence_number = expiry;
+    });
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.approve_course(&moderator, &course_id);
+
+    assert_eq!(
+        client.get_course(&course_id).unwrap().status,
+        CourseStatus::Active
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_expired_admin_cannot_approve_course() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "COURSE-ADMIN-EXPIRED");
+    let expiry = env.ledger().sequence() + 10;
+
+    client.set_admin_expiry(&admin, &sec_admin, &Some(expiry));
+    env.ledger().with_mut(|l| {
+        l.sequence_number = expiry;
+    });
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.approve_course(&admin, &course_id);
+}
