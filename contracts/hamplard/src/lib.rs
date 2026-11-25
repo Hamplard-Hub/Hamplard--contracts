@@ -624,6 +624,7 @@ pub struct InitializedEvent {
     pub default_fee_pct: u32,
     pub max_courses_per_instructor: u32,
     pub refund_window_ledgers: u32,
+    pub revocation_challenge_period: u32,
 }
 
 // ============================================================
@@ -1322,6 +1323,9 @@ impl HamplardContract {
     /// (~17,280 ledgers ≈ 1 day at 5s/ledger).
     const DEFAULT_REVOCATION_CHALLENGE_PERIOD: u32 = 17_280;
 
+    /// Maximum number of addresses that may be on a course waitlist at once.
+    const MAX_WAITLIST_ENTRIES: u32 = 500;
+
     /// Default refund processing deadline in ledger sequences
     /// (~17,280 ledgers ≈ 1 day at 5s/ledger). After this many ledgers
     /// elapse from a refund request, the student may self-approve it via
@@ -1448,6 +1452,10 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
         }
 
+        if revocation_challenge_period == 0 || revocation_challenge_period > 1_209_600 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
+        }
+
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -1486,6 +1494,7 @@ impl HamplardContract {
             default_fee_pct,
             max_courses_per_instructor,
             refund_window_ledgers,
+            revocation_challenge_period,
         }
         .publish(&env);
     }
@@ -1984,19 +1993,25 @@ impl HamplardContract {
         if let Some(threshold_val) = threshold {
             if course.price >= threshold_val {
                 let approval_key = DataKey2::HighValueCourseApproval(course_id.clone());
-                let prior_approver: Option<Address> = env.storage().instance().get(&approval_key);
+                let prior_approver: Option<Address> = env.storage().persistent().get(&approval_key);
                 match prior_approver {
                     None => {
-                        // Record first approval and return — need a second admin
-                        env.storage().instance().set(&approval_key, &caller);
+                        // Record first approval and return — need a second admin.
+                        // Use persistent storage so the pending approval survives instance TTL bumps.
+                        env.storage().persistent().set(&approval_key, &caller);
+                        env.storage().persistent().extend_ttl(
+                            &approval_key,
+                            Self::PERSISTENT_TTL_THRESHOLD,
+                            Self::PERSISTENT_TTL_EXTEND_TO,
+                        );
                         return;
                     }
                     Some(ref prior) if *prior == caller => {
                         soroban_sdk::panic_with_error!(&env, Error::HighValueApprovalConflict);
                     }
                     Some(_) => {
-                        // Different admin — proceed and clear the approval key
-                        env.storage().instance().remove(&approval_key);
+                        // Different admin — proceed and clear the approval key.
+                        env.storage().persistent().remove(&approval_key);
                     }
                 }
             }
@@ -2043,9 +2058,20 @@ impl HamplardContract {
     pub fn set_high_value_course_threshold(env: Env, admin: Address, threshold: i128) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "set_high_value_course_threshold");
+        if threshold <= 0 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .set(&DataKey2::HighValueCourseThreshold, &threshold);
+
+        env.events().publish(
+            (Symbol::new(&env, "high_value_threshold_set"), admin.clone()),
+            (admin, threshold, env.ledger().sequence()),
+        );
     }
 
     /// Returns the high-value course threshold, if set. Issue #167.
@@ -2077,6 +2103,12 @@ impl HamplardContract {
         course.status = CourseStatus::Rejected;
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
+
+        // Clear any pending high-value approval so a later re-registration
+        // cannot inherit a stale first-approval from the rejected state.
+        env.storage()
+            .persistent()
+            .remove(&DataKey2::HighValueCourseApproval(course_id.clone()));
 
         // #376 — Decrement the total course count so a rejected course does
         // not permanently occupy a slot against MaxCoursesPerInstructor.
@@ -2350,6 +2382,7 @@ impl HamplardContract {
     ) {
         instructor.require_auth();
         admin.require_auth();
+        new_instructor.require_auth();
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
@@ -2374,6 +2407,21 @@ impl HamplardContract {
 
         if new_instructor == course.instructor {
             soroban_sdk::panic_with_error!(&env, Error::InvalidCourseTransfer);
+        }
+
+        // Reject addresses that must not become instructor: admin, treasury,
+        // or any existing co-instructor (who would otherwise be paid twice).
+        if Self::is_admin(&env, &new_instructor) {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseTransfer);
+        }
+        let treasury = Self::read_treasury(&env);
+        if new_instructor == treasury {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseTransfer);
+        }
+        for co in course.co_instructors.iter() {
+            if co.address == new_instructor {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCourseTransfer);
+            }
         }
 
         if Self::is_instructor_frozen_internal(&env, &instructor) {
@@ -2717,6 +2765,11 @@ impl HamplardContract {
         course.archived_at_ledger = Some(env.ledger().sequence());
         course.last_updated_ledger = env.ledger().sequence();
 
+        // Clear any pending high-value approval; the course is immutable after archiving.
+        env.storage()
+            .persistent()
+            .remove(&DataKey2::HighValueCourseApproval(course_id.clone()));
+
         Self::persist(&env, &DataKey::ArchivedCourse(course_id.clone()), &course);
 
         env.storage()
@@ -2863,6 +2916,11 @@ impl HamplardContract {
             }
             course.price = price;
             modified = true;
+            // A price change may move the course across the high-value threshold;
+            // clear any pending first-approval so it cannot be inherited at the new price.
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::HighValueCourseApproval(course_id.clone()));
         }
 
         if let Some(mode) = new_capacity_mode {
@@ -6852,6 +6910,9 @@ impl HamplardContract {
     pub fn set_revocation_challenge_period(env: Env, admin: Address, period: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "set_revocation_challenge_period");
+        if period == 0 || period > 1_209_600 {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
+        }
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -9968,6 +10029,10 @@ impl HamplardContract {
             }
         }
 
+        if waitlist.len() >= Self::MAX_WAITLIST_ENTRIES {
+            soroban_sdk::panic_with_error!(&env, Error::WaitlistError);
+        }
+
         waitlist.push_back(student.clone());
         Self::persist(&env, &waitlist_key, &waitlist);
 
@@ -10050,21 +10115,39 @@ impl HamplardContract {
         let waitlist: Option<Vec<Address>> = env.storage().persistent().get(&waitlist_key);
 
         if let Some(list) = waitlist {
-            if list.len() > 0 {
-        if let Some(mut list) = waitlist {
             if !list.is_empty() {
-                let next_student = list.get(0).unwrap();
+                // Skip stale entries: students who are already enrolled, blocked,
+                // or whose enrollment record was otherwise cleaned up. Collect
+                // remaining (non-stale, not-yet-promoted) entries.
+                let mut remaining = Vec::new(env);
+                let mut promoted: Option<Address> = None;
 
-                // Remove from waitlist
-                let mut new_waitlist = Vec::new(env);
-                for i in 1..list.len() {
-                    new_waitlist.push_back(list.get(i).unwrap());
+                for i in 0..list.len() {
+                    let candidate = list.get(i).unwrap();
+
+                    if promoted.is_some() {
+                        // Already found someone to promote; keep the rest.
+                        remaining.push_back(candidate);
+                        continue;
+                    }
+
+                    let already_enrolled = env
+                        .storage()
+                        .persistent()
+                        .has(&DataKey::Enrollment(candidate.clone(), course_id.clone()));
+                    let is_blocked = Self::is_student_blocked_internal(env, &candidate);
+
+                    if already_enrolled || is_blocked {
+                        // Stale entry — drop it silently.
+                        continue;
+                    }
+
+                    // This candidate gets the slot.
+                    promoted = Some(candidate);
                 }
 
-                if new_waitlist.len() > 0 {
-                    Self::persist(&env, &waitlist_key, &new_waitlist);
-                if !new_waitlist.is_empty() {
-                    env.storage().persistent().set(&waitlist_key, &new_waitlist);
+                if !remaining.is_empty() {
+                    env.storage().persistent().set(&waitlist_key, &remaining);
                     env.storage().persistent().extend_ttl(
                         &waitlist_key,
                         Self::PERSISTENT_TTL_THRESHOLD,
@@ -10074,16 +10157,16 @@ impl HamplardContract {
                     env.storage().persistent().remove(&waitlist_key);
                 }
 
-                // Automatically enroll the student
-                // We skip validation checks since the student already passed them when joining waitlist
-                // The student supplied no max_price when joining the waitlist, so the
-                // promotion path charges the current price (no limit) as before (#361).
-                Self::enroll_internal(env, &next_student, course_id, i128::MAX);
+                if let Some(next_student) = promoted {
+                    // The student supplied no max_price when joining the waitlist, so the
+                    // promotion path charges the current price (no limit) as before (#361).
+                    Self::enroll_internal(env, &next_student, course_id, i128::MAX);
 
-                env.events().publish(
-                    (Symbol::new(env, "waitlist_promoted"), course_id.clone()),
-                    (next_student, course_id.clone()),
-                );
+                    env.events().publish(
+                        (Symbol::new(env, "waitlist_promoted"), course_id.clone()),
+                        (next_student, course_id.clone()),
+                    );
+                }
             }
         }
     }
