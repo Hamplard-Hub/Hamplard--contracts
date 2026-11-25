@@ -9,6 +9,13 @@ canonical counter before accepting an enrollment.
 showed that leaving it in instance storage would still rewrite the instance
 on every enrollment, even after moving the active-enrollment count.
 
+Enrollment records still carry unique generated references, but the
+`EnrollmentByRef` reverse-lookup entry is no longer written. Certificate
+issuance already identifies enrollments by `(student, course_id)`, so the
+reverse mapping had no reader and only added a persistent write and rent.
+The legacy key remains defined for storage-key compatibility; no public
+function signatures or enrollment-reference values change.
+
 ## Platform enrollment cap
 
 `set_platform_enrollment_cap()` rejects a new cap that is below the
@@ -48,6 +55,10 @@ function signature changes. Adding `rlib` alongside `cdylib` allows focused
 integration tests without compiling unrelated, outdated unit-test call sites.
 
 ## Before and after budget
+
+The measurements below predate removal of the `EnrollmentByRef` write and
+document the earlier counter-storage change; they are not measurements of the
+current enrollment path.
 
 Measured with Soroban SGK 22.0.11 native test execution and the same fixture:
 two approved courses, one funded student, a platform cap of two, and the default

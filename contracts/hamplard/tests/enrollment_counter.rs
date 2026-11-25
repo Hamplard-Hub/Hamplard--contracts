@@ -54,7 +54,8 @@ fn enrollment_counter_budget() {
     for name in ["BUDGET-ONE", "BUDGET-TWO"] {
         let before = env.as_contract(&id, || env.storage().instance().all());
         env.cost_estimate().budget().reset_default();
-        client.enroll(&student, &String::from_str(&env, name));
+        let course = String::from_str(&env, name);
+        client.enroll(&student, &course);
         let cpu = env.cost_estimate().budget().cpu_instruction_cost();
         let memory = env.cost_estimate().budget().memory_bytes_cost();
         let after = env.as_contract(&id, || env.storage().instance().all());
@@ -63,6 +64,13 @@ fn enrollment_counter_budget() {
             before == after
         );
         assert_eq!(before, after, "enrollment must not rewrite instance data");
+        let enrollment = client.get_enrollment(&student, &student, &course).unwrap();
+        env.as_contract(&id, || {
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::EnrollmentByRef(enrollment.enrollment_ref)));
+        });
     }
     assert_eq!(client.get_total_active_enrollments(), 2);
     env.as_contract(&id, || {
