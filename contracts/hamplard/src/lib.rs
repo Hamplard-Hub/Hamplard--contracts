@@ -153,12 +153,17 @@
 //!
 //! ## Moderator Role
 //! - `set_moderator` — sets the moderator address (admin only)
-//! - The moderator may perform day-to-day moderation: `approve_course`,
-//!   `reject_course`, `pause_course`, `block_student`, `unblock_student`,
-//!   and `mark_completed`.
+//! - The moderator may NOT approve or reject courses; that is an approver
+//!   privilege (see `add_approver`).
 //! - The moderator may NOT move funds (`withdraw_tokens`, `process_refund`,
 //!   `archive_course`) or change configuration (`update_default_fee`,
 //!   `set_fee_config`, `add_approved_token`, `transfer_admin`, etc.).
+//!
+//! ## Approver Role
+//! - `add_approver` / `remove_approver` — grants or revokes the approver role (admin only)
+//! - Approvers (and admins) may call `approve_course` and `reject_course`.
+//! - `block_student`, `unblock_student`, and `mark_completed` require admin;
+//!   approvers and moderators may not call these.
 //!
 //! ## Student Blocking Policy
 //! - `block_student()` called by the admin prevents a student from:
@@ -446,6 +451,13 @@ pub enum Error {
     UpgradeError = 49,
     InconsistentState = 50,
     InvalidMaxCoursesLimit = 51,
+    /// set_platform_enrollment_cap() received a cap below the current
+    /// TotalActiveEnrollments count. Lowering the cap below the live count
+    /// would prevent all new enrollments without expiring existing ones.
+    InvalidCapBelowActiveEnrollments = 52,
+    /// update_refund_window() or init() received a refund_window_ledgers value
+    /// that exceeds MAX_REFUND_WINDOW_LEDGERS.
+    InvalidRefundWindow = 53,
 }
 mod types;
 mod storage;
@@ -1339,6 +1351,8 @@ impl HamplardContract {
     /// indefinitely or allow refunds long after a course was consumed.
     /// `init()` and `update_refund_window()` must reject values above this.
     pub(crate) const MAX_REFUND_WINDOW_LEDGERS: u32 = 172_800;
+    /// Default refund window used when storage has no value (~1 day at 5s/ledger).
+    pub(crate) const DEFAULT_REFUND_WINDOW_LEDGERS: u32 = 17_280;
     /// Maximum number of course IDs allowed in a single `batch_enroll()` call.
     pub(crate) const MAX_BATCH_SIZE: u32 = 50;
     /// Maximum number of course IDs returned by a single `list_courses()` call.
@@ -1430,6 +1444,10 @@ impl HamplardContract {
 
         if default_fee_pct > 100 {
             soroban_sdk::panic_with_error!(&env, Error::InvalidFeeConfig);
+        }
+
+        if refund_window_ledgers > Self::MAX_REFUND_WINDOW_LEDGERS {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidRefundWindow);
         }
 
         if treasury == env.current_contract_address() {
@@ -1907,7 +1925,7 @@ impl HamplardContract {
     /// - `course_id` — the course to approve
     pub fn approve_course(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
-        Self::require_moderator_or_admin(&env, &caller, "approve_course");
+        Self::require_admin_or_approver(&env, &caller, "approve_course");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -2057,7 +2075,7 @@ impl HamplardContract {
 
     pub fn reject_course(env: Env, caller: Address, course_id: String, reason: String) {
         caller.require_auth();
-        Self::require_moderator_or_admin(&env, &caller, "reject_course");
+        Self::require_admin_or_approver(&env, &caller, "reject_course");
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -6637,8 +6655,14 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "set_platform_enrollment_cap");
 
         let old_cap: Option<u32> = env.storage().instance().get(&DataKey::PlatformEnrollmentCap);
+        let current_total = Self::read_total_active_enrollments(&env);
 
         if let Some(cap_value) = cap {
+            // Reject a cap that would immediately prevent all new enrollments
+            // by being below the number already active (#691).
+            if cap_value < current_total {
+                soroban_sdk::panic_with_error!(&env, Error::InvalidCapBelowActiveEnrollments);
+            }
             env.storage()
                 .instance()
                 .set(&DataKey::PlatformEnrollmentCap, &cap_value);
@@ -6653,7 +6677,7 @@ impl HamplardContract {
                 Symbol::new(&env, "platform_enrollment_cap_set"),
                 admin.clone(),
             ),
-            (admin, old_cap, cap),
+            (admin, old_cap, cap, current_total),
         );
     }
 
@@ -6783,11 +6807,14 @@ impl HamplardContract {
     pub fn update_refund_window(env: Env, admin: Address, window: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "update_refund_window");
+        if window > Self::MAX_REFUND_WINDOW_LEDGERS {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidRefundWindow);
+        }
         let old_window: u32 = env
             .storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap_or(1000);
+            .unwrap_or(Self::DEFAULT_REFUND_WINDOW_LEDGERS);
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -6806,7 +6833,7 @@ impl HamplardContract {
         env.storage()
             .instance()
             .get(&DataKey::RefundWindow)
-            .unwrap_or(1000)
+            .unwrap_or(Self::DEFAULT_REFUND_WINDOW_LEDGERS)
     }
 
     /// Configure the refund processing deadline (in ledger sequences).
@@ -10074,14 +10101,13 @@ impl HamplardContract {
                     env.storage().persistent().remove(&waitlist_key);
                 }
 
-                // Automatically enroll the student
-                // We skip validation checks since the student already passed them when joining waitlist
-                // The student supplied no max_price when joining the waitlist, so the
-                // promotion path charges the current price (no limit) as before (#361).
-                Self::enroll_internal(env, &next_student, course_id, i128::MAX);
-
+                // Emit a notification event so the student can self-enroll.
+                // Directly calling enroll_internal here would attempt a token
+                // transfer that the student has not authorised in this transaction
+                // (#684), and would also fail for blocked students, low balances
+                // and Paused courses (which archive_course requires).
                 env.events().publish(
-                    (Symbol::new(env, "waitlist_promoted"), course_id.clone()),
+                    (Symbol::new(env, "waitlist_ready"), course_id.clone()),
                     (next_student, course_id.clone()),
                 );
             }
