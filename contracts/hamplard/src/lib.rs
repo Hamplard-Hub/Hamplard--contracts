@@ -3696,28 +3696,24 @@ impl HamplardContract {
                 CapacityMode::Concurrent => course.active_enrollments,
             };
             if count >= cap {
-                panic!("course has reached maximum enrollment capacity");
-            soroban_sdk::panic_with_error!(&env, Error::AlreadyEnrolled);
-        }
-        if let Some(cap) = course.max_capacity {
-            if course.total_enrollments >= cap {
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
             }
         }
 
-        // Check platform-wide enrollment cap (mirrors validate_enrollment)
-        if let Some(platform_cap) = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
-        {
-            let total_active: u32 = env
+        // Check the platform-wide cap for paid courses only. Free courses do
+        // not consume platform capacity and must remain enrollable even when
+        // the paid-enrollment cap is full.
+        if course.price > 0 {
+            if let Some(platform_cap) = env
                 .storage()
                 .instance()
-                .get(&DataKey::TotalActiveEnrollments)
-                .unwrap_or(0);
-            if total_active >= platform_cap {
-                panic!("platform has reached maximum total enrollment capacity");
+                .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
+            {
+                let total_active: u32 = Self::read_total_active_enrollments(env);
+                if total_active >= platform_cap {
+                    Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_CAP_EXCEEDED");
+                    soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+                }
             }
         }
 
@@ -3782,36 +3778,6 @@ impl HamplardContract {
             }
         }
 
-        // Check platform-wide enrollment cap
-        if let Some(platform_cap) = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
-        {
-            let total_active: u32 = Self::read_total_active_enrollments(env);
-            if total_active >= platform_cap {
-                Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_CAP_EXCEEDED");
-                panic!("platform has reached maximum total enrollment capacity");
-                soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-        // Check the platform-wide cap for paid courses only. Free courses do
-        // not consume platform capacity and must remain enrollable even when
-        // the paid-enrollment cap is full.
-        if course.price > 0 {
-            if let Some(platform_cap) = env
-                .storage()
-                .instance()
-                .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
-            {
-                let total_active: u32 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::TotalActiveEnrollments)
-                    .unwrap_or(0);
-                if total_active >= platform_cap {
-                    panic!("platform has reached maximum total enrollment capacity");
-                }
-            }
-        }
     }
 
     /// Reverts when the course's current price exceeds the maximum the student

@@ -6522,7 +6522,7 @@ fn test_has_completed_distinguishes_absent_enrollment_from_incomplete() {
 /// to it exactly as it does to a first enrollment. Before re_enroll() shared
 /// the enrollment guard chain it silently let a full platform take more money.
 #[test]
-#[should_panic(expected = "platform has reached maximum total enrollment capacity")]
+#[should_panic(expected = "Error(Contract, #34)")]
 fn test_re_enroll_rejected_when_platform_enrollment_cap_reached() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -17797,7 +17797,7 @@ fn test_min_review_delay_rejects_values_above_maximum_without_mutation() {
 /// Concurrent mode: a course capped at 2 active seats must reject a third
 /// enrollment while both seats are still active.
 #[test]
-#[should_panic(expected = "course has reached maximum enrollment capacity")]
+#[should_panic(expected = "Error(Contract, #34)")]
 fn test_concurrent_capacity_blocks_enrollment_at_seat_cap() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
         setup();
@@ -17914,7 +17914,7 @@ fn test_concurrent_capacity_seat_freed_on_completion_allows_next_student() {
 /// Default Lifetime mode is unchanged: max_capacity still counts all-time
 /// total enrollments regardless of how many students have completed.
 #[test]
-#[should_panic(expected = "course has reached maximum enrollment capacity")]
+#[should_panic(expected = "Error(Contract, #34)")]
 fn test_lifetime_capacity_default_unchanged_counts_completed_students() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
         setup();
@@ -21210,7 +21210,7 @@ fn test_pending_request_blocks_second_request() {
 /// Concurrent mode: a course capped at 2 active seats must reject a third
 /// enrollment while both seats are still active.
 #[test]
-#[should_panic(expected = "course has reached maximum enrollment capacity")]
+#[should_panic(expected = "Error(Contract, #34)")]
 fn test_concurrent_capacity_blocks_enrollment_at_seat_cap() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
         setup();
@@ -21327,7 +21327,7 @@ fn test_concurrent_capacity_seat_freed_on_completion_allows_next_student() {
 /// Default Lifetime mode is unchanged: max_capacity still counts all-time
 /// total enrollments regardless of how many students have completed.
 #[test]
-#[should_panic(expected = "course has reached maximum enrollment capacity")]
+#[should_panic(expected = "Error(Contract, #34)")]
 fn test_lifetime_capacity_default_unchanged_counts_completed_students() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) =
         setup();
