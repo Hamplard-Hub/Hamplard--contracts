@@ -6095,6 +6095,8 @@ impl HamplardContract {
             .instance()
             .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
             .filter(|p| env.ledger().sequence() < p.effective_ledger)
+    }
+
     /// Apply a matured pending treasury update and emit `treasury_activated`.
     ///
     /// This function is **permissionless** — any caller may invoke it once
