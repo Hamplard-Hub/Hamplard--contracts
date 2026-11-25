@@ -21976,3 +21976,94 @@ fn test_platform_fees_collected_tracks_enrollments_and_refunds() {
 
     assert_eq!(client.get_platform_fees_collected(&token_id), fee_one);
 }
+
+// Regression coverage for #669: approval checks precede token calls, and
+// refund debits renew persistent reserve storage at the TTL threshold.
+#[test]
+fn test_refund_reserve_approved_funding_accumulates() {
+    let (env, contract_id, token_id, _admin, _sec_admin, funder, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    token::StellarAssetClient::new(&env, &token_id).mint(&funder, &1_000);
+    client.fund_refund_reserve(&funder, &token_id, &400);
+    client.fund_refund_reserve(&funder, &token_id, &600);
+    assert_eq!(client.get_refund_reserve(&token_id), 1_000);
+    assert_eq!(token::Client::new(&env, &token_id).balance(&funder), 0);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&contract_id),
+        1_000
+    );
+}
+
+#[test]
+fn test_refund_reserve_rejects_unapproved_before_token_call() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, funder, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    // This address has no token contract: reaching transfer would yield a host
+    // error instead of the precise whitelist error asserted below.
+    let unapproved = Address::generate(&env);
+    assert_eq!(
+        client.try_fund_refund_reserve(&funder, &unapproved, &1),
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            HamplardError::TokenNotApproved as u32,
+        )))
+    );
+    assert_eq!(client.get_refund_reserve(&unapproved), 0);
+}
+
+#[test]
+fn test_refund_reserve_removed_token_preserves_balances() {
+    let (env, contract_id, token_id, admin, _sec_admin, funder, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    token::StellarAssetClient::new(&env, &token_id).mint(&funder, &1_000);
+    client.fund_refund_reserve(&funder, &token_id, &400);
+    client.remove_approved_token(&admin, &token_id);
+    assert_eq!(
+        client.try_fund_refund_reserve(&funder, &token_id, &600),
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            HamplardError::TokenNotApproved as u32,
+        )))
+    );
+    assert_eq!(client.get_refund_reserve(&token_id), 400);
+    assert_eq!(token::Client::new(&env, &token_id).balance(&funder), 600);
+    assert_eq!(
+        token::Client::new(&env, &token_id).balance(&contract_id),
+        400
+    );
+}
+
+#[test]
+fn test_refund_reserve_debit_renews_ttl_at_threshold() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    for remaining in [0i128, 100] {
+        let price = 1_000_000_000;
+        let (env, contract_id, token_id, admin, _sec_admin, _treasury, _instructor, student) =
+            setup_pending_refund(price);
+        let client = HamplardContractClient::new(&env, &contract_id);
+        let fee = price * 20 / 100;
+        fund_refund_reserve_for_test(&env, &client, &token_id, fee + remaining);
+        let key = DataKey2::RefundReserve(token_id.clone());
+        let initial_ttl =
+            env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+        let advance = initial_ttl - HamplardContract::PERSISTENT_TTL_THRESHOLD;
+        env.ledger()
+            .with_mut(|ledger| ledger.sequence_number += advance);
+        assert_eq!(
+            env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key)),
+            HamplardContract::PERSISTENT_TTL_THRESHOLD
+        );
+        client.process_refund(
+            &admin,
+            &student,
+            &String::from_str(&env, "COURSE-RESERVE"),
+            &true,
+            &None,
+        );
+        assert_eq!(client.get_refund_reserve(&token_id), remaining);
+        assert_eq!(token::Client::new(&env, &token_id).balance(&student), price);
+        assert_eq!(
+            env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key)),
+            HamplardContract::PERSISTENT_TTL_EXTEND_TO
+        );
+    }
+}
