@@ -1757,9 +1757,6 @@ impl HamplardContract {
             panic!("max courses per instructor must be greater than zero");
         }
 
-        let course_count_key = DataKey::InstructorCourseCount(instructor.clone());
-        let current_count: u32 = env.storage().instance().get(&course_count_key).unwrap_or(0);
-
         if current_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
@@ -5293,6 +5290,12 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
+        // Archived courses are immutable — reject before any write so the
+        // archived record is never promoted back to active storage.
+        if course.status == CourseStatus::Archived {
+            soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
+        }
+
         // #361 — Guard against a price change between the price the student
         // approved and execution: revert before any payment is attempted when
         // the current price exceeds the student's stated maximum.
@@ -6309,6 +6312,9 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
+        if new_max == old_max {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+        }
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -7427,10 +7433,7 @@ impl HamplardContract {
 
     /// Get the number of courses an instructor has registered.
     pub fn get_instructor_course_count(env: Env, instructor: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::InstructorCourseCount(instructor))
-            .unwrap_or(0)
+        Self::read_instructor_course_count(&env, &instructor)
     }
 
     /// Get the ordered list of course IDs an instructor has registered.
