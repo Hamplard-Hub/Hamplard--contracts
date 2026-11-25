@@ -670,7 +670,7 @@ make optimize   # → target/wasm32v1-none/release/hamplard.optimized.wasm
 
 ```bash
 cd contracts/hamplard
-export STELLAR_ACCOUNT=my-account
+export STELLAR_ACCOUNT=my-account # Must resolve to ADMIN_ADDRESS; it signs __constructor
 export ADMIN_ADDRESS=<ADMIN_ADDRESS>
 export SECONDARY_ADMIN_ADDRESS=<SECONDARY_ADMIN_ADDRESS>
 export TREASURY_ADDRESS=<TREASURY_ADDRESS>
@@ -684,7 +684,8 @@ make -C contracts/hamplard deploy-testnet
 
 ### Deploy and initialize manually with `stellar contract deploy`
 
-Run the following from `contracts/hamplard`:
+Run the following from `contracts/hamplard`. `--source` must resolve to the
+`ADMIN_ADDRESS`, which authorizes the constructor:
 
 ```bash
 stellar contract deploy \
