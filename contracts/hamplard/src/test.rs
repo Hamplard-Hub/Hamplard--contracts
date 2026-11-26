@@ -19652,7 +19652,7 @@ fn test_targeted_auth_transfer_course_requires_instructor_and_admin() {
         &env,
         &client,
         &contract_id,
-        &[&instructor, &admin],
+        &[&instructor, &admin, &new_instructor],
         "transfer_course",
         (
             instructor.clone(),
@@ -19663,7 +19663,10 @@ fn test_targeted_auth_transfer_course_requires_instructor_and_admin() {
         transfer_course(&instructor, &admin, &course_id, &new_instructor)
     );
 
-    assert_only_auths(&env, &[instructor.clone(), admin.clone()]);
+    assert_only_auths(
+        &env,
+        &[instructor.clone(), admin.clone(), new_instructor.clone()],
+    );
     assert_eq!(
         client.get_course(&course_id).unwrap().instructor,
         new_instructor
