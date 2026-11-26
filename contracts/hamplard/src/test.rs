@@ -4151,7 +4151,7 @@ fn test_is_token_approved_returns_true_after_add() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let new_token = Address::generate(&env);
+    let new_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     assert!(!client.is_token_approved(&new_token));
 
     client.add_approved_token(&admin, &new_token);
@@ -4163,7 +4163,7 @@ fn test_is_token_approved_returns_false_after_remove() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let new_token = Address::generate(&env);
+    let new_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     client.add_approved_token(&admin, &new_token);
     assert!(client.is_token_approved(&new_token));
 
@@ -4177,7 +4177,7 @@ fn test_get_approved_tokens_reflects_add_and_remove() {
     let client = HamplardContractClient::new(&env, &contract_id);
 
     // token_id was whitelisted by setup() — it should appear in the list
-    let extra_token = Address::generate(&env);
+    let extra_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     client.add_approved_token(&admin, &extra_token);
 
     let list = client.get_approved_tokens(&admin);
@@ -4197,7 +4197,7 @@ fn test_add_approved_token_idempotent() {
     let (env, contract_id, _token_id, admin, _sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    let new_token = Address::generate(&env);
+    let new_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     client.add_approved_token(&admin, &new_token);
     client.add_approved_token(&admin, &new_token); // second call is a no-op
 
