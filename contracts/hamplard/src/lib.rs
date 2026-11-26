@@ -7649,24 +7649,6 @@ impl HamplardContract {
         Self::persist(env, &DataKey::Course(course_id.clone()), course);
     }
 
-    fn is_moderator(env: &Env, caller: &Address) -> bool {
-        if let Some(moderator) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Moderator)
-        {
-            moderator == *caller
-        } else {
-            false
-        }
-    }
-
-    fn require_moderator_or_admin(env: &Env, caller: &Address, _op: &str) {
-        if !Self::is_admin(env, caller) && !Self::is_moderator(env, caller) {
-            panic!("unauthorized");
-        }
-    }
-
     fn read_course_stats(env: &Env, course_id: &String, course: &Course) -> CourseStats {
         env.storage()
             .persistent()
@@ -7894,6 +7876,33 @@ impl HamplardContract {
     fn is_admin(env: &Env, caller: &Address) -> bool {
         let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
         admin.map(|a| a == *caller).unwrap_or(false)
+    }
+
+    fn is_moderator(env: &Env, caller: &Address) -> bool {
+        let moderator: Option<Address> = env.storage().instance().get(&DataKey::Moderator);
+        moderator.map(|m| m == *caller).unwrap_or(false)
+    }
+
+    fn require_moderator_or_admin(env: &Env, caller: &Address, _operation: &str) {
+        let is_admin = Self::is_admin(env, caller);
+        let is_moderator = Self::is_moderator(env, caller);
+        if !is_admin && !is_moderator {
+            soroban_sdk::panic_with_error!(env, Error::Unauthorized);
+        }
+
+        if is_moderator {
+            return;
+        }
+
+        if let Some(expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::AdminExpiresAt)
+        {
+            if env.ledger().sequence() >= expires_at {
+                soroban_sdk::panic_with_error!(env, Error::AdminExpired);
+            }
+        }
     }
 
     /// Check if an address is an approved approver
