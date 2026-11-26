@@ -5312,7 +5312,7 @@ fn test_get_certificate_status_expired() {
 }
 
 #[test]
-fn test_get_certificate_status_revoked_takes_precedence_over_expired() {
+fn test_get_certificate_status_expired_before_pending_revocation() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -5355,16 +5355,24 @@ fn test_get_certificate_status_revoked_takes_precedence_over_expired() {
     let cert = client.get_certificate(&admin, &cert_id);
     let deadline = cert.revocation_deadline.unwrap();
 
-    // Advance past both expiry and revocation deadline
+    // The certificate is expired, but its revocation challenge period is still pending.
     env.ledger().with_mut(|l| {
-        l.sequence_number = deadline.max(expiry_ledger) + 1;
+        l.sequence_number = expiry_ledger;
     });
 
     assert_eq!(
         client.get_certificate_status(&cert_id),
-        CertificateStatus::Revoked
+        CertificateStatus::Expired
     );
     assert!(!client.verify_certificate(&cert_id));
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline + 1;
+    });
+    assert_eq!(
+        client.get_certificate_status(&cert_id),
+        CertificateStatus::Expired
+    );
 }
 
 #[test]
@@ -10272,9 +10280,9 @@ fn test_admin_operations_succeed_before_expiry() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Set admin expiry 1000 ledgers in the future
+    // Set admin expiry one minimum recovery window in the future.
     let current_ledger = env.ledger().sequence();
-    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 1000));
+    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 17_280));
 
     // Admin operations should succeed before expiry
     client.update_default_fee(&admin, &25u32);
@@ -10287,13 +10295,13 @@ fn test_admin_operations_blocked_after_expiry() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Set admin expiry 10 ledgers in the future
+    // Set admin expiry one minimum recovery window in the future.
     let current_ledger = env.ledger().sequence();
-    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 10));
+    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 17_280));
 
     // Advance ledger past expiry
     env.ledger().with_mut(|l| {
-        l.sequence_number += 11;
+        l.sequence_number += 17_281;
     });
 
     // Admin operations should be blocked after expiry
@@ -10307,8 +10315,8 @@ fn test_remove_admin_expiry() {
 
     // Set admin expiry
     let current_ledger = env.ledger().sequence();
-    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 10));
-    assert_eq!(client.get_admin_expiry(), Some(current_ledger + 10));
+    client.set_admin_expiry(&admin, &sec_admin, &Some(current_ledger + 17_280));
+    assert_eq!(client.get_admin_expiry(), Some(current_ledger + 17_280));
 
     // Remove expiry
     client.set_admin_expiry(&admin, &sec_admin, &None);
@@ -11454,8 +11462,8 @@ fn test_set_upgrade_timelock_authorized() {
     let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    client.set_upgrade_timelock(&admin, &sec_admin, &500u32);
-    assert_eq!(client.get_upgrade_timelock(), 500u32);
+    client.set_upgrade_timelock(&admin, &sec_admin, &20_000u32);
+    assert_eq!(client.get_upgrade_timelock(), 20_000u32);
 }
 
 #[test]
@@ -20345,9 +20353,9 @@ fn test_targeted_auth_multi_admin_entrypoints() {
         (
             admin.clone(),
             sec_admin.clone(),
-            Some(env.ledger().sequence() + 10_000)
+            Some(env.ledger().sequence() + 17_280)
         ),
-        set_admin_expiry(&admin, &sec_admin, &Some(env.ledger().sequence() + 10_000))
+        set_admin_expiry(&admin, &sec_admin, &Some(env.ledger().sequence() + 17_280))
     );
     assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
 
@@ -20357,8 +20365,8 @@ fn test_targeted_auth_multi_admin_entrypoints() {
         &contract_id,
         &[&admin, &sec_admin],
         "set_upgrade_timelock",
-        (admin.clone(), sec_admin.clone(), 50u32),
-        set_upgrade_timelock(&admin, &sec_admin, &50u32)
+        (admin.clone(), sec_admin.clone(), 20_000u32),
+        set_upgrade_timelock(&admin, &sec_admin, &20_000u32)
     );
     assert_only_auths(&env, &[admin.clone(), sec_admin.clone()]);
 
@@ -23001,7 +23009,7 @@ fn test_expired_admin_cannot_approve_course() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let course_id = String::from_str(&env, "COURSE-ADMIN-EXPIRED");
-    let expiry = env.ledger().sequence() + 10;
+    let expiry = env.ledger().sequence() + 17_280;
 
     client.set_admin_expiry(&admin, &sec_admin, &Some(expiry));
     env.ledger().with_mut(|l| {
@@ -23055,4 +23063,93 @@ fn test_debit_arbitration_fees_held_isolated() {
         instructor_lifetime_before,
         "arbitration resolution must not alter instructor lifetime earnings"
     );
+}
+
+#[test]
+fn test_course_id_keeps_caller_casing_and_spaces() {
+    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let course_id = String::from_str(&env, "ABC 101");
+
+    let registered_id = client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+
+    assert_eq!(registered_id, course_id);
+    assert!(client.get_course(&course_id).is_some());
+}
+
+#[test]
+#[should_panic]
+fn test_admin_expiry_rejects_too_short_a_recovery_window() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_admin_expiry(&admin, &sec_admin, &Some(env.ledger().sequence() + 1));
+}
+
+#[test]
+#[should_panic]
+fn test_admin_expiry_rejects_delay_above_maximum() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_admin_expiry(
+        &admin,
+        &sec_admin,
+        &Some(env.ledger().sequence() + 1_000_001),
+    );
+}
+
+#[test]
+fn test_expired_admin_pair_can_recover_through_transfer() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let expiry = env.ledger().sequence() + 17_280;
+    client.set_admin_expiry(&admin, &sec_admin, &Some(expiry));
+
+    env.ledger().with_mut(|ledger| ledger.sequence_number = expiry);
+
+    let new_admin = Address::generate(&env);
+    let new_sec_admin = Address::generate(&env);
+    client.transfer_admin(&admin, &sec_admin, &new_admin, &new_sec_admin);
+    client.accept_admin(&new_admin, &new_sec_admin);
+
+    assert_eq!(client.get_admin_expiry(), None);
+    client.update_default_fee(&new_admin, &25u32);
+    assert_eq!(client.get_platform_fee(&new_admin), 25);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_timelock_rejects_zero() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_upgrade_timelock(&admin, &sec_admin, &0u32);
+}
+
+#[test]
+fn test_upgrade_timelock_accepts_minimum_review_window() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_upgrade_timelock(&admin, &sec_admin, &17_280u32);
+    assert_eq!(client.get_upgrade_timelock(), 17_280);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_timelock_rejects_value_above_maximum() {
+    let (env, contract_id, _token_id, admin, sec_admin, _treasury, _instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    client.set_upgrade_timelock(&admin, &sec_admin, &1_000_001u32);
 }

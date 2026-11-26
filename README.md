@@ -157,7 +157,7 @@ This keeps the contract small, cheap to call, and focused on what blockchains ar
 
 ```rust
 pub struct Course {
-    pub id: String,                              // matches backend DB record ID
+    pub id: String,                              // case-sensitive; stored as supplied
     pub instructor: Address,                     // lead instructor
     pub price: i128,                             // enrollment price in token stroops
     pub platform_fee_percent: u32,               // 0-100 snapshot; 0 follows live fee config
@@ -343,8 +343,8 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` | Both admins | Propose a new admin pair |
 | `accept_admin(new_admin, new_secondary_admin)` | Both new admins | Accept the proposed admin pair |
 | `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update; rejected while another is pending (`cancel_treasury_update` first) |
-| `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger |
-| `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency sweep limited to surplus after instructor earnings, arbitration fees, and refund reserves |
+| `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger (17,280–1,000,000 ledgers ahead) |
+| `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency token sweep |
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
 | `update_default_fee`, `update_max_courses_limit`, `update_refund_window` | Admin | Global parameters |
 | `block_student` / `unblock_student`, `freeze_instructor` / `unfreeze_instructor` | Admin | Moderation controls |
@@ -743,8 +743,9 @@ stellar contract invoke \
 
 - **Authorization**: Every write function calls `require_auth()` on the relevant party. Instructors cannot approve their own courses. Students cannot issue their own certificates. Only admins can revoke certificates.
 - **Dual-admin model**: The contract is initialised with two distinct admin addresses — `admin` and `secondary_admin` — so there is no single-address point of failure. Sensitive operations require **both** admin signatures (`require_multi_admin`): `archive_course`, `withdraw_tokens`, `update_treasury`, `transfer_admin`, `set_admin_expiry`, and the contract upgrade functions (`propose_upgrade`, `cancel_upgrade`, `upgrade_contract`, `set_upgrade_timelock`). Routine operations (approving courses, issuing certificates, fee configuration) need only one admin.
-- **Two-step admin transfer with cooldown and expiry**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A proposal expires `ADMIN_PROPOSAL_VALIDITY_LEDGERS` (17,280 ledgers, ~1 day) after it is made — an expired proposal is rejected and cleared, so keys compromised later cannot be activated. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `__constructor` also enforces that admin, secondary admin, and treasury are all distinct addresses.
-- **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` sets a ledger sequence after which every admin operation panics with "admin role has expired" — a dead-man's switch that can be read via `get_admin_expiry()` and cleared by passing `None`.
+- **Two-step admin transfer with cooldown**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `__constructor` also enforces that admin, secondary admin, and treasury are all distinct addresses.
+- **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` accepts expiry values 17,280–1,000,000 ledgers ahead. After expiry, the existing pair may still recover by proposing a two-step admin transfer; accepting the new pair clears the old expiry.
+- **Upgrade time-lock**: `set_upgrade_timelock` accepts delays of 17,280–1,000,000 ledgers, preserving a minimum review window while bounding accidental misconfiguration.
 - **Scoped approvers**: Admins can delegate course moderation via `add_approver` / `remove_approver`. Approvers may approve and reject courses, but have no access to treasury, fee, or admin-transfer functions — and unlike the admin role, approver authority does not expire.
 - **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` reverses it. Frozen instructors cannot operate while the platform keeps student funds safe.
 - **Student blocklist**: `block_student` bans an address from enrolling in any course or self-approving a refund; `unblock_student` lifts the ban.
