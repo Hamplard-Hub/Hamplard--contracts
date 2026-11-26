@@ -8808,9 +8808,8 @@ impl HamplardContract {
     /// Get the current risk fee configuration.
     ///
     /// Returns the stored configuration, or the default configuration when
-    /// none has been set. Risk scoring and fee deduction only apply a stored
-    /// configuration; an unset configuration yields no surcharge even though
-    /// this getter returns defaults.
+    /// none has been set. Risk scoring and fee deduction use this same value,
+    /// so quotes and charges always agree.
     pub fn get_risk_fee_config(env: Env) -> RiskFeeConfig {
         Self::risk_fee_config(&env)
     }
@@ -8853,7 +8852,7 @@ impl HamplardContract {
     /// - `payment_amount` — the payment amount in stroops
     ///
     /// Returns a `RiskScore` with score (0-100) and surcharge_bps to add.
-    /// Disabled risk pricing or a missing stored `RiskFeeConfig` yields zero.
+    /// Disabled risk pricing yields zero; otherwise the stored or default config applies.
     pub fn calculate_risk_score(
         env: Env,
         student: Address,
