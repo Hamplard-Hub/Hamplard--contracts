@@ -1,387 +1,70 @@
-//! Contract version and source metadata are exposed via `contractmeta!`
-//! (readable with `stellar contract info meta`) and the `version()` entrypoint.
+//! # Hamplard — On-chain course enrollment, payments, and certificates
 //!
+//! Hamplard is a Soroban contract for course registration, enrollment payments,
+//! certificates, and refund processing. Course records and payment state live
+//! on-chain; course content and student progress remain off-chain.
+//!
+//! ## Roles and authorization
+//!
+//! - **Admins:** administer courses, platform configuration, certificates,
+//!   refunds, treasury updates, and upgrades. Operations marked as multi-sig
+//!   require both the primary and secondary admins.
+//! - **Approvers and moderators:** perform the approval and moderation actions
+//!   granted to them; they cannot use admin-only fund or configuration methods.
+//! - **Instructors:** register and manage their courses and withdraw their
+//!   accumulated earnings.
+//! - **Students:** enroll, request or cancel refunds, claim eligible refunds,
+//!   and use other student self-service methods.
+//! - **Treasury:** receives platform fees and is otherwise a passive recipient.
+//!
+//! ## Enrollment payments and instructor earnings
+//!
+//! On enrollment, the contract transfers the course price from the student,
+//! sends the platform-fee share to the effective treasury, and credits the
+//! remaining instructor share to on-chain instructor earnings. Instructor
+//! revenue is pull-based: an instructor must call `withdraw_earnings` or
+//! `withdraw_all_earnings` to transfer accumulated earnings. Co-instructor
+//! shares are recorded and accounted for from that instructor portion.
+//!
+//! ## Refund lifecycle
+//!
+//! Refunds have three related paths:
+//!
+//! 1. `request_refund` lets an eligible student create a pending request
+//!    within the configured refund window.
+//! 2. `process_refund` lets an admin approve or reject a pending request.
+//!    Approval applies the refund; rejection moves the request to `Rejected`
+//!    without moving funds.
+//! 3. `claim_refund` lets the requesting student approve their own pending
+//!    request after its recorded processing deadline has elapsed.
+//!
+//! `archive_course` is a separate multi-admin operation. When archiving a
+//! paused course, admins may provide a list of incomplete enrollments to refund.
+//! It can therefore issue refunds without a preceding request, while the
+//! request-based paths remain available for ordinary student refunds. Refunds
+//! use the enrollment's recorded payment split; the platform portion is funded
+//! from the refund reserve and the instructor portion from contract-held
+//! instructor earnings. Completed enrollments are not refundable.
+//!
+//! ## Treasury updates
+//!
+//! `update_treasury` schedules a new treasury address, which becomes effective
+//! after `TREASURY_UPDATE_DELAY_LEDGERS` (17,280 ledgers, approximately one
+//! day at five seconds per ledger). `finalize_treasury_update` is
+//! permissionless and applies a matured update on-chain.
+//!
+//! ## Contract metadata
+//!
+//! The deployed contract includes its version and this repository URL in
+//! `contractmeta!` metadata so operators can identify the source of a Wasm
+//! build.
+//!
+//! ## Public limitations
+//!
+//! Course content delivery, course quality, token price risk, and other
+//! off-chain concerns are not enforced by this contract.
 #![allow(clippy::too_many_arguments)]
-//! # Hamplard Contract — Security Model
-//!
-//! ## Trust Hierarchy
-//!
-//! | Role              | Who                        | Capabilities                                                                 |
-//! |-------------------|----------------------------|------------------------------------------------------------------------------|
-//! | Admin             | `DataKey::Admin`           | Single-admin operations below; co-signs every multi-sig operation            |
-//! | Secondary Admin   | `DataKey::SecondaryAdmin`  | Required alongside Admin for multi-sig operations                            |
-//! | Approver          | `DataKey::Approver(addr)`  | Approve or reject pending courses (granted by an admin)                      |
-//! | Instructor        | Course `instructor` field  | Register courses, manage own courses, withdraw earnings, co-sign transfers   |
-//! | Co-instructor     | `Course::co_instructors`   | Passive revenue share; no privileged entrypoint is callable by this role     |
-//! | Student           | Any caller                 | Enroll, request refunds, challenge revocations, escalate disputes, waitlist  |
-//! | Treasury          | `DataKey::Treasury`        | Passive recipient of the platform fee share; cannot initiate any action      |
-//!
-//! ## Privileged Operations — Admin (single signature)
-//! Each entrypoint below calls `require_auth()` on, and checks, the stored Admin
-//! (unless an explicit alternative signer is noted). Admin-expiry checks apply.
-//! ## Privileged Operations (single admin)
-//! - `approve_course` — moves a course from Pending to Active
-//! - `transfer_course` — co-approves an instructor-initiated course ownership transfer
-//! - `mark_completed` — marks a student enrollment as completed (blocked students cannot proceed) — moderator or admin
-//! - `issue_certificate` — mints an on-chain certificate of completion (blocked students cannot proceed)
-//! - `revoke_certificate` — flags a certificate as revoked (remains on-chain for audit)
-//! - `process_refund` — approves a pending refund; if the enrollment already has a
-//!   certificate issued, the certificate is revoked with reason `REFUNDED` and a
-//!   `certificate_revoked` event is emitted, so no refunded enrollment can leave
-//!   behind a certificate that verifies as valid. Refund requests are rejected for
-//!   free (price 0) enrollments, since there is no economic value to refund.
-//! - `bulk_revoke_course_certificates` — flags a bounded page of a course's certificates for revocation
-//! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
-//! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
-//! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
-//! - `set_platform_enrollment_cap` — sets the maximum number of concurrent active
-//!   enrollments. The new cap must be greater than or equal to the current
-//!   `TotalActiveEnrollments`; values below the current total are rejected with
-//!   "cap below active enrollments" so the admin cannot silently halt all
-//!   enrollment. On success the new cap is emitted alongside the current total
-//!   via the `platform_enrollment_cap_set` event for off-chain visibility.
-//! - `block_student` / `unblock_student` — bans or unbans a student from the platform
-//! - `block_student` / `unblock_student` — bans or unbans a student from the platform — moderator or admin
-//! - `get_platform_fee` — retrieves platform fee configuration (admin only)
-//! - `get_treasury` / `get_pending_treasury` — public views of the effective treasury and any scheduled update
-//! - `update_content_hash` — updates the content commitment hash for a course (admin or instructor)
-//!
-//! - `__constructor` — one-time atomic bootstrap at deployment; writes the admin pair,
-//!   treasury, fee, refund window and revocation challenge period
-//! - `set_high_value_course_threshold` — sets the price above which course
-//!   approval needs two different admins/approvers
-//! - `pause_platform` / `unpause_platform` — halt or restore all enrollments
-//! - `update_default_fee` — update the global platform fee
-//! - `add_approved_token` / `remove_approved_token` / `set_token_btc_eth` —
-//!   manage the accepted-token allowlist and BTC/ETH risk classification
-//! - `update_max_courses_limit` — cap courses per instructor
-//! - `freeze_instructor` / `unfreeze_instructor` — freeze an instructor (also
-//!   pauses their courses) or lift the freeze
-//! - `add_approver` / `remove_approver` — grant or revoke course-approval rights
-//! - `block_student` / `unblock_student` — ban or unban a student platform-wide
-//! - `set_platform_enrollment_cap` — cap total active enrollments platform-wide
-//! - `update_min_review_delay` — minimum ledgers between registration and approval
-//! - `update_min_completion_ledgers` — default minimum ledgers before completion
-//! - `update_refund_window` — refund-request window in ledgers
-//! - `set_revocation_challenge_period` — challenge window for certificate revocations
-//! - `process_refund` — approve or reject a pending refund request; the
-//!   instructor share is debited from the lead instructor and every co-instructor
-//!   in the same proportions credited at enrollment
-//! - `resolve_arbitration` — resolve an open arbitration case for the student or
-//!   instructor
-//! - `set_fee_config` — per-token platform fee in basis points
-//! - `set_arbitration_fee_config` — arbitration fee per case
-//! - `set_risk_config_enabled` / `set_risk_fee_config` — risk-surcharge pricing
-//! - `mark_completed` — mark an enrollment complete; the student must also sign
-//!   when `evidence_hash` is `None` (blocked students cannot proceed)
-//! - `issue_certificate` — mint an on-chain certificate (blocked students cannot
-//!   proceed)
-//! - `revoke_certificate` — flag a certificate as revoked; revocation remains
-//!   challengeable until `revocation_deadline`
-//! - `bulk_revoke_course_certificates` — revoke a page of a course's certificates; continue with the returned offset
-//! - `get_platform_fee` / `get_all_instructors` / `get_instructor_count` —
-//!   admin-only read queries
-//!
-//! ## Privileged Operations — Admin or Approver
-//! - `approve_course` — Pending → Active; high-value courses require two
-//!   different admins/approvers to sign separate calls
-//! - `reject_course` — Pending → Rejected
-//!
-//! ## Privileged Operations — Lead Instructor or Admin
-//! Each accepts a single `caller` that must be the course's lead instructor or
-//! the Admin, and must sign.
-//!
-//! - `set_enrollment_start_ledger` — optional ledger when enrollment opens
-//! - `pause_course` / `unpause_course` — pause or restore the course
-//! - `update_course` — update price and/or capacity
-//! - `clear_course_max_capacity` — remove the capacity cap
-//! - `set_enrollment_expiry` — optional per-enrollment expiry duration
-//! - `set_course_expiry` — optional course expiry ledger
-//! - `set_prerequisite_courses` — required prior course IDs
-//! - `update_content_hash` — update the off-chain content commitment
-//! - `set_max_certificates` — cap certificate issuance for the course
-//! - `set_co_instructors` — configure co-instructors and basis-point shares;
-//!   total shares cannot exceed 10 000 bps and the split is locked after the
-//!   first enrollment
-//!
-//! ## Privileged Operations — Instructor only
-//! - `register_course` — the instructor registers the course and must sign
-//! - `withdraw_earnings` — the instructor withdraws their own accumulated
-//!   earnings and must sign
-//!
-//! ## Privileged Operations — Multi-sig (Admin + Secondary Admin)
-//! Every entrypoint below requires `require_auth()` on, and the stored values
-//! of, both admins. Admin-expiry checks apply.
-//!
-//! - `withdraw_tokens` — emergency sweep of contract-held tokens
-//! - `archive_course` — permanent course removal; optionally refunds students
-//! - `transfer_admin` — proposes a new admin pair (they must call `accept_admin`)
-//! - `update_treasury` — schedules a new treasury address (takes effect after
-//!   100 ledgers)
-//! - `set_admin_expiry` — sets or clears the admin-role expiry ledger
-//! - `propose_upgrade` / `cancel_upgrade` / `upgrade_contract` /
-//!   `set_upgrade_timelock` — time-locked contract code upgrade; see
-//!   "Contract Upgrades" below
-//!
-//! ## Privileged Operations — Two-party or conditional signatures
-//! - `transfer_course` — the current lead instructor **and** the Admin must both
-//!   sign
-//! - `accept_admin` — the new Admin **and** new Secondary Admin must both sign
-//! - `get_enrollment` / `get_enrollment_history` / `get_certificate` — the
-//!   caller must sign and be the student, the course instructor, or the Admin
-//!
-//! ## Student Self-service Operations
-//! These are user-gated rather than admin-privileged; the student must sign.
-//!
-//! - `enroll` / `batch_enroll` / `re_enroll` — pay and enroll (blocked students
-//!   and frozen instructors are rejected)
-//! - `request_refund` — request a refund inside the configured window
-//! - `challenge_revocation` — challenge a pending certificate revocation
-//! - `escalate_to_arbitration` — open an arbitration case and pay its fee
-//! - `join_waitlist` / `leave_waitlist` — manage a capacity waitlist
-//! ## Privileged Operations (multi-sig — both Admin + Secondary Admin required)
-//! - `withdraw_tokens` — emergency sweep of contract-held tokens (both admins required)
-//! - `archive_course` — permanent course removal; may trigger student refunds
-//! - `transfer_admin` — proposes a new admin pair (new admins must then call `accept_admin`)
-//! - `update_treasury` — schedules a new treasury address (takes effect after 100 ledgers)
-//! - `finalize_treasury_update` — permissionless call that applies a matured pending treasury
-//!   update immediately and emits `treasury_activated`
-//! - `update_treasury` — schedules a new treasury address (takes effect after `TREASURY_UPDATE_DELAY_LEDGERS` ledgers)
-//! - `set_admin_expiry` — sets a ledger sequence when the admin role expires (blocks all admin operations)
-//! - `propose_upgrade` / `upgrade_contract` / `cancel_upgrade` — time-locked contract code
-//!   upgrade; see "Contract Upgrades" below
-//!
-//! ## Moderator Role
-//! - `set_moderator` — sets the moderator address (admin only)
-//! - The moderator may NOT approve or reject courses; that is an approver
-//!   privilege (see `add_approver`).
-//! - The moderator may NOT move funds (`withdraw_tokens`, `process_refund`,
-//!   `archive_course`) or change configuration (`update_default_fee`,
-//!   `set_fee_config`, `add_approved_token`, `transfer_admin`, etc.).
-//!
-//! ## Approver Role
-//! - `add_approver` / `remove_approver` — grants or revokes the approver role (admin only)
-//! - Approvers (and admins) may call `approve_course` and `reject_course`.
-//! - `block_student`, `unblock_student`, and `mark_completed` require admin;
-//!   approvers and moderators may not call these.
-//!
-//! ## Student Blocking Policy
-//! - `block_student()` called by the admin prevents a student from:
-//!   - Enrolling in new courses via `enroll()` / `batch_enroll()` / `re_enroll()`
-//!   - Marking an existing enrollment as completed via `mark_completed()`
-//!   - Receiving a certificate via `issue_certificate()`
-//!   - Requesting or receiving refunds via `request_refund()` / `process_refund()`
-//! - Blocking is global and applies indefinitely until `unblock_student()` is called
-//! - Blocking does not retroactively revoke already-issued certificates; only forward-looking actions are blocked
-//! - A blocked student's existing enrollments are frozen: they cannot transition to Completed status
-//!   and therefore cannot receive certificates for that work.
-//!
-//! ## Admin Expiry Policy
-//! - `set_admin_expiry()` called by both admins sets a ledger sequence at which the admin role expires
-//! - Once the current ledger sequence reaches or exceeds the expiry value:
-//!   - All single-admin operations (`approve_course`, `block_student`, `issue_certificate`, etc.)
-//!     automatically fail with "admin role has expired"
-//!   - All multi-admin operations (`archive_course`, `transfer_admin`, `set_admin_expiry`, etc.)
-//!     automatically fail with "admin role has expired"
-//!   - The only recovery is for the expired admins to call `transfer_admin()` to nominate a new pair,
-//!     and the new pair calls `accept_admin()` — this resets the admin expiry to None
-//! - Expiry may be cleared by calling `set_admin_expiry()` with `None` before it takes effect
-//!
-//! ## Payment Guarantees
-//! - On enrollment the full course price is transferred from the student atomically.
-//!   The platform fee is computed by `deduct_fee()` and forwarded to the treasury
-//!   address immediately; the remaining instructor share is held inside the contract
-//!   and credited to `DataKey::InstructorEarnings` for pull-based withdrawal.
-//! - Fees are charged in **basis points**, not percent. The base rate comes from the
-//!   per-token `FeeConfig(token)` (set via `set_fee_config`), falling back to
-//!   `DefaultFee` converted to bps when no per-token override exists. A course's
-//!   explicit registration-time `platform_fee_percent` acts only as a floor on the
-//!   live per-token rate.
-//! - When risk pricing is enabled (`set_risk_config_enabled` + `set_risk_fee_config`),
-//!   `deduct_fee()` adds risk surcharges in bps for large payments, new customers,
-//!   and BTC/ETH-denominated tokens, capped at 10000 bps (100%).
-//! - Fee arithmetic uses integer basis points: `platform_fee = amount * effective_bps / 10000`.
-//! - On enrollment the full course price is transferred from the student atomically:
-//!   the effective platform fee is forwarded to the treasury address immediately;
-//!   the remaining instructor share is held inside the contract and credited to
-//!   `DataKey::InstructorEarnings` for pull-based withdrawal.
-//! - Revenue split uses integer arithmetic: `platform_amount = price * fee_bps / 10000`.
-//!   Any remainder (from integer truncation) stays with the instructor share.
-//! - The contract does **not** escrow student funds beyond the enrollment transaction;
-//!   post-enrollment refunds require an admin-approved refund request or an
-//!   admin-initiated archive with an explicit refund list.
-//!   post-enrollment refunds require admin-initiated archiving with an explicit refund list.
-//! - The platform-fee share of a refund is paid from a contract-held **refund reserve**
-//!   (`fund_refund_reserve` / `get_refund_reserve`), not from the treasury account, so
-//!   `process_refund` and `archive_course` need only the admin signature(s). The treasury
-//!   (or anyone) tops the reserve up in a separate, self-signed call; a refund that
-//!   exceeds the reserve panics with "insufficient refund reserve".
-//!
-//! ## What This Contract Does NOT Protect Against
-//! - **Off-chain content access** — the contract cannot enforce that a student actually
-//!   receives course materials after enrolling; content delivery is the backend's responsibility.
-//! - **Course quality or accuracy** — admin approval is a policy gate only; the contract
-//!   does not validate course content or instructor qualifications.
-//! - **Instructor insolvency** — if the instructor's earnings balance is insufficient for a
-//!   refund (e.g. concurrent withdrawals), the refund is still processed: the
-//!   instructor's available balance is debited in full and the platform treasury
-//!   covers the remaining shortfall (partial clawback with platform top-up). This
-//!   guarantees refunds can never be blocked by a co-instructor withdrawing early.
-//!   The shortfall is emitted via the `refund_shortfall_covered` event for audit.
-//! - **Token price risk** — payment amounts are fixed in token stroops at enrollment time;
-//!   the contract makes no exchange-rate or price guarantees.
-//! - **Front-running** — enrollment order is determined by ledger sequence; the contract
-//!   does not prevent two students from enrolling in the last seat simultaneously on
-//!   different nodes (Soroban consensus resolves ordering).
-//! - **Admin key compromise** — a compromised admin key can approve courses, issue
-//!   certificates, and withdraw contract tokens. Key rotation requires the two-step
-//!   `transfer_admin` / `accept_admin` flow with both current admins signing. Admin expiry
-//!   enforces that both admins must cooperate for critical operations; a single compromised
-//!   key cannot bypass the expiry check once it takes effect.
-//! - **Treasury update delay** — `update_treasury` takes effect 17,280 ledgers (~1 day) after proposal;
-//!   enrollments submitted within that window still route fees to the old treasury.
-//!   Call `finalize_treasury_update()` (permissionless) at or after the effective ledger to
-//!   apply the pending update on-chain and emit a `treasury_activated` event so indexers
-//!   can observe the exact ledger of the switch.
-//!
-//! ## Contract Upgrades
-//! - The contract can migrate to a new Wasm implementation in place, preserving all
-//!   enrollment, certificate, and course data — no redeploy or data loss required to
-//!   ship a fix.
-//! - Upgrades are two-step and time-locked: `propose_upgrade` (both admins) records the
-//!   new Wasm hash and starts a `get_upgrade_timelock()`-ledger review window (default
-//!   ~1 day); `upgrade_contract` (both admins) executes it only after that window has
-//!   elapsed. `cancel_upgrade` withdraws a pending proposal at any time.
-//! - A compromised single admin key cannot upgrade the contract — both admin signatures
-//!   are required for every step, and the time-lock gives observers a chance to react to
-//!   a malicious proposal before it can take effect.
-
 #![no_std]
-
-//! # Hamplard — On-Chain Course Enrollment, Payments & Certificates on Stellar Soroban
-//!
-//! Hamplard is an online learning platform for practical vocational skills. This contract handles
-//! the trustless financial and credential layer: course enrollment payments, automatic instructor
-//! revenue splits, on-chain certificates of completion, and admin-initiated refunds.
-//!
-//! ## Overview
-//!
-//! The contract supports four core responsibilities:
-//!
-//! **1. Course Registry**
-//! Instructors register courses on-chain with a price and fee structure. Each course starts as
-//! `Pending` — an admin must approve it before students can enroll. This gives the platform
-//! moderation control without being able to move anyone's funds.
-//!
-//! **2. Enrollment Payments**
-//! When a student enrolls, the contract automatically splits the payment in a single transaction:
-//! - Platform fee → treasury address
-//! - Instructor share → instructor address directly
-//!
-//! No escrow needed — the payment splits and lands in both wallets immediately. The contract
-//! records the enrollment so no student can enroll twice.
-//!
-//! **3. On-Chain Certificates**
-//! After a student completes a course (verified off-chain by the backend), the admin issues
-//! an on-chain certificate. Each certificate is a permanent, verifiable record tied to the
-//! student's Stellar address and the course. Anyone can verify a certificate by querying
-//! `verify_certificate(certificate_id)` — no trusted middleman needed. Certificates can be
-//! revoked by the admin if issued in error.
-//!
-//! **4. Refunds**
-//! Both admins can jointly issue refunds by archiving a course and specifying which students
-//! to refund. Refunds return the full enrollment amount to students with incomplete enrollments.
-//! This provides dispute resolution and quality control mechanisms without requiring a time window.
-//!
-//! ## Refund Mechanisms
-//!
-//! ### Admin-Initiated Refunds (via `archive_course`)
-//!
-//! This is the only refund mechanism in Hamplard. Both admins must jointly sign the transaction.
-//!
-//! **How It Works:**
-//! - Admin calls `archive_course(admin1, admin2, course_id, students_to_refund)`
-//! - The course must be in `Paused` status (safety check to prevent accidental refunds)
-//! - For each student in the refund list:
-//!   - If enrollment exists and is **incomplete** (`completed == false`):
-//!     - Platform's fee share is refunded from the treasury
-//!     - Instructor's share is refunded from the instructor's account
-//!     - Full enrollment amount is returned to the student
-//!     - Enrollment record is deleted from the contract
-//!   - Completed enrollments are **not** refunded (certificate already issued)
-//! - Course is archived permanently
-//! - Active enrollments count must reach zero before archiving succeeds
-//!
-//! **Refund Window:**
-//! There is no time-based refund window. Refunds can be initiated at any point in the course lifecycle:
-//! - During the course (if students want to drop out)
-//! - After the course ends (if issues with content or instruction arise)
-//! - Long after enrollment (if disputes need resolution)
-//!
-//! The flexibility allows admins to handle real-world situations: disappearing instructors,
-//! poor course quality, student dissatisfaction, and other dispute scenarios.
-//!
-//! **Authorization & Safety:**
-//! - **Multi-signature requirement**: Both the primary admin and secondary admin must sign.
-//!   This prevents a single compromised or rogue admin from unilaterally draining instructor
-//!   funds through unauthorized refunds.
-//! - **Course state check**: The course must be `Paused` before archiving, ensuring the refund
-//!   action is intentional and coordinated, not accidental.
-//! - **Incomplete-only**: Only students who haven't completed the course are refunded. Completed
-//!   students keep their certificates and their money is treated as earned instructor revenue.
-//!
-//! **Example Scenario:**
-//! ```text
-//! Course: COURSE-BAKING-101 (price: 100 USDC, 20% platform fee)
-//! Enrollments: student_a (incomplete), student_b (incomplete), student_c (completed)
-//! Instructor disappears mid-course; students complain.
-//!
-//! Steps:
-//! 1. Admin calls: pause_course(COURSE-BAKING-101)
-//! 2. Admin calls: archive_course(admin1, admin2, COURSE-BAKING-101, [student_a, student_b])
-//!
-//! Results:
-//! - student_a receives 100 USDC (20 USDC from treasury, 80 USDC from instructor)
-//! - student_b receives 100 USDC (20 USDC from treasury, 80 USDC from instructor)
-//! - student_c keeps their certificate; no refund issued (already completed)
-//! - Course is now Archived
-//! ```
-//!
-//! ## Roles & Permissions
-//!
-//! | Role | Signature Required | Permissions |
-//! |------|---|---|
-//! | **Admin (Primary)** | Yes (on eligible operations) | Approve/archive courses, mark completions, issue/revoke certificates, update fees; must co-sign with secondary admin for admin transfers, treasury updates, and refunds |
-//! | **Secondary Admin** | Yes (on eligible operations) | Co-signer for admin transfers, treasury updates, and refunds; must approve/sign alongside primary admin |
-//! | **Instructor** | Yes | Register courses, pause/unpause their own courses |
-//! | **Student** | Yes | Enroll in active courses |
-//! | **Treasury** | No | Receives platform fee share (passive recipient only) |
-//!
-//! ## Data & State
-//!
-//! The contract stores:
-//! - **Course records**: ID, instructor, price, fee structure, enrollment counts, status
-//! - **Enrollment records**: Student address, course ID, amount paid, completion status, certificate issuance flag
-//! - **Certificate records**: Certificate ID, student, course, title, instructor, issuance/revocation metadata
-//! - **Admin addresses**: Primary and secondary admin for authorization checks
-//! - **Platform configuration**: Treasury address, default fee percentage, whitelisted token addresses
-//!
-//! Everything else (course descriptions, lessons, assignments, student progress, user profiles)
-//! lives off-chain in the backend database.
-//!
-//! ## Events
-//!
-//! The contract emits events for off-chain indexing:
-//! - `course_registered`: Instructor registers a course
-//! - `course_approved`: Admin approves a course for enrollment
-//! - `course_paused` / `course_unpaused`: Course lifecycle changes
-//! - `course_archived`: Course is archived (with or without refunds)
-//! - `student_enrolled`: Student enrolls and pays
-//! - `course_completed`: Admin marks a course as completed for a student
-//! - `certificate_issued`: Certificate is issued to a student
-//! - `certificate_revoked`: Certificate is revoked
-//! - `admin_transferred`: Admin pair is rotated; data is
-//!   `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)`
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
@@ -464,7 +147,7 @@ impl From<Error> for soroban_sdk::Error {
 // Embed version and source metadata into the deployed Wasm so operators can
 // identify which build is live after an upgrade.
 soroban_sdk::contractmeta!(key = "version", val = "0.1.0");
-soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamplard");
+soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/Hamplard-Hub/Hamplard--contracts");
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
