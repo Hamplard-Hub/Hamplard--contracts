@@ -30,7 +30,7 @@
 //!   `certificate_revoked` event is emitted, so no refunded enrollment can leave
 //!   behind a certificate that verifies as valid. Refund requests are rejected for
 //!   free (price 0) enrollments, since there is no economic value to refund.
-//! - `bulk_revoke_course_certificates` — flags every certificate of a course as revoked in one transaction
+//! - `bulk_revoke_course_certificates` — flags a bounded page of a course's certificates for revocation
 //! - `pause_platform` / `unpause_platform` — halts or restores all enrollments
 //! - `add_approved_token` / `remove_approved_token` — controls which token contracts are accepted
 //! - `update_default_fee` / `update_max_courses_limit` — updates global parameters
@@ -78,7 +78,7 @@
 //!   proceed)
 //! - `revoke_certificate` — flag a certificate as revoked; revocation remains
 //!   challengeable until `revocation_deadline`
-//! - `bulk_revoke_course_certificates` — revoke every certificate of a course
+//! - `bulk_revoke_course_certificates` — revoke a page of a course's certificates; continue with the returned offset
 //! - `get_platform_fee` / `get_all_instructors` / `get_instructor_count` —
 //!   admin-only read queries
 //!
@@ -5218,8 +5218,7 @@ impl HamplardContract {
         Self::apply_revocation(&env, &admin, &certificate_id, &reason);
     }
 
-    /// Admin revokes every certificate issued for a single course in one
-    /// atomic transaction.
+    /// Admin revokes a page of certificates issued for a single course.
     ///
     /// Used when a course as a whole is found to be fraudulent or its content
     /// invalid: instead of calling `revoke_certificate()` once per graduate —
@@ -5229,16 +5228,25 @@ impl HamplardContract {
     /// Each certificate receives exactly the same pending-revocation semantics
     /// as `revoke_certificate()`: the holder keeps the standard challenge
     /// period and may call `challenge_revocation()` to dispute it. Certificates
-    /// that are already revoked are skipped, so the call is safe to retry and
-    /// a partially-revoked course can still be completed later.
+    /// that are already revoked are skipped, so the call is safe to retry.
+    /// `limit` is clamped to `MAX_PAGE_SIZE`; continue from the returned offset
+    /// until it reaches the indexed certificate count.
     ///
     /// # Arguments
     /// - `admin`     — must match stored admin
-    /// - `course_id` — the course whose certificates should all be revoked
+    /// - `course_id` — the course whose certificates should be revoked
+    /// - `offset`    — zero-based index of the first certificate to process
+    /// - `limit`     — requested page size; must be positive and is clamped
     ///
     /// # Returns
-    /// The number of certificates newly marked for revocation.
-    pub fn bulk_revoke_course_certificates(env: Env, admin: Address, course_id: String) -> u32 {
+    /// A tuple of the number newly marked for revocation and the next offset.
+    pub fn bulk_revoke_course_certificates(
+        env: Env,
+        admin: Address,
+        course_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> (u32, u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "bulk_revoke_course_certificates");
         env.storage()
@@ -5258,13 +5266,21 @@ impl HamplardContract {
         if certificate_ids.is_empty() {
             soroban_sdk::panic_with_error!(&env, Error::CertificateError);
         }
+        if limit == 0 {
+            soroban_sdk::panic_with_error!(&env, Error::CertificateError);
+        }
+
+        let total = certificate_ids.len();
+        let end = offset
+            .saturating_add(limit.min(Self::MAX_PAGE_SIZE))
+            .min(total);
 
         // One fixed reason code keeps the bulk path auditable and lets
         // off-chain indexers tell bulk revocations apart from targeted ones.
         let reason = String::from_str(&env, "BULK_COURSE_REVOCATION");
         let mut revoked_count: u32 = 0;
 
-        for i in 0..certificate_ids.len() {
+        for i in offset.min(total)..end {
             let certificate_id = certificate_ids.get(i).unwrap();
             if Self::apply_revocation(&env, &admin, &certificate_id, &reason) {
                 revoked_count = revoked_count.checked_add(1).unwrap_or_else(|| {
@@ -5281,7 +5297,7 @@ impl HamplardContract {
             (admin, course_id, revoked_count, env.ledger().sequence()),
         );
 
-        revoked_count
+        (revoked_count, end)
     }
 
     /// Apply a pending revocation to a single certificate.

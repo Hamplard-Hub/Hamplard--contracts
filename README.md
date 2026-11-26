@@ -319,7 +319,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `issue_certificate(admin, student, course_id, certificate_id, course_title, enrollment_reference, expires_at_ledger, instructor_signature)` | Admin | Issue an on-chain certificate after completion |
 | `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; it becomes permanent after the challenge period |
 | `challenge_revocation(student, certificate_id)` | Certificate holder | Cancel a pending revocation before its deadline |
-| `bulk_revoke_course_certificates(admin, course_id)` | Admin | Revoke every certificate of a course |
+| `bulk_revoke_course_certificates(admin, course_id, offset, limit)` | Admin | Revoke a page of course certificates; returns `(newly_revoked, next_offset)`, with at most 50 processed per call |
 
 ### Arbitration, waitlists, and risk configuration
 
@@ -496,7 +496,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
 | `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
-| `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
+| `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | Certificates in a bulk-revocation page processed |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 | `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 | `refund_processed`            | `(student, course_id, approved, admin, refund_amount, platform_amount, instructor_amount, ledger)` | Refund request approved or rejected by admin |

@@ -383,7 +383,7 @@ fn test_bulk_revoke_frees_slots_under_max_certificates() {
     // Bulk-revoke all certificates for the course.
     fixture
         .contract
-        .bulk_revoke_course_certificates(&fixture.admin, &fixture.course_id);
+        .bulk_revoke_course_certificates(&fixture.admin, &fixture.course_id, &0u32, &50u32);
 
     let course = fixture
         .contract
