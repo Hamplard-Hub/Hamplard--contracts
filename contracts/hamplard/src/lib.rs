@@ -7194,7 +7194,10 @@ impl HamplardContract {
             instructor_refund,
         }
     }
-    /// Top up the refund reserve for `token`.
+
+    /// Top up the refund reserve for an approved `token`.
+    ///
+    /// Rejects unapproved tokens before any token contract call.
     ///
     /// Platform fees are forwarded to the treasury at enrollment, so refunding
     /// the platform-fee share needs funds the contract itself holds. The
@@ -7207,6 +7210,10 @@ impl HamplardContract {
             panic!("refund reserve amount must be greater than zero");
         }
 
+        if !Self::is_token_approved(env.clone(), token.clone()) {
+            soroban_sdk::panic_with_error!(&env, HamplardError::TokenNotApproved);
+        }
+
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&funder, &env.current_contract_address(), &amount);
 
@@ -7215,12 +7222,7 @@ impl HamplardContract {
         let new_balance = balance
             .checked_add(amount)
             .unwrap_or_else(|| panic!("refund reserve overflow"));
-        env.storage().persistent().set(&key, &new_balance);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
+        Self::persist(&env, &key, &new_balance);
 
         env.events().publish(
             (Symbol::new(&env, "refund_reserve_funded"), token),
@@ -7292,7 +7294,7 @@ impl HamplardContract {
         if balance < amount {
             panic!("insufficient refund reserve");
         }
-        env.storage().persistent().set(&key, &(balance - amount));
+        Self::persist(env, &key, &(balance - amount));
         token::Client::new(env, token).transfer(&env.current_contract_address(), student, &amount);
         Self::decrement_platform_fees_collected(env, token, amount);
     }
