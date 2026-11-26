@@ -2719,6 +2719,12 @@ impl HamplardContract {
         if course.status == CourseStatus::Archived {
             soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
         }
+        // A rejected course has no live listing to update; changing its terms
+        // or bumping its version would emit a misleading course_updated event.
+        // Re-submission creates a new course record instead (#386).
+        if course.status == CourseStatus::Rejected {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotActive);
+        }
 
         // Snapshot the values that may change so the event can carry a diff.
         let old_price = course.price;

@@ -13714,6 +13714,29 @@ fn test_update_course_rejects_archived_course() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_update_course_rejects_rejected_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let course_id = String::from_str(&env, "COURSE-UPDATE-REJECTED");
+    client.register_course(
+        &instructor,
+        &course_id,
+        &100_000_000i128,
+        &token_id,
+        &0u32,
+        &None,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(&env),
+    );
+    client.reject_course(&admin, &course_id, &String::from_str(&env, "policy"));
+
+    // Rejected courses must not have their price changed or version bumped (#386).
+    client.update_course(&instructor, &course_id, &Some(200_000_000i128), &None, &None);
+}
+
+#[test]
 #[should_panic(expected = "instructor is frozen")]
 fn test_update_course_rejects_frozen_instructor() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
