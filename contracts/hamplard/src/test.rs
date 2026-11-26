@@ -2233,6 +2233,45 @@ fn test_instructor_stats_track_re_enrollment() {
 }
 
 #[test]
+fn test_instructor_stats_count_paid_and_free_enrollments_once() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let paid_student = Address::generate(&env);
+    let free_student = Address::generate(&env);
+    let batch_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&paid_student, &100_000_000_000);
+    token::StellarAssetClient::new(&env, &token_id).mint(&batch_student, &100_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-PAID-STATS",
+        100_000_000,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FREE-STATS",
+        0,
+    );
+
+    client.enroll(&paid_student, &String::from_str(&env, "COURSE-PAID-STATS"), &i128::MAX);
+    client.enroll(&free_student, &String::from_str(&env, "COURSE-FREE-STATS"), &i128::MAX);
+    let mut batch_courses = Vec::new(&env);
+    batch_courses.push_back(String::from_str(&env, "COURSE-PAID-STATS"));
+    batch_courses.push_back(String::from_str(&env, "COURSE-FREE-STATS"));
+    client.batch_enroll(&batch_student, &batch_courses, &i128::MAX);
+
+    assert_eq!(client.get_instructor_stats(&instructor).total_students, 4);
+}
+
+#[test]
 fn test_instructor_lifetime_earnings_are_token_scoped() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
@@ -16761,12 +16800,34 @@ fn test_claim_refund_after_deadline_succeeds() {
     env.mock_all_auths_allowing_non_root_auth();
     client.claim_refund(&student, &course_id);
 
+    let (
+        event_student,
+        event_course_id,
+        event_amount,
+        event_platform,
+        event_instructor,
+        _event_ledger,
+    ): (Address, String, i128, i128, i128, u32) =
+        last_event_val(&env, &contract_id, "refund_issued")
+            .try_into_val(&env)
+            .unwrap();
+    assert_eq!(event_student, student);
+    assert_eq!(event_course_id, course_id);
+    assert_eq!(event_amount, 1_000_000_000);
+    assert_eq!(event_platform + event_instructor, event_amount);
+
     let final_balance = token::Client::new(&env, &token_id).balance(&student);
     assert_eq!(final_balance - initial_balance, 1_000_000_000);
     assert!(!client.is_enrolled(&student, &course_id));
 
     let request = client.get_refund_request(&student, &course_id).unwrap();
     assert_eq!(request.status, RefundStatus::Approved);
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.total_enrollments, 0);
+    assert_eq!(course.refund_count, 1);
+    assert_eq!(course.total_refunded, 1_000_000_000);
+
 }
 
 #[test]
