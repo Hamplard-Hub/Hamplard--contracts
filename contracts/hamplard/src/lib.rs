@@ -7705,7 +7705,6 @@ impl HamplardContract {
         EnrollmentStatus::None
     }
 
-    /// Check whether a student has completed a course
     /// Check whether a student has completed a course.
     ///
     /// Returns:
