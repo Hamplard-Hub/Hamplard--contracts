@@ -317,6 +317,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 |---|---|---|
 | `mark_completed(admin, student, course_id, evidence_hash)` | Admin (+ student when `evidence_hash` is `None`) | Mark an enrollment completed |
 | `issue_certificate(admin, student, course_id, certificate_id, course_title, enrollment_reference, expires_at_ledger, instructor_signature)` | Admin | Issue an on-chain certificate after completion |
+| `renew_certificate(admin, certificate_id, new_expiry)` | Admin | Extend the expiry of a non-revoked certificate; emits `certificate_renewed` |
 | `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; it becomes permanent after the challenge period |
 | `challenge_revocation(student, certificate_id)` | Certificate holder | Cancel a pending revocation before its deadline |
 | `bulk_revoke_course_certificates(admin, course_id, offset, limit)` | Admin | Revoke a page of course certificates; returns `(newly_revoked, next_offset)`, with at most 50 processed per call |
@@ -495,7 +496,7 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_archived`             | `course_id`                                 | Course archived                           |
 | `student_enrolled` | `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)` | Student enrolls and pays (single canonical enrollment event) |
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
-| `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
+| `certificate_issued`          | `(certificate_id, student, course_id, admin, issued_at_ledger, instructor, expires_at_ledger)` | Certificate issued |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | Certificates in a bulk-revocation page processed |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |

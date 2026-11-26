@@ -1211,6 +1211,7 @@ fn test_certificate_issued_event_contains_full_issuance_details() {
         &Some(evidence_hash(&env, "completion-proof")),
     );
 
+    let expiry = env.ledger().sequence() + 1_000;
     client.issue_certificate(
         &admin,
         &student,
@@ -1218,7 +1219,7 @@ fn test_certificate_issued_event_contains_full_issuance_details() {
         &certificate_id,
         &String::from_str(&env, "Certificate Event Course"),
         &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-EVENT-001"),
-        &None,
+        &Some(expiry),
         &None,
     );
 
@@ -1238,15 +1239,19 @@ fn test_certificate_issued_event_contains_full_issuance_details() {
         let event_certificate_id: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
         assert_eq!(event_certificate_id, certificate_id);
 
-        let (event_student, event_course_id, event_admin, event_ledger): (
+        let (event_student, event_course_id, event_admin, event_ledger, event_instructor, event_expiry): (
             Address,
             String,
             Address,
             u32,
+            Address,
+            Option<u32>,
         ) = data.try_into_val(&env).unwrap();
         assert_eq!(event_student, student);
         assert_eq!(event_course_id, course_id);
         assert_eq!(event_admin, admin);
+        assert_eq!(event_instructor, instructor);
+        assert_eq!(event_expiry, Some(expiry));
 
         let certificate = client.get_certificate(&student, &certificate_id);
         assert_eq!(event_ledger, certificate.issued_at_ledger);
@@ -22335,4 +22340,148 @@ fn test_verify_certificate_for_checks_ownership_and_validity() {
     assert!(client.verify_certificate_for(&cert_id, &student));
     assert!(!client.verify_certificate_for(&cert_id, &other));
     assert!(!client.verify_certificate_for(&String::from_str(&env, "MISSING"), &student));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #31)")]
+fn test_issue_certificate_rejects_blocked_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-BLOCKED",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-BLOCKED");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof_blocked")),
+    );
+
+    // Completion predates the ban; issuance must still be rejected (#417).
+    client.block_student(&admin, &student, &String::from_str(&env, "MISCONDUCT"));
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &String::from_str(&env, "CERT-BLOCKED"),
+        &String::from_str(&env, "Blocked Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-BLOCKED"),
+        &None,
+        &None,
+    );
+}
+
+#[test]
+fn test_renew_certificate_extends_expiry_and_emits_event() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-RENEW",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-RENEW");
+    let cert_id = String::from_str(&env, "CERT-RENEW");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof_renew")),
+    );
+    let first_expiry = env.ledger().sequence() + 100;
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Renewable Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-RENEW"),
+        &Some(first_expiry),
+        &None,
+    );
+
+    let new_expiry = first_expiry + 500;
+    client.renew_certificate(&admin, &cert_id, &new_expiry);
+    assert_eq!(
+        client.get_certificate(&student, &cert_id).expires_at_ledger,
+        Some(new_expiry)
+    );
+
+    let renewed = env.events().all().iter().any(|(contract, topics, data)| {
+        if contract != contract_id {
+            return false;
+        }
+        let name: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if name != Symbol::new(&env, "certificate_renewed") {
+            return false;
+        }
+        let (event_id, _, event_expiry, _): (String, Address, u32, u32) =
+            data.try_into_val(&env).unwrap();
+        event_id == cert_id && event_expiry == new_expiry
+    });
+    assert!(renewed, "certificate_renewed event expected");
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #44)")]
+fn test_renew_certificate_rejects_revoked_certificate() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &1_000_000_000);
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-CERT-RENEW-REVOKED",
+        100_000_000,
+    );
+    let course_id = String::from_str(&env, "COURSE-CERT-RENEW-REVOKED");
+    let cert_id = String::from_str(&env, "CERT-RENEW-REVOKED");
+    client.enroll(&student, &course_id, &i128::MAX);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(evidence_hash(&env, "proof_revoked_renew")),
+    );
+    let expiry = env.ledger().sequence() + 100;
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Revoked Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-CERT-RENEW-REVOKED"),
+        &Some(expiry),
+        &None,
+    );
+    client.revoke_certificate(&admin, &cert_id, &String::from_str(&env, "ERROR"));
+
+    client.renew_certificate(&admin, &cert_id, &(expiry + 500));
 }

@@ -51,7 +51,7 @@ compliance. The slot layout follows the canonical schema above.
 | 2 | `course_archived` | `(course_id, admin1, admin2, ledger_seq)` |
 | 3 | `batch_enrolled` | `(student, course_ids, total_paid, ledger_seq)` |
 | 4 | `course_completed` | `(course_id, student, admin, completion_ledger)` |
-| 5 | `certificate_issued` | `(certificate_id, student, course_id, admin, issued_at_ledger)` |
+| 5 | `certificate_issued` | `(certificate_id, student, course_id, admin, issued_at_ledger, instructor, expires_at_ledger)` |
 | 6 | `platform_paused` | `(admin, ledger_seq)` |
 | 7 | `platform_unpaused` | `(admin, ledger_seq)` |
 | 8 | `tokens_withdrawn` | `(admin1, admin2, token, amount, destination, ledger_seq)` |
