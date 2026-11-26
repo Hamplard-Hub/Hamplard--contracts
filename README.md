@@ -86,7 +86,7 @@ The instructor share stays in the contract until each recipient calls `withdraw_
 Enrollment is **price-protected**: `enroll()`, `batch_enroll()` and `re_enroll()` take a `max_price` argument, and the call reverts if the course's current price is higher. A student therefore can never be charged more than the price they saw when they signed, even if an instructor changes the price between the quote and execution.
 
 **3. On-Chain Certificates**
-After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent, verifiable record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. Certificates can be revoked by the admin if issued in error, subject to a challenge window.
+After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. An admin revocation has a challenge window. A holder's challenge records a dispute but does not cancel the revocation; verification remains false until an admin resolves the dispute by overturning or upholding it.
 
 > **Keeping Certificates Live (TTL):** Certificate entries are stored in Soroban persistent storage with an initial TTL of ~6.3M ledgers (~1 year). Read-only RPC simulations of `verify_certificate(certificate_id)` do not persist TTL extensions on-chain. To prevent archival, anyone (verifiers, students, issuers, or keeper bots) can call the permissionless `extend_certificate_ttl(certificate_id)` entrypoint on-chain to renew a certificate's TTL, or submit `verify_certificate(certificate_id)` as an on-chain transaction (which also extends the TTL for valid certificates).
 
@@ -254,7 +254,7 @@ pub struct Certificate {
 | `TreasuryUpdate` | Pending treasury address plus its effective ledger |
 | `PendingUpgrade` | Proposed Wasm hash and upgrade time-lock ledger |
 | `InstructorStats` | Aggregate students, completions, and certificates per instructor |
-| `PausedBy` | Role or instructor-freeze state responsible for a course pause |
+| `CertificateStatus` | Public verification state: `NotFound`, `Valid`, `Disputed`, `Revoked`, or `Expired` |
 
 ### `CourseStatus` state machine
 
@@ -320,10 +320,10 @@ Initialises the contract atomically at deployment time. The admin must sign.
 |---|---|---|
 | `mark_completed(admin, student, course_id, evidence_hash)` | Admin (+ student when `evidence_hash` is `None`) | Mark an enrollment completed |
 | `issue_certificate(admin, student, course_id, certificate_id, course_title, enrollment_reference, expires_at_ledger, instructor_signature)` | Admin | Issue an on-chain certificate after completion |
-| `renew_certificate(admin, certificate_id, new_expiry)` | Admin | Extend the expiry of a non-revoked certificate; emits `certificate_renewed` |
-| `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; it becomes permanent after the challenge period |
-| `challenge_revocation(student, certificate_id)` | Certificate holder | Cancel a pending revocation before its deadline |
-| `bulk_revoke_course_certificates(admin, course_id, offset, limit)` | Admin | Revoke a page of course certificates; returns `(newly_revoked, next_offset)`, with at most 50 processed per call |
+| `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; an unchallenged revocation becomes permanent after the challenge period |
+| `challenge_revocation(student, certificate_id)` | Certificate holder | Record a dispute before the deadline; the certificate remains unverifiable pending admin review |
+| `resolve_revocation_challenge(admin, certificate_id, uphold_revocation)` | Admin | Uphold the revocation or overturn it and restore the certificate |
+| `bulk_revoke_course_certificates(admin, course_id)` | Admin | Revoke every certificate of a course |
 
 ### Arbitration, waitlists, and risk configuration
 
@@ -358,10 +358,10 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `get_enrollment(caller, student, course_id)` | `Enrollment` (student, course instructor, or admin only) |
 | `quote_enrollment(course_id, student)` | `(price, platform_fee, instructor_share)` using the current enrollment fee calculation |
 | `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
+| `get_certificate_status(certificate_id)` | `CertificateStatus` — reports whether the certificate is valid, disputed, revoked, expired, or missing |
 | `is_enrolled(student, course_id)` | `bool` |
 | `has_completed(student, course_id)` | `Option<bool>` |
-| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired (extends TTL when called on-chain for a valid cert) |
-| `verify_certificate_for(certificate_id, student)` | `bool` — true only if the certificate is valid **and** belongs to `student`; a third party can verify ownership without reading private data or needing auth |
+| `verify_certificate(certificate_id)` | `bool` — true only when the certificate is valid, unexpired, and has no unresolved revocation dispute (extends TTL when called on-chain for a valid cert) |
 | `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
 | `get_platform_fee(admin)` | `u32` — current default fee percentage (admin only) |
 | `get_instructor_earnings(instructor, token)` | `i128` — withdrawable balance |
@@ -484,7 +484,7 @@ stellar contract invoke \
   --certificate_id "CERT-12345-TAILORING"
 ```
 
-Returns `true` if the certificate exists, has not expired, and has not been permanently revoked. A certificate with a pending revocation remains verifiable until its challenge deadline passes. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
+Returns `true` only if the certificate exists, has not expired, and has no unresolved revocation dispute. A certificate with a pending, unchallenged revocation remains verifiable until its challenge deadline passes. Once challenged, it is reported as `Disputed` and cannot be verified until an admin resolves it. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
 
 ---
 
@@ -501,7 +501,9 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
 | `certificate_issued`          | `(certificate_id, student, course_id, admin, issued_at_ledger, instructor, expires_at_ledger)` | Certificate issued |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
-| `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | Certificates in a bulk-revocation page processed |
+| `revocation_challenged`       | `(student, certificate_id, ledger)`          | Certificate holder disputes a revocation  |
+| `revocation_challenge_resolved` | `(admin, uphold_revocation, ledger)`        | Admin resolves a certificate dispute      |
+| `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 | `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 | `refund_processed`            | `(student, course_id, approved, admin, refund_amount, platform_amount, instructor_amount, ledger)` | Refund request approved or rejected by admin |
@@ -571,7 +573,7 @@ Clients should match on `N`; the numeric values are part of the public interface
 | 33 | `InstructorReferenceInvalid` | Invalid instructor reference |
 | 34 | `CourseNotAvailable` | Course is not enrollable (status, timing, capacity, token, or cap) |
 | 35 | `AlreadyEnrolled` | Student is already enrolled |
-| 36 | `CircuitBreakerTripped` | Repeated payment failures auto-paused the course |
+| 36 | Reserved (`CircuitBreakerTripped`) | Legacy error code retained for compatibility |
 | 37 | `TransferAmountMismatch` | Token transfer delivered an unexpected amount |
 | 38 | `EnrollmentNotFound` | No enrollment exists for the student/course pair |
 | 39 | `EnrollmentStateError` | Completion or enrollment-state transition is invalid |
@@ -753,7 +755,7 @@ stellar contract invoke \
 - **No double enrollment**: The contract checks for an existing enrollment record before processing payment. A student cannot be charged twice for the same course.
 - **Price protection**: `enroll()`, `batch_enroll()` and `re_enroll()` require a `max_price` and revert if the course's current price exceeds it, so a price change between a student's quote and execution cannot charge them more than they approved.
 - **Atomic payment split**: Both the platform and instructor transfers happen in the same transaction. There is no intermediate escrow that could be exploited.
-- **Certificate immutability**: Revoked certificates are flagged — not deleted. This preserves the audit trail and prevents a revocation from being hidden. Revocation is permanent only after the challenge period elapses.
+- **Certificate immutability**: Revoked certificates are flagged — not deleted. This preserves the audit trail and prevents a revocation from being hidden. An unchallenged revocation becomes permanent after the challenge period; a challenged revocation stays disputed until an admin resolves it.
 - **Fee validation**: Platform fee percentage is validated to be ≤ 100 at both `__constructor` and `register_course` time.
 - **Event schema stability**: Event topics and data layouts are part of the public interface. Off-chain indexers must be updated in lockstep with any contract change to the events table above.
 
