@@ -1214,6 +1214,8 @@ pub enum DataKey2 {
     PendingCoInstructorList(String),
     /// Hot enrollment and earnings counters for a course.
     CourseStats(String),
+    /// Ledger sequence at which a pending admin transfer proposal expires (#427).
+    PendingAdminExpiresAt,
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1346,6 +1348,11 @@ impl HamplardContract {
     /// `transfer_admin()` calls. Prevents rapid admin key rotation
     /// after a compromise (~17,280 ledgers ≈ 1 day at 5s/ledger). (#176)
     const MIN_ADMIN_TRANSFER_COOLDOWN: u32 = 17_280;
+    /// How long a pending admin transfer stays acceptable (~17,280 ledgers ≈ 1 day
+    /// at 5s/ledger). After this window `accept_admin()` rejects the stale
+    /// proposal and clears it, so compromised keys nominated long ago cannot be
+    /// activated later. (#427)
+    pub const ADMIN_PROPOSAL_VALIDITY_LEDGERS: u32 = 17_280;
     /// Time-lock delay in ledger sequences before a proposed treasury address
     /// change takes effect (~17,280 ledgers ≈ 1 day at 5s/ledger).
     /// Gives monitors and admins sufficient time to detect and react to a
@@ -5696,6 +5703,13 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&DataKey::PendingSecondaryAdmin, &new_secondary_admin);
+        // #427 — the proposal must be accepted within a bounded window.
+        env.storage().instance().set(
+            &DataKey2::PendingAdminExpiresAt,
+            &(current_ledger
+                .checked_add(Self::ADMIN_PROPOSAL_VALIDITY_LEDGERS)
+                .unwrap_or(u32::MAX)),
+        );
 
         env.events().publish(
             (Symbol::new(&env, "admin_proposed"), new_admin.clone()),
@@ -5731,6 +5745,26 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::InvalidAdminConfig);
         }
 
+        // #427 — a stale proposal (e.g. to keys compromised later) must not be
+        // activatable years after it was made. Expire it and clear the pending
+        // state so the current admins can propose a fresh pair.
+        if let Some(expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey2, u32>(&DataKey2::PendingAdminExpiresAt)
+        {
+            if env.ledger().sequence() >= expires_at {
+                env.storage().instance().remove(&DataKey::PendingAdmin);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::PendingSecondaryAdmin);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey2::PendingAdminExpiresAt);
+                soroban_sdk::panic_with_error!(&env, Error::AdminExpired);
+            }
+        }
+
         let previous_admin: Address = env
             .storage()
             .instance()
@@ -5753,6 +5787,9 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey::PendingSecondaryAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey2::PendingAdminExpiresAt);
 
         // Clear the admin expiry when new admins take over
         // This ensures the new admin pair starts fresh without inheriting
@@ -7792,13 +7829,11 @@ impl HamplardContract {
                 _ => return CertificateStatus::Revoked,
             }
         }
-
         if let Some(expiry) = cert.expires_at_ledger {
             if env.ledger().sequence() >= expiry {
                 return CertificateStatus::Expired;
             }
         }
-
         CertificateStatus::Valid
     }
 
@@ -7810,6 +7845,30 @@ impl HamplardContract {
     /// the challenge period expires.
     pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
         Self::get_certificate_status(env, certificate_id) == CertificateStatus::Valid
+    }
+
+    /// Verify both the validity and the ownership of a certificate without
+    /// returning any private certificate data (#420).
+    ///
+    /// A third party can use this to confirm that a presented certificate is
+    /// valid *and* belongs to the student presenting it, without the auth that
+    /// `get_certificate()` requires. Returns `false` for unknown, revoked,
+    /// expired or mismatched certificates.
+    pub fn verify_certificate_for(
+        env: Env,
+        certificate_id: String,
+        student: Address,
+    ) -> bool {
+        let key = DataKey::Certificate(certificate_id.clone());
+        let Some(cert) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Certificate>(&key)
+        else {
+            return false;
+        };
+        cert.student == student
+            && Self::get_certificate_status(env, certificate_id) == CertificateStatus::Valid
     }
 
     /// Permissionlessly extend the persistent storage TTL of an existing
