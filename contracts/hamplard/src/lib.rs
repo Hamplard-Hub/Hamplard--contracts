@@ -9123,6 +9123,11 @@ impl HamplardContract {
     }
 
     /// Get the current risk fee configuration.
+    ///
+    /// Returns the stored configuration, or the default configuration when
+    /// none has been set. Risk scoring and fee deduction only apply a stored
+    /// configuration; an unset configuration yields no surcharge even though
+    /// this getter returns defaults.
     pub fn get_risk_fee_config(env: Env) -> RiskFeeConfig {
         Self::risk_fee_config(&env)
     }
@@ -9154,6 +9159,7 @@ impl HamplardContract {
     /// - `payment_amount` — the payment amount in stroops
     ///
     /// Returns a `RiskScore` with score (0-100) and surcharge_bps to add.
+    /// Disabled risk pricing or a missing stored `RiskFeeConfig` yields zero.
     pub fn calculate_risk_score(
         env: Env,
         student: Address,
@@ -9220,7 +9226,9 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::RiskConfigEnabled)
             .unwrap_or(false);
-        let config: Option<RiskFeeConfig> = env.storage().instance().get(&DataKey::RiskFeeConfig);
+        // Same config source as `get_risk_fee_config()`: stored override,
+        // otherwise the default, so quotes and charges stay in sync.
+        let config: Option<RiskFeeConfig> = Some(Self::get_risk_fee_config(env.clone()));
 
         let (score, surcharge_bps) = risk_surcharge(
             enabled,
@@ -9229,39 +9237,6 @@ impl HamplardContract {
             is_new_customer,
             is_btc_eth,
         );
-        if !enabled {
-            return RiskScore {
-                score: 0,
-                surcharge_bps: 0,
-            };
-        }
-
-        // Use the same config source as `calculate_risk_score()` /
-        // `get_risk_fee_config()`: a stored override if present, otherwise
-        // the default RiskFeeConfig. This keeps quotes and charges in sync
-        // when risk pricing is enabled without a stored config.
-        let config = Self::get_risk_fee_config(env.clone());
-
-        let mut score: u32 = 0;
-        let mut surcharge_bps: u32 = 0;
-
-        // Large payment surcharge
-        if payment_amount > config.large_payment_threshold {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.large_payment_surcharge_bps);
-        }
-
-        // New customer surcharge
-        if is_new_customer {
-            score = score.saturating_add(40);
-            surcharge_bps = surcharge_bps.saturating_add(config.new_customer_surcharge_bps);
-        }
-
-        // BTC/ETH surcharge
-        if is_btc_eth {
-            score = score.saturating_add(30);
-            surcharge_bps = surcharge_bps.saturating_add(config.btc_eth_surcharge_bps);
-        }
 
         RiskScore {
             score,
@@ -9305,17 +9280,12 @@ impl HamplardContract {
         // Cap at 100% (10000 bps)
         let effective_fee_bps = base_fee_bps.saturating_add(risk_surcharge_bps).min(10000);
 
-        // Compute platform fee: amount * effective_bps / 10000
-        let platform_fee = payment_amount
-            .checked_mul(effective_fee_bps as i128)
-            .map(|v| v / 10000)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
         // Compute platform fee: amount * effective_bps / 10000. Both the
         // quote and the charge use this helper, so overflow always panics
         // with the same message instead of silently quoting a zero fee.
-        let mut platform_fee = Self::compute_fee_amount(payment_amount, effective_fee_bps);
+        let mut platform_fee = Self::compute_fee_amount(env, payment_amount, effective_fee_bps);
         if let Some(override_bps) = course_fee_override_bps {
-            platform_fee = platform_fee.max(Self::compute_fee_amount(payment_amount, override_bps));
+            platform_fee = platform_fee.max(Self::compute_fee_amount(env, payment_amount, override_bps));
         }
 
         RiskFeeApplied {
@@ -9330,11 +9300,11 @@ impl HamplardContract {
     /// Single overflow-checked fee multiplication: `amount * fee_bps / 10000`.
     /// Panicking (rather than falling back to zero) keeps quotes honest: if a
     /// charge cannot be computed, the quote must fail too.
-    fn compute_fee_amount(amount: i128, fee_bps: u32) -> i128 {
+    fn compute_fee_amount(env: &Env, amount: i128, fee_bps: u32) -> i128 {
         amount
             .checked_mul(fee_bps as i128)
             .map(|v| v / 10000)
-            .unwrap_or_else(|| panic!("overflow computing platform fee"))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, Error::ArithmeticOverflow))
     }
 
     /// Compute and deduct the platform fee from a payment amount.
