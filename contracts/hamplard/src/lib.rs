@@ -68,7 +68,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
-    IntoVal, Map, String, Symbol, Val, Vec,
+    IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 /// Stable contract error codes returned by every failure path.
@@ -213,7 +213,7 @@ pub enum DisputeStatus {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct ArbitrationCase {
-    /// Unique case identifier (student address + course_id).
+    /// Globally unique identifier, including the course ID and a contract counter.
     pub case_id: String,
     /// The student / caller who escalated the dispute.
     pub caller: Address,
@@ -944,6 +944,8 @@ pub enum DataKey2 {
     PendingAdminExpiresAt,
     /// Token precision captured once when the token is approved (#705).
     ApprovedTokenDecimals(Address),
+    /// Monotonic counter used to generate unique arbitration case IDs.
+    ArbitrationCaseCounter,
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -8155,6 +8157,25 @@ impl HamplardContract {
         String::from_bytes(env, &digits[..len])
     }
 
+    fn generate_arbitration_case_id(env: &Env, course_id: &String) -> String {
+        let key = DataKey2::ArbitrationCaseCounter;
+        let counter: u32 = env.storage().persistent().get(&key).unwrap_or(1);
+        let next_counter = counter
+            .checked_add(1)
+            .expect("arbitration case ID counter overflow");
+        Self::persist(env, &key, &next_counter);
+
+        let mut bytes = course_id.to_bytes();
+        let separator = String::from_str(env, "-arb-").to_bytes();
+        for byte in separator.iter() {
+            bytes.push_back(byte);
+        }
+        for byte in Self::counter_to_string(env, counter).to_bytes().iter() {
+            bytes.push_back(byte);
+        }
+        String::from_bytes(env, &bytes)
+    }
+
     /// Generate a unique enrollment reference.
     fn generate_enrollment_ref(env: &Env) -> String {
         let key = DataKey::EnrollmentRefCounter;
@@ -8333,6 +8354,77 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&outstanding_key, &new_outstanding);
+    }
+
+    /// Migrate a course record written before newer Course fields were added.
+    ///
+    /// Call once for each course ID after upgrading. Both active and archived
+    /// records are handled; repeating the call for a migrated course is safe.
+    pub fn migrate_course_storage(env: Env, admin: Address, course_id: String) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin, "migrate_course_storage");
+
+        let keys = [
+            DataKey::Course(course_id.clone()),
+            DataKey::ArchivedCourse(course_id.clone()),
+        ];
+        let mut found = false;
+        for key in keys.iter() {
+            if env.storage().persistent().has(key) {
+                found = true;
+                Self::migrate_course_record(&env, key);
+            }
+        }
+        if !found {
+            soroban_sdk::panic_with_error!(&env, Error::CourseNotFound);
+        }
+    }
+
+    fn migrate_course_record(env: &Env, key: &DataKey) {
+        let stored: Val = env
+            .storage()
+            .persistent()
+            .get(key)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+        if Course::try_from_val(env, &stored).is_ok() {
+            return;
+        }
+
+        let mut fields = Map::<Symbol, Val>::try_from_val(env, &stored)
+            .unwrap_or_else(|_| panic!("course record has an unsupported storage layout"));
+        let field = Symbol::new(env, "total_refunded");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, 0i128.into_val(env));
+        }
+        let field = Symbol::new(env, "refund_count");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, 0u32.into_val(env));
+        }
+        let field = Symbol::new(env, "capacity_mode");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, CapacityMode::Lifetime.into_val(env));
+        }
+        let field = Symbol::new(env, "categories");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, Vec::<String>::new(env).into_val(env));
+        }
+        let field = Symbol::new(env, "co_instructors");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, Vec::<CoInstructor>::new(env).into_val(env));
+        }
+        let field = Symbol::new(env, "certificates_revoked");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, 0u32.into_val(env));
+        }
+        let field = Symbol::new(env, "paused_by");
+        if !fields.contains_key(field.clone()) {
+            fields.set(field, PausedBy::None.into_val(env));
+        }
+
+        let stored = fields.into_val(env);
+        let course = Course::try_from_val(env, &stored)
+            .unwrap_or_else(|_| panic!("course record has an unsupported storage layout"));
+        Self::persist(env, key, &course);
     }
 
     /// Read an instructor's total course count.
@@ -9142,7 +9234,10 @@ impl HamplardContract {
     /// Escalate a dispute to arbitration. The caller must pay the
     /// arbitration fee (set via `set_arbitration_fee_config`).
     /// The fee is transferred from the caller to the contract and held
-    /// until the arbitration is resolved.
+    /// until the arbitration is resolved. The generated unique case ID is
+    /// included in the escalation event. Enrolled students and the
+    /// instructor may escalate disputes while a course is Active, Paused,
+    /// or Archived.
     pub fn escalate_to_arbitration(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
@@ -9178,7 +9273,10 @@ impl HamplardContract {
             );
         }
 
-        if course.status != CourseStatus::Active {
+        if course.status != CourseStatus::Active
+            && course.status != CourseStatus::Paused
+            && course.status != CourseStatus::Archived
+        {
             soroban_sdk::panic_with_error!(&env, HamplardError::CourseNotActive);
         }
 
@@ -9213,8 +9311,7 @@ impl HamplardContract {
         // so it can be released only through arbitration resolution.
         Self::credit_arbitration_fees_held(&env, &course.token, config.fee_per_case);
 
-        // Derive a case ID from the course_id (unique per caller+course_id pair).
-        let case_id = course_id.clone();
+        let case_id = Self::generate_arbitration_case_id(&env, &course_id);
 
         let record = ArbitrationCase {
             case_id: case_id.clone(),
@@ -9238,7 +9335,11 @@ impl HamplardContract {
         env.storage().instance().set(&arb_key, &new_arb);
 
         env.events().publish(
-            (Symbol::new(&env, "dispute_escalated"), course_id.clone()),
+            (
+                Symbol::new(&env, "dispute_escalated"),
+                course_id.clone(),
+                case_id,
+            ),
             (caller, course_id, config.fee_per_case),
         );
     }
@@ -9557,3 +9658,6 @@ impl HamplardContract {
 }
 
 mod test;
+
+#[cfg(test)]
+mod course_storage_migration_tests;
