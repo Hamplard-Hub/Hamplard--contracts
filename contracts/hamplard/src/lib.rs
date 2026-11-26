@@ -1602,6 +1602,7 @@ impl HamplardContract {
     ///   must be at least the token's current fee and is charged at enrollment
     ///   as a floor on the live per-token fee.
     /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
+    #[allow(dead_code)]
     fn normalize_course_id(env: &Env, input: &String) -> String {
         let len = input.len() as usize;
         if len == 0 {
@@ -1635,7 +1636,6 @@ impl HamplardContract {
         categories: Vec<String>,
     ) -> String {
         instructor.require_auth();
-        let course_id = Self::normalize_course_id(&env, &course_id);
 
         // #391 - Check the whitelist BEFORE any cross-contract call, so an
         // attacker-supplied token contract never executes inside registration.
