@@ -1,23 +1,32 @@
 # Enrollment counter storage
 
-`TotalActiveEnrollments` is now a persistent `uint32` entry, with the existing
-persistent TTL policy. Every enrollment path, completion, refund and archive
-refund uses the same read/write helpers. The platform cap still reads the
-canonical counter before accepting an enrollment.
+`TotalActiveEnrollments` is a persistent `uint32` entry, with the existing
+persistent TTL policy. It counts active paid enrollments only; free enrollments
+do not consume the platform cap. Every paid enrollment path, completion,
+refund and archive refund uses the same counter-mutation helper. The platform
+cap reads the canonical counter before accepting a paid enrollment.
 
 `EnrollmentRefCounter` also moves to its own persistent entry. Measurement
 showed that leaving it in instance storage would still rewrite the instance
 on every enrollment, even after moving the active-enrollment count.
 
+Enrollment records still carry unique generated references, but the
+`EnrollmentByRef` reverse-lookup entry is no longer written. Certificate
+issuance already identifies enrollments by `(student, course_id)`, so the
+reverse mapping had no reader and only added a persistent write and rent.
+The legacy key remains defined for storage-key compatibility; no public
+function signatures or enrollment-reference values change.
+
 ## Platform enrollment cap
 
 `set_platform_enrollment_cap()` rejects a new cap that is below the
-current `TotalActiveEnrollments`. Allowing such a value would silently
+current active paid enrollment count. Allowing such a value would silently
 halt all new enrollments while existing enrollments remain active, so the
 call panics instead of accepting an impossible cap. A cap equal to the
 current total is allowed and effectively blocks further enrollments until
-capacity is freed by completion or refund. To lower the cap below the
-current total, admins must first reduce the number of active enrollments.
+capacity is freed by completion or refund. Free enrollments do not consume
+this capacity. To lower the cap below the current total, admins must first
+reduce the number of active paid enrollments.
 `InstructorCourseCount` and `InstructorPendingCourseCount` likewise move from
 instance storage to per-instructor persistent entries. Previously each new
 instructor added instance entries, so instance size grew with the number of
@@ -27,20 +36,17 @@ instance size no longer grows with the number of instructors.
 
 ## Existing deployments
 
-Each counter reads persistent storage first. If absent, it reads the existing
-instance value (or its original default). The first mutation writes that value
-forward into persistent storage. The legacy instance value is retained but
-Becomes noncanonical, avoiding a migration write to the instance during
-enrollment. An upgrade must restore archived persistent counter entries before
+`TotalActiveEnrollments` reads persistent storage first and falls back to the
+legacy instance value when no persistent value exists. Its first paid-count
+mutation writes the value to persistent storage and removes the legacy instance
+entry. An upgrade must restore archived persistent counter entries before
 using the contract; it must not discard them and fall back to stale legacy data.
 
-This applies to the per-instructor counters as well: on first access after an
-upgrade, `InstructorCourseCount` and `InstructorPendingCourseCount` fall back to
-their legacy instance values (or their original default of zero) and write the
-result forward into persistent storage. The legacy instance entries are left in
-place but are noncanonical. Operators must ensure archived persistent
-per-instructor counter entries are restored before use rather than discarded in
-favor of stale legacy instance data.
+The per-instructor counters also read persistent storage first and fall back to
+legacy instance values (or their original default of zero), but their legacy
+instance entries are left in place. Operators must ensure archived persistent
+per-instructor counter entries are restored before use rather than discarded
+in favor of stale legacy instance data.
 
 There is no reset of active counts or reuse of existing enrollment references.
 Reference increments now also reject `uint32` overflow explicitly. No public
@@ -48,6 +54,10 @@ function signature changes. Adding `rlib` alongside `cdylib` allows focused
 integration tests without compiling unrelated, outdated unit-test call sites.
 
 ## Before and after budget
+
+The measurements below predate removal of the `EnrollmentByRef` write and
+document the earlier counter-storage change; they are not measurements of the
+current enrollment path.
 
 Measured with Soroban SGK 22.0.11 native test execution and the same fixture:
 two approved courses, one funded student, a platform cap of two, and the default

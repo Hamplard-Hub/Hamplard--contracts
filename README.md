@@ -86,9 +86,11 @@ The instructor share stays in the contract until each recipient calls `withdraw_
 Enrollment is **price-protected**: `enroll()`, `batch_enroll()` and `re_enroll()` take a `max_price` argument, and the call reverts if the course's current price is higher. A student therefore can never be charged more than the price they saw when they signed, even if an instructor changes the price between the quote and execution.
 
 **3. On-Chain Certificates**
-After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent, verifiable record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. Certificates can be revoked by the admin if issued in error, subject to a challenge window.
+After a student completes a course (verified off-chain by the backend), the admin issues an on-chain certificate. Each certificate is a permanent record tied to the student's Stellar address and the course. Anyone can verify a certificate by querying `verify_certificate(certificate_id)` — no trusted middleman needed. An admin revocation has a challenge window. A holder's challenge records a dispute but does not cancel the revocation; verification remains false until an admin resolves the dispute by overturning or upholding it.
 
 > **Keeping Certificates Live (TTL):** Certificate entries are stored in Soroban persistent storage with an initial TTL of ~6.3M ledgers (~1 year). Read-only RPC simulations of `verify_certificate(certificate_id)` do not persist TTL extensions on-chain. To prevent archival, anyone (verifiers, students, issuers, or keeper bots) can call the permissionless `extend_certificate_ttl(certificate_id)` entrypoint on-chain to renew a certificate's TTL, or submit `verify_certificate(certificate_id)` as an on-chain transaction (which also extends the TTL for valid certificates).
+
+> **Storage key enums:** `#[contracttype]` unions are limited to 50 cases. The original `DataKey` enum (50 variants, in their original order) holds the long-standing keys; the overflow enum `DataKey2` holds arbitration, course-terms, certificate-index and the seven newest keys (`LastAdminTransferLedger`, `CourseFailureCount`, `BtcEthToken`, `ApprovedTokenList`, `StudentEnrollmentCount`, `InstructorCourseCountPersistent`, `InstructorPendingCourseCountPersistent`). Keys are never reordered within an enum, so deployed storage encodings for existing keys are unchanged.
 
 **4. Refunds**
 Both admins can jointly issue refunds by archiving a course and specifying which students to refund. Refunds return the full enrollment amount to students with incomplete enrollments. This provides dispute resolution and quality control mechanisms without requiring a time window.
@@ -157,7 +159,7 @@ This keeps the contract small, cheap to call, and focused on what blockchains ar
 
 ```rust
 pub struct Course {
-    pub id: String,                              // matches backend DB record ID
+    pub id: String,                              // case-sensitive; stored as supplied
     pub instructor: Address,                     // lead instructor
     pub price: i128,                             // enrollment price in token stroops
     pub platform_fee_percent: u32,               // 0-100 snapshot; 0 follows live fee config
@@ -255,6 +257,7 @@ pub struct Certificate {
 | `PendingUpgrade` | Proposed Wasm hash and upgrade time-lock ledger |
 | `EnrollmentStatus` | Enrollment lifecycle view returned by `get_enrollment_status` |
 | `InstructorStats` | Aggregate students, completions, and certificates per instructor |
+| `CertificateStatus` | Public verification state: `NotFound`, `Valid`, `Disputed`, `Revoked`, or `Expired` |
 
 ### `CourseStatus` state machine
 
@@ -268,7 +271,7 @@ Pending ── archive_course() ──→ Archived (no enrollments exist)
 Rejected ─ archive_course() ──→ Archived (no enrollments exist)
 ```
 
-Archiving requires the course to be in `Paused`, `Pending`, or `Rejected` status — an `Active` course cannot be archived directly. The operation also requires both admin addresses (multi-sig). `Archived` is a terminal state; no further transitions are possible.
+Freezing an instructor automatically pauses their Active courses. Unfreezing restores only courses paused by that freeze; courses that were already paused or were paused by an admin or moderator remain paused. Archiving requires the course to be in `Paused`, `Pending`, or `Rejected` status — an `Active` course cannot be archived directly. The operation also requires both admin addresses (multi-sig). `Archived` is a terminal state; no further transitions are possible.
 
 ---
 
@@ -291,7 +294,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `register_course(instructor, course_id, price, token, platform_fee_pct, max_capacity, content_hash, categories)` | Instructor | Register a course — starts as Pending |
 | `approve_course(caller, course_id)` | Admin or Approver | Move Pending → Active; high-value courses need two distinct approvals |
 | `reject_course(caller, course_id, reason)` | Admin or Approver | Move Pending → Rejected |
-| `pause_course(caller, course_id)` / `unpause_course(caller, course_id)` | Lead instructor or Admin | Move Active ↔ Paused |
+| `pause_course(caller, course_id)` / `unpause_course(caller, course_id)` | Lead instructor, Admin, or Moderator | Move Active ↔ Paused |
 | `update_course(caller, course_id, new_price, new_max_capacity, new_capacity_mode)` | Lead instructor or Admin | Update price/capacity/mode and increment the course version. Emits `course_updated` with `(course_id, new_version, caller, old_price, new_price, old_max_capacity, new_max_capacity)`. |
 | `set_co_instructors(caller, course_id, addresses, shares_bps)` | Lead instructor or Admin | Configure co-instructors before the first enrollment |
 | `set_enrollment_start_ledger` / `set_enrollment_expiry` / `set_course_expiry` | Lead instructor or Admin | Configure enrollment windows |
@@ -311,6 +314,8 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `withdraw_all_earnings(instructor, token, destination)` | Instructor | Withdraw the full accumulated earnings balance |
 | `request_refund(student, course_id)` | Student | Open a refund request within the configured window |
 | `process_refund(admin, student, course_id, approved, refund_amount)` | Admin | Approve or reject a refund and debit each revenue recipient proportionally |
+| `claim_refund(student, course_id)` | Student | Claim a pending refund after its processing deadline; blocked students cannot self-approve |
+| `fund_refund_reserve(funder, token, amount)` | Funder | Prefund platform-fee refunds, which are paid from the reserve rather than the treasury |
 
 ### Completion and certificates
 
@@ -318,8 +323,9 @@ Initialises the contract atomically at deployment time. The admin must sign.
 |---|---|---|
 | `mark_completed(admin, student, course_id, evidence_hash)` | Admin (+ student when `evidence_hash` is `None`) | Mark an enrollment completed |
 | `issue_certificate(admin, student, course_id, certificate_id, course_title, enrollment_reference, expires_at_ledger, instructor_signature)` | Admin | Issue an on-chain certificate after completion |
-| `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; it becomes permanent after the challenge period |
-| `challenge_revocation(student, certificate_id)` | Certificate holder | Cancel a pending revocation before its deadline |
+| `revoke_certificate(admin, certificate_id, reason)` | Admin | Start a revocation; an unchallenged revocation becomes permanent after the challenge period |
+| `challenge_revocation(student, certificate_id)` | Certificate holder | Record a dispute before the deadline; the certificate remains unverifiable pending admin review |
+| `resolve_revocation_challenge(admin, certificate_id, uphold_revocation)` | Admin | Uphold the revocation or overturn it and restore the certificate |
 | `bulk_revoke_course_certificates(admin, course_id)` | Admin | Revoke every certificate of a course |
 
 ### Arbitration, waitlists, and risk configuration
@@ -340,7 +346,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` | Both admins | Propose a new admin pair |
 | `accept_admin(new_admin, new_secondary_admin)` | Both new admins | Accept the proposed admin pair |
 | `update_treasury(admin1, admin2, new_treasury)` | Both admins | Schedule a treasury update; rejected while another is pending (`cancel_treasury_update` first) |
-| `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger |
+| `set_admin_expiry(admin1, admin2, expires_at)` | Both admins | Set or clear the admin-role expiry ledger (17,280–1,000,000 ledgers ahead) |
 | `withdraw_tokens(admin1, admin2, token, amount, destination)` | Both admins | Emergency token sweep |
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
 | `update_default_fee`, `update_max_courses_limit`, `update_refund_window` | Admin | Global parameters |
@@ -355,10 +361,11 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `get_enrollment(caller, student, course_id)` | `Enrollment` (student, course instructor, or admin only) |
 | `quote_enrollment(course_id, student)` | `(price, platform_fee, instructor_share)` using the current enrollment fee calculation |
 | `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
+| `get_certificate_status(certificate_id)` | `CertificateStatus` — reports whether the certificate is valid, disputed, revoked, expired, or missing |
 | `is_enrolled(student, course_id)` | `bool` |
 | `get_enrollment_status(student, course_id)` | `EnrollmentStatus` |
 | `has_completed(student, course_id)` | `Option<bool>` |
-| `verify_certificate(certificate_id)` | `bool` — true if it exists, is not permanently revoked, and has not expired (extends TTL when called on-chain for a valid cert) |
+| `verify_certificate(certificate_id)` | `bool` — true only when the certificate is valid, unexpired, and has no unresolved revocation dispute (extends TTL when called on-chain for a valid cert) |
 | `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
 | `get_platform_fee(admin)` | `u32` — current default fee percentage (admin only) |
 | `get_instructor_earnings(instructor, token)` | `i128` — withdrawable balance |
@@ -419,31 +426,31 @@ The platform fee percentage can be:
 
 ## Refunds
 
-Hamplard supports **admin-initiated refunds** through course archival. This is the only refund mechanism in the contract.
+Refunds can be issued by an admin through course archival or `process_refund()`. A student may also claim a pending refund after its processing deadline.
 
 ### How Refunds Work
 
-When both admins call `archive_course()` with a `students_to_refund` list, the contract refunds each listed student their full enrollment payment:
+When both admins call `archive_course()` with a `students_to_refund` list, or an admin approves a refund request, the contract refunds the enrollment payment:
 
 ```
 Original enrollment: 100 USDC
 platform_fee_percent: 20
 
-Platform fee (from treasury):     20 USDC → student
-Instructor share (from instructor): 80 USDC → student
+Platform fee (from refund reserve): 20 USDC → student
+Instructor shares (from earnings): 80 USDC → student
 Total refunded:                  100 USDC
 ```
 
-Refunds are only applied to **incomplete** enrollments (where `completed == false`). Students who have already completed the course are not refunded.
+The platform fee is forwarded to the treasury at enrollment, so its refund must be backed by `fund_refund_reserve()`; refund execution does not debit the treasury. The instructor portion is debited proportionally from the lead instructor and each co-instructor's recorded earnings. Refunds apply only to **incomplete** enrollments (`completed == false`).
 
 ### Refund Window
 
-There is no time-based refund window. Refunds can be initiated at any point:
+Admins may refund eligible enrollments at any point through course archival:
 - During the course (if students want to drop out)
 - After the course ends (if issues with content or instruction)
 - The course must be **paused first**, then archived with the refund list
 
-This gives admins maximum flexibility to handle dispute resolution and quality control issues.
+Student refund requests are subject to the configured refund window. If a pending request is not processed before its snapshotted deadline, the student can self-approve it unless the student is blocked.
 
 ### Multi-Admin Authorization
 
@@ -481,7 +488,7 @@ stellar contract invoke \
   --certificate_id "CERT-12345-TAILORING"
 ```
 
-Returns `true` if the certificate exists, has not expired, and has not been permanently revoked. A certificate with a pending revocation remains verifiable until its challenge deadline passes. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
+Returns `true` only if the certificate exists, has not expired, and has no unresolved revocation dispute. A certificate with a pending, unchallenged revocation remains verifiable until its challenge deadline passes. Once challenged, it is reported as `Disputed` and cannot be verified until an admin resolves it. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
 
 ---
 
@@ -496,8 +503,10 @@ Returns `true` if the certificate exists, has not expired, and has not been perm
 | `course_archived`             | `course_id`                                 | Course archived                           |
 | `student_enrolled` | `(student, course_id, amount_paid, platform_fee, instructor_amount, ledger, treasury, payouts)` | Student enrolls and pays (single canonical enrollment event) |
 | `course_completed`            | `(course_id, student)`                      | Completion marked by admin                |
-| `certificate_issued`          | `(certificate_id, student, course_id)`      | Certificate issued                        |
+| `certificate_issued`          | `(certificate_id, student, course_id, admin, issued_at_ledger, instructor, expires_at_ledger)` | Certificate issued |
 | `certificate_revoked`         | `certificate_id`                            | Certificate revoked                       |
+| `revocation_challenged`       | `(student, certificate_id, ledger)`          | Certificate holder disputes a revocation  |
+| `revocation_challenge_resolved` | `(admin, uphold_revocation, ledger)`        | Admin resolves a certificate dispute      |
 | `course_certificates_revoked` | `(admin, course_id, revoked_count, ledger)` | All certificates of a course bulk-revoked |
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 | `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
@@ -568,7 +577,7 @@ Clients should match on `N`; the numeric values are part of the public interface
 | 33 | `InstructorReferenceInvalid` | Invalid instructor reference |
 | 34 | `CourseNotAvailable` | Course is not enrollable (status, timing, capacity, token, or cap) |
 | 35 | `AlreadyEnrolled` | Student is already enrolled |
-| 36 | `CircuitBreakerTripped` | Repeated payment failures auto-paused the course |
+| 36 | Reserved (`CircuitBreakerTripped`) | Legacy error code retained for compatibility |
 | 37 | `TransferAmountMismatch` | Token transfer delivered an unexpected amount |
 | 38 | `EnrollmentNotFound` | No enrollment exists for the student/course pair |
 | 39 | `EnrollmentStateError` | Completion or enrollment-state transition is invalid |
@@ -672,7 +681,7 @@ make optimize   # → target/wasm32v1-none/release/hamplard.optimized.wasm
 
 ```bash
 cd contracts/hamplard
-export STELLAR_ACCOUNT=my-account
+export STELLAR_ACCOUNT=my-account # Must resolve to ADMIN_ADDRESS; it signs __constructor
 export ADMIN_ADDRESS=<ADMIN_ADDRESS>
 export SECONDARY_ADMIN_ADDRESS=<SECONDARY_ADMIN_ADDRESS>
 export TREASURY_ADDRESS=<TREASURY_ADDRESS>
@@ -686,7 +695,8 @@ make -C contracts/hamplard deploy-testnet
 
 ### Deploy and initialize manually with `stellar contract deploy`
 
-Run the following from `contracts/hamplard`:
+Run the following from `contracts/hamplard`. `--source` must resolve to the
+`ADMIN_ADDRESS`, which authorizes the constructor:
 
 ```bash
 stellar contract deploy \
@@ -740,14 +750,16 @@ stellar contract invoke \
 - **Authorization**: Every write function calls `require_auth()` on the relevant party. Instructors cannot approve their own courses. Students cannot issue their own certificates. Only admins can revoke certificates.
 - **Dual-admin model**: The contract is initialised with two distinct admin addresses — `admin` and `secondary_admin` — so there is no single-address point of failure. Sensitive operations require **both** admin signatures (`require_multi_admin`): `archive_course`, `withdraw_tokens`, `update_treasury`, `transfer_admin`, `set_admin_expiry`, and the contract upgrade functions (`propose_upgrade`, `cancel_upgrade`, `upgrade_contract`, `set_upgrade_timelock`). Routine operations (approving courses, issuing certificates, fee configuration) need only one admin.
 - **Two-step admin transfer with cooldown**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `__constructor` also enforces that admin, secondary admin, and treasury are all distinct addresses.
-- **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` sets a ledger sequence after which every admin operation panics with "admin role has expired" — a dead-man's switch that can be read via `get_admin_expiry()` and cleared by passing `None`.
+- **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` accepts expiry values 17,280–1,000,000 ledgers ahead. After expiry, the existing pair may still recover by proposing a two-step admin transfer; accepting the new pair clears the old expiry.
+- **Upgrade time-lock**: `set_upgrade_timelock` accepts delays of 17,280–1,000,000 ledgers, preserving a minimum review window while bounding accidental misconfiguration.
 - **Scoped approvers**: Admins can delegate course moderation via `add_approver` / `remove_approver`. Approvers may approve and reject courses, but have no access to treasury, fee, or admin-transfer functions — and unlike the admin role, approver authority does not expire.
 - **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` reverses it. Frozen instructors cannot operate while the platform keeps student funds safe.
-- **Student blocklist**: `block_student` bans an address from enrolling in any course; `unblock_student` lifts the ban.
+- **Student blocklist**: `block_student` bans an address from enrolling in any course or self-approving a refund; `unblock_student` lifts the ban.
+- **Emergency withdrawal accounting**: `withdraw_tokens` can sweep only token balance above tracked instructor earnings, open arbitration fees, and refund reserves.
 - **No double enrollment**: The contract checks for an existing enrollment record before processing payment. A student cannot be charged twice for the same course.
 - **Price protection**: `enroll()`, `batch_enroll()` and `re_enroll()` require a `max_price` and revert if the course's current price exceeds it, so a price change between a student's quote and execution cannot charge them more than they approved.
 - **Atomic payment split**: Both the platform and instructor transfers happen in the same transaction. There is no intermediate escrow that could be exploited.
-- **Certificate immutability**: Revoked certificates are flagged — not deleted. This preserves the audit trail and prevents a revocation from being hidden. Revocation is permanent only after the challenge period elapses.
+- **Certificate immutability**: Revoked certificates are flagged — not deleted. This preserves the audit trail and prevents a revocation from being hidden. An unchallenged revocation becomes permanent after the challenge period; a challenged revocation stays disputed until an admin resolves it.
 - **Fee validation**: Platform fee percentage is validated to be ≤ 100 at both `__constructor` and `register_course` time.
 - **Event schema stability**: Event topics and data layouts are part of the public interface. Off-chain indexers must be updated in lockstep with any contract change to the events table above.
 
