@@ -4288,21 +4288,8 @@ impl HamplardContract {
             .unwrap_or(0)
     }
 
-    /// Get lifetime net earnings for an instructor across all tokens.
-    pub fn get_instructor_total_earnings(env: Env, instructor: Address) -> i128 {
-        let mut total: i128 = 0;
-        for token in Self::get_instructor_earning_tokens(env.clone(), instructor.clone()).iter() {
-            total = total.saturating_add(Self::get_instructor_lifetime_earnings(
-                env.clone(),
-                instructor.clone(),
-                token,
-            ));
-        }
-        total
-    }
-
-    /// Internal helper: returns the total tracked liabilities for a token
-    /// (outstanding instructor earnings + outstanding open arbitration fees).
+    /// Internal helper: returns instructor earnings, open arbitration fees
+    /// and refund-reserve balances owed for a token.
     pub(crate) fn get_total_liabilities_internal(env: &Env, token: &Address) -> i128 {
         let earnings: i128 = env
             .storage()
@@ -4311,15 +4298,22 @@ impl HamplardContract {
             .unwrap_or(0);
         let arb_fees: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey2::TotalArbitrationFees(token.clone()))
+            .persistent()
+            .get(&DataKey2::ArbitrationFeesHeld(token.clone()))
+            .unwrap_or(0);
+        let refund_reserve: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::RefundReserve(token.clone()))
             .unwrap_or(0);
         earnings
             .checked_add(arb_fees)
+            .and_then(|total| total.checked_add(refund_reserve))
             .unwrap_or_else(|| panic!("liabilities overflow"))
     }
 
-    /// Get total tracked liabilities for a token (outstanding instructor earnings + arbitration fees)
+    /// Get total tracked liabilities for instructor earnings, open arbitration
+    /// fees and the refund reserve for a token.
     pub fn get_total_liabilities(env: Env, token: Address) -> i128 {
         Self::get_total_liabilities_internal(&env, &token)
     }
@@ -5268,17 +5262,6 @@ impl HamplardContract {
         let available_surplus = contract_balance.saturating_sub(total_liabilities);
         if amount > available_surplus {
             panic!("withdraw_tokens: cannot withdraw below tracked liabilities");
-        }
-
-        // Arbitration fees are held in reserve for open cases and must not be
-        // swept by the emergency withdrawal path.
-        let held = Self::get_arbitration_fees_held(env.clone(), token.clone());
-        let balance = token_client.balance(&env.current_contract_address());
-        let available = balance
-            .checked_sub(held)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InconsistentState));
-        if amount > available {
-            soroban_sdk::panic_with_error!(&env, Error::InvalidWithdrawal);
         }
 
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
@@ -6658,7 +6641,7 @@ impl HamplardContract {
 
         let (event_refund_amount, event_platform_amount, event_instructor_amount) = if approved {
             let breakdown =
-                Self::apply_refund_approval(&env, &key, &mut request, refund_amount, true);
+                Self::apply_refund_approval(&env, &key, &mut request, refund_amount);
             Self::emit_refund_issued(
                 &env,
                 &course_id,
@@ -6700,6 +6683,9 @@ impl HamplardContract {
     /// honours whatever `refund_processing_deadline` was configured then.
     pub fn claim_refund(env: Env, student: Address, course_id: String) {
         student.require_auth();
+        if Self::is_student_blocked_internal(&env, &student) {
+            soroban_sdk::panic_with_error!(&env, Error::StudentBlocked);
+        }
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -6719,7 +6705,7 @@ impl HamplardContract {
             panic!("refund processing deadline has not elapsed");
         }
 
-        Self::apply_refund_approval(&env, &key, &mut request, None, false);
+        Self::apply_refund_approval(&env, &key, &mut request, None);
 
         env.events().publish(
             (Symbol::new(&env, "refund_claimed"), course_id.clone()),
@@ -6732,13 +6718,12 @@ impl HamplardContract {
     /// decrement the active-enrollment counters, and mark the request
     /// `Approved`. Shared by the admin `process_refund` path and the
     /// student `claim_refund` self-approval path so both pay and account for
-    /// the refund exactly once. The caller selects the existing funding source.
+    /// the refund exactly once from the pre-funded refund reserve.
     fn apply_refund_approval(
         env: &Env,
         key: &DataKey,
         request: &mut RefundRequest,
         refund_amount: Option<i128>,
-        platform_refund_from_reserve: bool,
     ) -> RefundBreakdown {
         let mut course = Self::get_course_internal(env, &request.course_id)
             .unwrap_or_else(|| panic!("course not found"));
@@ -6788,27 +6773,14 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("refund split underflow"));
 
         let token_client = token::Client::new(env, &course.token);
-        // Refund the platform share from the reserve for admin processing;
-        // student claims retain the existing effective-treasury behavior.
         if platform_refund > 0 {
-            if platform_refund_from_reserve {
-                Self::pay_platform_refund(env, &course.token, &request.student, platform_refund);
-            } else {
-                let treasury: Address = Self::read_treasury(env);
-                token_client.transfer(&treasury, &request.student, &platform_refund);
-                Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
-            }
+            Self::pay_platform_refund(env, &course.token, &request.student, platform_refund);
         }
 
         // Refund instructor share from contract-held earnings, again using the
         // proportional partial split when a refund amount is requested.
         if instructor_refund > 0 {
-            Self::debit_instructor_earnings(
-                env,
-                &course.instructor,
-                &course.token,
-                instructor_refund,
-            );
+            Self::debit_instructor_shares(env, &course, instructor_refund);
             token_client.transfer(
                 &env.current_contract_address(),
                 &request.student,
@@ -8612,13 +8584,8 @@ impl HamplardContract {
             .unwrap_or_else(|| panic!("refund split underflow"));
 
         let token_client = token::Client::new(env, &course.token);
-        // Apply any matured pending treasury update so the refund uses the
-        // effective treasury, not a stale one. (#326)
-        let treasury: Address = Self::read_treasury(&env);
-
         if platform_refund > 0 {
-            token_client.transfer(&treasury, student, &platform_refund);
-            Self::decrement_platform_fees_collected(env, &course.token, platform_refund);
+            Self::pay_platform_refund(env, &course.token, student, platform_refund);
         }
         if instructor_refund > 0 {
             Self::debit_instructor_shares(env, course, instructor_refund);
