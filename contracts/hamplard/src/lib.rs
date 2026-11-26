@@ -331,14 +331,16 @@ pub enum CapacityMode {
     Concurrent,
 }
 
-/// Identifies which role paused a course so moderation pauses by an admin
-/// cannot be undone by the course instructor.
+/// Identifies which role or system state paused a course.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PausedBy {
     None,
     Instructor,
     Admin,
+    Moderator,
+    /// Automatically paused while the instructor is frozen.
+    InstructorFreeze,
 }
 
 /// A course listing stored on-chain
@@ -1211,7 +1213,7 @@ impl HamplardContract {
     /// Admin sets (or rotates) the moderator address.
     ///
     /// The moderator is a hot key permitted to perform day-to-day moderation
-    /// (approve/reject/pause courses, block/unblock students, mark completions)
+    /// (approve/reject/pause/unpause courses, block/unblock students, mark completions)
     /// without holding the admin key that can move funds or change config.
     ///
     /// # Arguments
@@ -1934,7 +1936,7 @@ impl HamplardContract {
         );
     }
 
-    /// Instructor or admin pauses a course.
+    /// Instructor, admin, or moderator pauses a course.
     /// Existing enrollments are unaffected — students can still access content.
     /// New enrollments are blocked until the course is unpaused.
     pub fn pause_course(env: Env, caller: Address, course_id: String) {
@@ -1945,12 +1947,19 @@ impl HamplardContract {
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
+        let is_moderator = Self::is_moderator(&env, &caller);
 
-        if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
+        if !is_admin && !is_instructor && !is_moderator {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
+        if is_admin {
+            Self::require_admin(&env, &caller, "pause_course");
+        }
 
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin
+            && is_instructor
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -1965,6 +1974,8 @@ impl HamplardContract {
         course.status = CourseStatus::Paused;
         course.paused_by = if is_admin {
             PausedBy::Admin
+        } else if is_moderator {
+            PausedBy::Moderator
         } else {
             PausedBy::Instructor
         };
@@ -1982,7 +1993,7 @@ impl HamplardContract {
         );
     }
 
-    /// Instructor or admin unpauses a Paused course, restoring it to Active.
+    /// Instructor, admin, or moderator unpauses a Paused course, restoring it to Active.
     pub fn unpause_course(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
@@ -1991,15 +2002,19 @@ impl HamplardContract {
 
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
+        let is_moderator = Self::is_moderator(&env, &caller);
 
-        if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
+        if !is_admin && !is_instructor && !is_moderator {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
 
-        // freeze_instructor() auto-pauses the instructor's courses; a frozen
-        // instructor must not be able to undo that by unpausing them.
+        if is_admin {
+            Self::require_admin(&env, &caller, "unpause_course");
+        }
+
+        // A frozen instructor must not be able to undo the pause themselves.
         if !is_admin
-            && !Self::is_moderator(&env, &caller)
+            && is_instructor
             && Self::is_instructor_frozen_internal(&env, &course.instructor)
         {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
@@ -2013,7 +2028,10 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPaused);
         }
 
-        if course.paused_by == PausedBy::Admin && !is_admin {
+        if (course.paused_by == PausedBy::Admin || course.paused_by == PausedBy::Moderator)
+            && !is_admin
+            && !is_moderator
+        {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
 
@@ -5842,12 +5860,13 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
-        // Pause all of the instructor's currently Active courses
-        if let Some(course_ids) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, Vec<String>>(&DataKey::InstructorCourseList(instructor.clone()))
-        {
+        // Pause and mark only currently Active courses so unfreezing can
+        // distinguish them from courses that were already paused.
+        let course_list_key = DataKey::InstructorCourseList(instructor.clone());
+        Self::extend_persistent_ttl_if_exists(&env, &course_list_key);
+        if let Some(course_ids) = env.storage().persistent().get::<DataKey, Vec<String>>(
+            &course_list_key,
+        ) {
             for i in 0..course_ids.len() {
                 let course_id = course_ids.get(i).unwrap();
                 if let Some(mut course) = env
@@ -5855,8 +5874,9 @@ impl HamplardContract {
                     .persistent()
                     .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
                 {
-                    if course.status == CourseStatus::Active {
+                    if course.instructor == instructor && course.status == CourseStatus::Active {
                         course.status = CourseStatus::Paused;
+                        course.paused_by = PausedBy::InstructorFreeze;
                         course.last_updated_ledger = env.ledger().sequence();
                         Self::persist_course(&env, &course_id, &course);
 
@@ -5886,6 +5906,42 @@ impl HamplardContract {
         if !Self::is_instructor_frozen_internal(&env, &instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorState);
         }
+
+        let course_list_key = DataKey::InstructorCourseList(instructor.clone());
+        Self::extend_persistent_ttl_if_exists(&env, &course_list_key);
+        if let Some(course_ids) = env.storage().persistent().get::<DataKey, Vec<String>>(
+            &course_list_key,
+        ) {
+            for i in 0..course_ids.len() {
+                let course_id = course_ids.get(i).unwrap();
+                if let Some(mut course) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Course>(&DataKey::Course(course_id.clone()))
+                {
+                    if course.instructor == instructor
+                        && course.status == CourseStatus::Paused
+                        && course.paused_by == PausedBy::InstructorFreeze
+                    {
+                        course.status = CourseStatus::Active;
+                        course.paused_by = PausedBy::None;
+                        course.last_updated_ledger = env.ledger().sequence();
+                        Self::persist_course(&env, &course_id, &course);
+
+                        env.events().publish(
+                            (Symbol::new(&env, "course_unpaused"), course_id.clone()),
+                            (
+                                course_id,
+                                CourseStatus::Active,
+                                admin.clone(),
+                                env.ledger().sequence(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
         env.storage()
             .instance()
             .remove(&DataKey::InstructorBlocked(instructor.clone()));

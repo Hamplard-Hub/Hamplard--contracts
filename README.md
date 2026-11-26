@@ -254,6 +254,7 @@ pub struct Certificate {
 | `TreasuryUpdate` | Pending treasury address plus its effective ledger |
 | `PendingUpgrade` | Proposed Wasm hash and upgrade time-lock ledger |
 | `InstructorStats` | Aggregate students, completions, and certificates per instructor |
+| `PausedBy` | Role or instructor-freeze state responsible for a course pause |
 
 ### `CourseStatus` state machine
 
@@ -267,7 +268,7 @@ Pending ── archive_course() ──→ Archived (no enrollments exist)
 Rejected ─ archive_course() ──→ Archived (no enrollments exist)
 ```
 
-Archiving requires the course to be in `Paused`, `Pending`, or `Rejected` status — an `Active` course cannot be archived directly. The operation also requires both admin addresses (multi-sig). `Archived` is a terminal state; no further transitions are possible.
+Freezing an instructor automatically pauses their Active courses. Unfreezing restores only courses paused by that freeze; courses that were already paused or were paused by an admin or moderator remain paused. Archiving requires the course to be in `Paused`, `Pending`, or `Rejected` status — an `Active` course cannot be archived directly. The operation also requires both admin addresses (multi-sig). `Archived` is a terminal state; no further transitions are possible.
 
 ---
 
@@ -290,7 +291,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `register_course(instructor, course_id, price, token, platform_fee_pct, max_capacity, content_hash, categories)` | Instructor | Register a course — starts as Pending |
 | `approve_course(caller, course_id)` | Admin or Approver | Move Pending → Active; high-value courses need two distinct approvals |
 | `reject_course(caller, course_id, reason)` | Admin or Approver | Move Pending → Rejected |
-| `pause_course(caller, course_id)` / `unpause_course(caller, course_id)` | Lead instructor or Admin | Move Active ↔ Paused |
+| `pause_course(caller, course_id)` / `unpause_course(caller, course_id)` | Lead instructor, Admin, or Moderator | Move Active ↔ Paused |
 | `update_course(caller, course_id, new_price, new_max_capacity, new_capacity_mode)` | Lead instructor or Admin | Update price/capacity/mode and increment the course version. Emits `course_updated` with `(course_id, new_version, caller, old_price, new_price, old_max_capacity, new_max_capacity)`. |
 | `set_co_instructors(caller, course_id, addresses, shares_bps)` | Lead instructor or Admin | Configure co-instructors before the first enrollment |
 | `set_enrollment_start_ledger` / `set_enrollment_expiry` / `set_course_expiry` | Lead instructor or Admin | Configure enrollment windows |
@@ -743,7 +744,7 @@ stellar contract invoke \
 - **Two-step admin transfer with cooldown and expiry**: `transfer_admin(admin1, admin2, new_admin, new_secondary_admin)` only *proposes* the new pair; the new admins must call `accept_admin` to complete the rotation. A proposal expires `ADMIN_PROPOSAL_VALIDITY_LEDGERS` (17,280 ledgers, ~1 day) after it is made — an expired proposal is rejected and cleared, so keys compromised later cannot be activated. A minimum cooldown between consecutive transfers prevents rapid re-rotation during incident response. `__constructor` also enforces that admin, secondary admin, and treasury are all distinct addresses.
 - **Admin expiry**: `set_admin_expiry(admin1, admin2, expires_at)` sets a ledger sequence after which every admin operation panics with "admin role has expired" — a dead-man's switch that can be read via `get_admin_expiry()` and cleared by passing `None`.
 - **Scoped approvers**: Admins can delegate course moderation via `add_approver` / `remove_approver`. Approvers may approve and reject courses, but have no access to treasury, fee, or admin-transfer functions — and unlike the admin role, approver authority does not expire.
-- **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` reverses it. Frozen instructors cannot operate while the platform keeps student funds safe.
+- **Instructor freezes**: `freeze_instructor` blocks an instructor and automatically pauses all of their Active courses; `unfreeze_instructor` restores only those automatically paused courses. Courses already paused before the freeze, or paused by an admin or moderator during it, remain paused.
 - **Student blocklist**: `block_student` bans an address from enrolling in any course; `unblock_student` lifts the ban.
 - **No double enrollment**: The contract checks for an existing enrollment record before processing payment. A student cannot be charged twice for the same course.
 - **Price protection**: `enroll()`, `batch_enroll()` and `re_enroll()` require a `max_price` and revert if the course's current price exceeds it, so a price change between a student's quote and execution cannot charge them more than they approved.

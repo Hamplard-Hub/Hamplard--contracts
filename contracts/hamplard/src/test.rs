@@ -1807,6 +1807,35 @@ fn test_pause_and_unpause_course() {
     assert_eq!(course.status, CourseStatus::Active);
 }
 
+#[test]
+fn test_moderator_can_pause_and_unpause_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-PAUSE");
+
+    client.set_moderator(&admin, &moderator);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MODERATOR-PAUSE",
+        100_000_000,
+    );
+
+    client.pause_course(&moderator, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Paused);
+    assert_eq!(course.paused_by, PausedBy::Moderator);
+
+    client.unpause_course(&moderator, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, PausedBy::None);
+}
+
 /// Double-pause must be rejected (Active-status precondition)
 #[test]
 #[should_panic(expected = "Error(Contract, #20)")]
@@ -6209,6 +6238,54 @@ fn test_freeze_instructor_lifecycle() {
     client.unfreeze_instructor(&admin, &instructor);
     assert!(!client.is_instructor_frozen(&instructor));
     assert_eq!(client.get_instructor_freeze_reason(&instructor), None);
+}
+
+#[test]
+fn test_unfreeze_restores_only_courses_paused_by_freeze() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let auto_paused_id = String::from_str(&env, "COURSE-FREEZE-AUTO-PAUSED");
+    let manually_paused_id = String::from_str(&env, "COURSE-FREEZE-MANUAL-PAUSED");
+
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FREEZE-AUTO-PAUSED",
+        100_000_000,
+    );
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FREEZE-MANUAL-PAUSED",
+        100_000_000,
+    );
+    client.pause_course(&admin, &manually_paused_id);
+
+    client.freeze_instructor(
+        &admin,
+        &instructor,
+        &String::from_str(&env, "test reason"),
+    );
+    assert_eq!(
+        client.get_course(&auto_paused_id).unwrap().paused_by,
+        PausedBy::InstructorFreeze
+    );
+
+    client.unfreeze_instructor(&admin, &instructor);
+
+    let auto_paused = client.get_course(&auto_paused_id).unwrap();
+    assert_eq!(auto_paused.status, CourseStatus::Active);
+    assert_eq!(auto_paused.paused_by, PausedBy::None);
+
+    let manually_paused = client.get_course(&manually_paused_id).unwrap();
+    assert_eq!(manually_paused.status, CourseStatus::Paused);
+    assert_eq!(manually_paused.paused_by, PausedBy::Admin);
 }
 
 #[test]
