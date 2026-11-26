@@ -3614,7 +3614,7 @@ impl HamplardContract {
             env,
             &course.token,
             course.price,
-            course_fee_override_bps,
+            Self::course_fee_override_bps(env, course_id),
             is_new_customer,
             is_btc_eth,
         );
@@ -3953,7 +3953,7 @@ impl HamplardContract {
             &env,
             &course.token,
             course.price,
-            course_fee_override_bps,
+            Self::course_fee_override_bps(&env, &course_id),
             is_new_customer,
             is_btc_eth,
         );
@@ -8475,6 +8475,18 @@ impl HamplardContract {
             env.storage().persistent().remove(&lifetime_key);
         } else {
             env.storage().persistent().set(&lifetime_key, &new_lifetime);
+        }
+
+        // Decrement the token-scoped lifetime net earnings accumulator. Use a
+        // saturating subtraction so refunds for enrollments created before this
+        // key existed cannot be blocked by an unmigrated (zero) counter.
+        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
+        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
+        let new_lifetime = current_lifetime.saturating_sub(amount);
+        if new_lifetime == 0 {
+            env.storage().persistent().remove(&lifetime_key);
+        } else {
+            Self::persist(&env, &lifetime_key, &new_lifetime);
         }
 
         // Decrement the token-scoped lifetime net earnings accumulator. Use a
