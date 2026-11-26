@@ -5064,6 +5064,12 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
+        // Archived courses are immutable — reject before any write so the
+        // archived record is never promoted back to active storage.
+        if course.status == CourseStatus::Archived {
+            soroban_sdk::panic_with_error!(&env, Error::ArchivedCourseImmutable);
+        }
+
         // Check per-course certificate limit against *live* certificates
         // (issued minus revoked).  Revocations free a slot so it can be reused.
         if let Some(max_certs) = course.max_certificates {
@@ -6106,6 +6112,9 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
+        if new_max == old_max {
+            soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
+        }
         env.storage()
             .instance()
             .extend_ttl(Self::INSTANCE_TTL_THRESHOLD, Self::INSTANCE_TTL_EXTEND_TO);
@@ -7234,10 +7243,7 @@ impl HamplardContract {
 
     /// Get the number of courses an instructor has registered.
     pub fn get_instructor_course_count(env: Env, instructor: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::InstructorCourseCount(instructor))
-            .unwrap_or(0)
+        Self::read_instructor_course_count(&env, &instructor)
     }
 
     /// Get the ordered list of course IDs an instructor has registered.
