@@ -24,4 +24,5 @@ noindex {
     mod admin;
     mod pause;
     mod rejection;
+    mod fee_split;
 }

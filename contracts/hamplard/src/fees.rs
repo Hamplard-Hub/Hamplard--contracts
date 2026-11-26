@@ -1,16 +1,16 @@
-use soroban_sorek::symbol;
+use soroban_sdk::{contracttype, Env};
 
 use crate::errors::ContractError;
 use crate::storage;
 
 /// Fee configuration stored in contract storage.
 /// Rates are expressed in basis points (1/100 of 1%).
-#property(type)
-#derive(Clone, Debug, Eq, PartialEq, Validate)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeConfig {
-    /// Fee charged on course purchases, in basis oints.
+    /// Fee charged on course purchases, in basis points.
     pub course_fee_bps: u32,
-    /// Fee charged on certificate issuance, in basis oints.
+    /// Fee charged on certificate issuance, in basis points.
     pub certificate_fee_bps: u32,
 }
 
