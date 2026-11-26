@@ -61,6 +61,8 @@ compliance. The slot layout follows the canonical schema above.
 | 12 | `token_removed_from_whitelist` | `(admin, token, ledger_seq)` |
 | 13 | `student_blocked` | `(student, admin, ledger_seq)` |
 | 14 | `student_unblocked` | `(student, admin, ledger_seq)` |
+
+> **Single data tuple per event:** `archive_course` (`course_archived`) and `block_student` (`student_blocked`) each publish exactly one data tuple. Previous implementations passed the old and new data tuples side by side as three arguments to `events().publish`; that form is not valid under this convention. Each call now takes exactly two arguments: a topics tuple and one data tuple, matching the canonical schema above.
 | 15 | `earnings_withdrawn` | `(instructor, token, withdraw_amount, recipient, ledger_seq)` |
 | 16 | `refund_requested` | `(student, course_id, amount_paid, ledger_seq)` |
 | 17 | `refund_processed` | `(student, course_id, approved, admin, ledger_seq)` |
