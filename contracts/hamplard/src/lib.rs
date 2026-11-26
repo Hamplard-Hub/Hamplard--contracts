@@ -5797,7 +5797,9 @@ impl HamplardContract {
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
 
         let ledger_sequence = env.ledger().sequence();
-        let effective_ledger = ledger_sequence + Self::TREASURY_UPDATE_DELAY_LEDGERS;
+        let effective_ledger = ledger_sequence
+            .checked_add(Self::TREASURY_UPDATE_DELAY_LEDGERS)
+            .unwrap_or_else(|| panic!("overflow computing effective treasury update ledger"));
         let update = TreasuryUpdate {
             address: new_treasury.clone(),
             effective_ledger,
