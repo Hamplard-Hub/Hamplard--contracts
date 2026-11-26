@@ -8670,6 +8670,18 @@ impl HamplardContract {
             Self::persist(&env, &total_key, &new_total);
         }
 
+        // Decrement the token-scoped lifetime net earnings accumulator. Use a
+        // saturating subtraction so refunds for enrollments created before this
+        // key existed cannot be blocked by an unmigrated (zero) counter.
+        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
+        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
+        let new_lifetime = current_lifetime.saturating_sub(amount);
+        if new_lifetime == 0 {
+            env.storage().persistent().remove(&lifetime_key);
+        } else {
+            Self::persist(&env, &lifetime_key, &new_lifetime);
+        }
+
         // Decrement total outstanding instructor earnings for this token
         let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
         let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
