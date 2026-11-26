@@ -2685,14 +2685,11 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        // One authorization path and one frozen-instructor guard (#639).
+        Self::require_admin_or_instructor(&env, &caller, &course);
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -2792,15 +2789,11 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
+        // One authorization path and one frozen-instructor guard (#639).
         Self::require_admin_or_instructor(&env, &caller, &course);
-
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -2881,16 +2874,13 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == course.instructor;
-
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-
+        // One authorization path and one frozen-instructor guard (#639).
         // A frozen instructor may not alter the content commitment, but an
         // admin may still update it as an administrative intervention.
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        Self::require_admin_or_instructor(&env, &caller, &course);
+        if !Self::is_admin(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -3447,19 +3437,20 @@ impl HamplardContract {
             }
         }
 
-        // Check platform-wide enrollment cap (mirrors validate_enrollment)
-        if let Some(platform_cap) = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
-        {
-            let total_active: u32 = env
+        // Check the platform-wide cap for paid courses only. Free courses do
+        // not consume platform capacity and must remain enrollable even when
+        // the paid-enrollment cap is full.
+        if course.price > 0 {
+            if let Some(platform_cap) = env
                 .storage()
                 .instance()
-                .get(&DataKey::TotalActiveEnrollments)
-                .unwrap_or(0);
-            if total_active >= platform_cap {
-                panic!("platform has reached maximum total enrollment capacity");
+                .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
+            {
+                let total_active: u32 = Self::read_total_active_enrollments(env);
+                if total_active >= platform_cap {
+                    Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_CAP_EXCEEDED");
+                    soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
+                }
             }
         }
 
@@ -8124,7 +8115,7 @@ impl HamplardContract {
         let is_instructor = caller == &course.instructor;
 
         if !is_admin && !is_instructor {
-            panic!("unauthorized");
+            soroban_sdk::panic_with_error!(env, Error::Unauthorized);
         }
 
         // Check if admin role has expired
@@ -8135,7 +8126,7 @@ impl HamplardContract {
                 .get::<DataKey, u32>(&DataKey::AdminExpiresAt)
             {
                 if env.ledger().sequence() >= expires_at {
-                    panic!("admin role has expired");
+                    soroban_sdk::panic_with_error!(env, Error::AdminExpired);
                 }
             }
         }
