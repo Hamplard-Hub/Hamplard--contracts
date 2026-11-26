@@ -148,6 +148,8 @@ impl From<Error> for soroban_sdk::Error {
 
 // Embed version and source metadata into the deployed Wasm so operators can
 // identify which build is live after an upgrade.
+soroban_sdk::contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
+soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamplard");
 soroban_sdk::contractmeta!(key = "version", val = "0.1.0");
 soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/Hamplard-Hub/Hamplard--contracts");
 
@@ -262,6 +264,18 @@ pub struct RiskFeeApplied {
     pub risk_surcharge_bps: u32,
     pub effective_fee_bps: u32,
     pub platform_fee: i128,
+    pub course_id: String,
+    pub student: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiskFeeAppliedEvent {
+    pub payment_amount: i128,
+    pub base_fee_bps: u32,
+    pub risk_surcharge_bps: u32,
+    pub effective_fee_bps: u32,
+    pub platform_fee: i128,
 }
 
 /// Emitted when an enrollment is rejected due to course status.
@@ -284,6 +298,17 @@ pub struct EnrollmentFailed {
     pub student: Address,
     pub reason_code: String,
     pub ledger_sequence: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InitializedEvent {
+    pub admin: Address,
+    pub secondary_admin: Address,
+    pub treasury: Address,
+    pub default_fee_pct: u32,
+    pub max_courses_per_instructor: u32,
+    pub refund_window_ledgers: u32,
 }
 
 // ============================================================
@@ -630,6 +655,22 @@ pub enum RefundStatus {
     Cancelled,
 }
 
+/// Lifecycle status of an enrollment returned by `get_enrollment_status`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentStatus {
+    /// No enrollment exists for this student/course pair.
+    None,
+    /// Enrollment exists and is currently active.
+    Active,
+    /// Enrollment exists and has been marked completed.
+    Completed,
+    /// Enrollment exists but is past its effective expiry policy.
+    Expired,
+    /// Enrollment has been refunded.
+    Refunded,
+}
+
 /// A refund request record
 #[contracttype]
 #[derive(Clone)]
@@ -916,6 +957,12 @@ pub struct PendingUpgrade {
     pub proposed_at_ledger: u32,
     /// Ledger sequence at or after which `upgrade_contract` may execute.
     pub effective_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CourseRegisteredEvent {
+    pub course_id: String,
 }
 
 // ============================================================
