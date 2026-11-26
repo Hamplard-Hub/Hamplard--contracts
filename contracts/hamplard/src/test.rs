@@ -13599,10 +13599,11 @@ fn test_update_course_event_carries_old_and_new_price_and_capacity() {
 
     let all_events = env.events().all();
     // The last event is the course_updated one; find it by topic symbol.
-    let (topics, data) = all_events
+    use soroban_sdk::TryFromVal;
+    let (_, topics, data) = all_events
         .iter()
         .rev()
-        .find(|(topics, _)| {
+        .find(|(_, topics, _)| {
             topics
                 .get(0)
                 .and_then(|v| Symbol::try_from_val(&env, &v).ok())
