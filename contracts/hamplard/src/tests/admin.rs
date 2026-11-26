@@ -38,6 +38,16 @@ fn test_initialize_twice_fails() {
 }
 
 #[test]
+fn test_error_codes_do_not_collide() {
+    // CourseNotActive and TokenNotApproved must not share numeric codes with
+    // AlreadyInitialized and Unauthorized.
+    assert_ne!(ContractError::CourseNotActive as u32, ContractError::AlreadyInitialized as u32);
+    assert_ne!(ContractError::CourseNotActive as u32, ContractError::Unauthorized as u32);
+    assert_ne!(ContractError::TokenNotApproved as u32, ContractError::AlreadyInitialized as u32);
+    assert_ne!(ContractError::TokenNotApproved as u32, ContractError::Unauthorized as u32);
+}
+
+#[test]
 fn test_initialize_requires_admin_auth() {
     let env = Env::default();
     let ctx = setup_contract_no_auth(&env);

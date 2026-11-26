@@ -107,6 +107,17 @@ event emitted after the loop.
 
 ---
 
+## Error Codes
+
+Contract errors are defined in a single `Error` enum. Each variant has a unique numeric code; no two variants may share a code. `HamplardError` has been merged into `Error`:
+
+- `Error::CourseNotActive` — code reserved in `Error` (replaces `HamplardError::CourseNotActive`).
+- `Error::TokenNotApproved` — code reserved in `Error` (replaces `HamplardError::TokenNotApproved`).
+
+Clients must match on the `Error` enum only. Numeric codes previously shared by `HamplardError` (1 and 2) now collide with nothing; consult the `Error` enum in `contracts/hamplard/src/lib.rs` for the authoritative code values.
+
+---
+
 ## Guidance for Future Event Authors
 
 Follow these two rules every time you add a new event:

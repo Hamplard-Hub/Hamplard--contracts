@@ -145,6 +145,11 @@ pub struct ReviewRequired {
 }
 
 /// Error codes returned by the contract.
+///
+/// Codes are stable ABI: never renumber an existing variant. `CourseNotActive`
+/// and `TokenNotApproved` were previously a separate `HamplardError` enum whose
+/// codes 1 and 2 collided with `NotInitialized` and `AlreadyInitialized`; they
+/// are now merged here with new, unique codes 17 and 18.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Contracttype)]
 #[repr(u32)]
 pub enum Error {
@@ -164,4 +169,6 @@ pub enum Error {
     InvalidFee = 14,
     PendingReview = 15,
     CoInstructorsLocked = 16,
+    CourseNotActive = 17,
+    TokenNotApproved = 18,
 }
