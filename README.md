@@ -334,6 +334,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 |---|---|---|
 | `escalate_to_arbitration(caller, course_id)` | Current/historical student or instructor | Open an arbitration case and pay the configured fee for an Active, Paused, or Archived course; its unique ID is included in the escalation event |
 | `resolve_arbitration(admin, caller, course_id, for_student)` | Admin | Resolve an open case for the student or instructor |
+| `migrate_course_storage(admin, course_id)` | Admin | Migrate an existing active or archived course record to the current storage layout |
 | `join_waitlist(student, course_id)` / `leave_waitlist(student, course_id)` | Student | Manage a capacity waitlist |
 | `set_fee_config(admin, token, fee_bps)` | Admin | Per-token platform fee |
 | `set_arbitration_fee_config(admin, fee_per_case)` | Admin | Arbitration fee |
