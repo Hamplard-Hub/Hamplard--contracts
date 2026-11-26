@@ -812,8 +812,7 @@ pub struct Enrollment {
     /// Instructor's share of `amount_paid`, as actually credited to
     /// `InstructorEarnings` at enroll()/re_enroll() time.
     pub instructor_amount: i128,
-    /// Unique enrollment reference ID, used by issue_certificate to look up
-    /// the enrollment and derive the course_id without caller-supplied course_id.
+    /// Unique generated reference ID for this enrollment.
     pub enrollment_ref: String,
     /// Ledger sequence when the enrollment was marked completed, if any (#166)
     pub completed_at_ledger: Option<u32>,
@@ -1121,8 +1120,9 @@ pub enum DataKey {
     /// Populated by `issue_certificate` and consumed by course-wide bulk
     /// operations such as `bulk_revoke_course_certificates()`.
     CourseCertificates(String),
-    /// Mapping from enrollment_reference (unique ID) to (student, course_id)
-    /// Used by issue_certificate to look up enrollments without a caller-supplied course_id.
+    /// Legacy reverse-lookup key, retained for storage-key compatibility.
+    /// New enrollments do not write this key; `issue_certificate` accepts the
+    /// student and course ID directly.
     EnrollmentByRef(String),
     /// Counter for generating unique enrollment references
     EnrollmentRefCounter,
@@ -3924,7 +3924,7 @@ impl HamplardContract {
         }
 
         // Record enrollment
-        let enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
+        let enrollment_ref = Self::generate_enrollment_ref(&env);
         let enrollment = Enrollment {
             student: student.clone(),
             course_id: course_id.clone(),
@@ -4136,7 +4136,7 @@ impl HamplardContract {
             0
         };
 
-        let enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
+        let enrollment_ref = Self::generate_enrollment_ref(&env);
         let enrollment = Enrollment {
             student: student.clone(),
             course_id: course_id.clone(),
@@ -4402,7 +4402,7 @@ impl HamplardContract {
         history.push_back(previous_enrollment);
         Self::persist(&env, &history_key, &history);
 
-        let new_enrollment_ref = Self::generate_enrollment_ref(&env, &student, &course_id);
+        let new_enrollment_ref = Self::generate_enrollment_ref(&env);
         let new_enrollment = Enrollment {
             student: student.clone(),
             course_id: course_id.clone(),
@@ -8415,9 +8415,8 @@ impl HamplardContract {
         String::from_bytes(env, &digits[..len])
     }
 
-    /// Generate a unique enrollment reference and store the mapping
-    /// from enrollment_reference -> (student, course_id).
-    fn generate_enrollment_ref(env: &Env, student: &Address, course_id: &String) -> String {
+    /// Generate a unique enrollment reference.
+    fn generate_enrollment_ref(env: &Env) -> String {
         let key = DataKey::EnrollmentRefCounter;
         let counter: u32 = env
             .storage()
@@ -8437,16 +8436,7 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
-        let enrollment_ref = Self::counter_to_string(env, counter);
-
-        // Store the mapping
-        Self::persist(
-            &env,
-            &DataKey::EnrollmentByRef(enrollment_ref.clone()),
-            &(student.clone(), course_id.clone()),
-        );
-
-        enrollment_ref
+        Self::counter_to_string(env, counter)
     }
 
     /// Split `total_amount` across the course's co-instructors according to
