@@ -10,6 +10,9 @@
 - `admin_proposed` event data is now `(new_admin, new_secondary_admin, admin1, admin2, ledger_seq)`. It previously omitted the proposed secondary admin, so monitors could not see half of the proposed key change. Indexers that decode the old 4-tuple must be updated.
 - `update_treasury` now panics if a treasury update is already pending instead of silently replacing it and restarting the timer; call `cancel_treasury_update` first. A matured update is applied (`treasury_activated`) before the new proposal is scheduled.
 - `set_risk_fee_config` now panics if any surcharge exceeds 10000 bps, or if the platform default fee plus all three surcharges exceeds 10000 bps. Previously such values were accepted and silently capped at payment time.
+- Token precision is validated once in `add_approved_token()` and cached under `DataKey2::ApprovedTokenDecimals(token)`; unsupported precision now fails with the dedicated `Error::InvalidTokenDecimals` (52) instead of `CourseNotAvailable` (34). `register_course()` and enrollment no longer call `token.decimals()` (#705).
+- `set_course_expiry()` rejects an expiry at or before the current ledger, or one that is not strictly after `enrollment_start_ledger` (#698).
+- `set_prerequisite_courses()` bounds the list to 10 entries, removes duplicates, requires every prerequisite to be Active, and rejects direct cycles between courses (#699).
 
 ### Breaking change
 

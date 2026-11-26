@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 description = "Hamplard — On-chain course enrollment, payments, and certificate issuance on Stellar Soroban"
 authors = ["Hamplard Team"]
-repository = "https://github.com/hamplard/hamplard"
+repository = "https://github.com/Hamplard-Hub/Hamplard--contracts"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

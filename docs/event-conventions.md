@@ -51,7 +51,7 @@ compliance. The slot layout follows the canonical schema above.
 | 2 | `course_archived` | `(course_id, admin1, admin2, ledger_seq)` |
 | 3 | `batch_enrolled` | `(student, course_ids, total_paid, ledger_seq)` |
 | 4 | `course_completed` | `(course_id, student, admin, completion_ledger)` |
-| 5 | `certificate_issued` | `(certificate_id, student, course_id, admin, issued_at_ledger)` |
+| 5 | `certificate_issued` | `(certificate_id, student, course_id, admin, issued_at_ledger, instructor, expires_at_ledger)` |
 | 6 | `platform_paused` | `(admin, ledger_seq)` |
 | 7 | `platform_unpaused` | `(admin, ledger_seq)` |
 | 8 | `tokens_withdrawn` | `(admin1, admin2, token, amount, destination, ledger_seq)` |
@@ -61,6 +61,8 @@ compliance. The slot layout follows the canonical schema above.
 | 12 | `token_removed_from_whitelist` | `(admin, token, ledger_seq)` |
 | 13 | `student_blocked` | `(student, admin, ledger_seq)` |
 | 14 | `student_unblocked` | `(student, admin, ledger_seq)` |
+
+> **Single data tuple per event:** `archive_course` (`course_archived`) and `block_student` (`student_blocked`) each publish exactly one data tuple. Previous implementations passed the old and new data tuples side by side as three arguments to `events().publish`; that form is not valid under this convention. Each call now takes exactly two arguments: a topics tuple and one data tuple, matching the canonical schema above.
 | 15 | `earnings_withdrawn` | `(instructor, token, withdraw_amount, recipient, ledger_seq)` |
 | 16 | `refund_requested` | `(student, course_id, amount_paid, ledger_seq)` |
 | 17 | `refund_processed` | `(student, course_id, approved, admin, ledger_seq)` |
@@ -104,6 +106,17 @@ event emitted after the loop.
 **Invariant:** Deserializing any `course_paused` event as `(String, Address, u32)`
 (or as the full pause-path tuple) must never fail. Never place a `Symbol` in
 `data.1`.
+
+---
+
+## Error Codes
+
+Contract errors are defined in a single `Error` enum. Each variant has a unique numeric code; no two variants may share a code. `HamplardError` has been merged into `Error`:
+
+- `Error::CourseNotActive` — code reserved in `Error` (replaces `HamplardError::CourseNotActive`).
+- `Error::TokenNotApproved` — code reserved in `Error` (replaces `HamplardError::TokenNotApproved`).
+
+Clients must match on the `Error` enum only. Numeric codes previously shared by `HamplardError` (1 and 2) now collide with nothing; consult the `Error` enum in `contracts/hamplard/src/lib.rs` for the authoritative code values.
 
 ---
 
