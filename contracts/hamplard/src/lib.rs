@@ -379,19 +379,14 @@
 //!   `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger_seq)`
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
-    Symbol, Vec,
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, IntoVal, Map, String,
-    Symbol, Val, Vec,
-    contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
+    IntoVal, Map, String, Symbol, Val, Vec,
 };
-use soroban_sdk::contractevent;
 
 /// Stable contract error codes returned by every failure path.
 ///
 /// Codes are part of the public interface: clients and indexers should
 /// match on the numeric value, which never changes once assigned.
-#[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
@@ -447,24 +442,17 @@ pub enum Error {
     InconsistentState = 50,
     InvalidMaxCoursesLimit = 51,
 }
-mod types;
-mod storage;
-mod events;
-mod errors;
-mod fees;
-mod course;
-mod enrollment;
-mod certificate;
-mod admin;
 
-pub use types::*;
+impl From<Error> for soroban_sdk::Error {
+    fn from(e: Error) -> Self {
+        soroban_sdk::Error::from_contract_error(e as u32)
+    }
+}
+
 // Embed version and source metadata into the deployed Wasm so operators can
 // identify which build is live after an upgrade.
-soroban_sdk::contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
+soroban_sdk::contractmeta!(key = "version", val = "0.1.0");
 soroban_sdk::contractmeta!(key = "repo", val = "https://github.com/hamplard/hamplard");
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Map, String,
-    Symbol, Vec,
-};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -577,19 +565,6 @@ pub struct RiskFeeApplied {
     pub risk_surcharge_bps: u32,
     pub effective_fee_bps: u32,
     pub platform_fee: i128,
-    pub course_id: String,
-    pub student: Address,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, PartialEq)]
-pub struct RiskFeeAppliedEvent {
-    #[topic]
-    pub payment_amount: i128,
-    pub base_fee_bps: u32,
-    pub risk_surcharge_bps: u32,
-    pub effective_fee_bps: u32,
-    pub platform_fee: i128,
 }
 
 /// Emitted when an enrollment is rejected due to course status.
@@ -612,18 +587,6 @@ pub struct EnrollmentFailed {
     pub student: Address,
     pub reason_code: String,
     pub ledger_sequence: u32,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, PartialEq)]
-pub struct InitializedEvent {
-    #[topic]
-    pub admin: Address,
-    pub secondary_admin: Address,
-    pub treasury: Address,
-    pub default_fee_pct: u32,
-    pub max_courses_per_instructor: u32,
-    pub refund_window_ledgers: u32,
 }
 
 // ============================================================
@@ -678,6 +641,7 @@ pub enum CapacityMode {
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PausedBy {
+    None,
     Instructor,
     Admin,
 }
@@ -797,7 +761,7 @@ pub struct Course {
     /// changed retroactively.
     pub co_instructors: Vec<CoInstructor>,
     /// Role that paused the course via `pause_course`, if currently paused.
-    pub paused_by: Option<PausedBy>,
+    pub paused_by: PausedBy,
 }
 
 /// An enrollment record — one per student per course
@@ -826,7 +790,8 @@ pub struct Enrollment {
     /// Course version active at the time of enrollment
     pub course_version: u32,
     /// Hash of the course content at the time of enrollment (#416)
-    pub content_hash: BytesN<32>,    /// Platform's share of `amount_paid`, as actually deducted at
+    pub content_hash: BytesN<32>,
+    /// Platform's share of `amount_paid`, as actually deducted at
     /// enroll()/re_enroll() time via `deduct_fee()`. Persisted so that a
     /// later refund splits funds in the same proportion that was actually
     /// collected, even if `FeeConfig(token)` or `course.platform_fee_percent`
@@ -876,7 +841,8 @@ pub struct Certificate {
     /// Course version the student completed (snapshot from the enrollment, #416)
     pub course_version: u32,
     /// Course content hash the student completed (snapshot from the enrollment, #416)
-    pub content_hash: BytesN<32>,    /// Reference back to the enrollment record (e.g. backend ID)
+    pub content_hash: BytesN<32>,
+    /// Reference back to the enrollment record (e.g. backend ID)
     pub enrollment_reference: String,
     /// Instructor's address (for attribution)
     pub instructor: Address,
@@ -1007,6 +973,22 @@ pub struct InstructorStats {
 /// Hot enrollment and revenue counters for a course, stored separately from
 /// the static `Course` metadata so enrollments do not rewrite the full
 /// `Course` entry.
+/// Lifecycle state of a student's enrollment in a course.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EnrollmentStatus {
+    /// No enrollment record exists for this student/course pair.
+    None,
+    /// Enrolled and currently within the enrollment window.
+    Active,
+    /// Enrolled, not completed, and past the course's enrollment expiry.
+    Expired,
+    /// Enrollment has been marked completed.
+    Completed,
+    /// Enrollment was refunded and archived to enrollment history.
+    Refunded,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct CourseStats {
@@ -1066,25 +1048,13 @@ pub enum DataKey {
     InstructorCourseCount(Address),
     /// Number of currently pending courses for an instructor
     InstructorPendingCourseCount(Address),
-    /// Legacy instance-storage key for the per-instructor course count.
-    /// Retained only so the migration helper can read and clear the old
-    /// instance entry; new writes go to `InstructorCourseCountPersistent`.
-    InstructorCourseCountLegacy(Address),
-    /// Legacy instance-storage key for the per-instructor pending count.
-    /// Retained only so the migration helper can read and clear the old
-    /// instance entry; new writes go to `InstructorPendingCourseCountPersistent`.
-    InstructorPendingCourseCountLegacy(Address),
     /// Ordered list of course IDs registered by a specific instructor
     /// (append-only — course status changes never remove an entry).
     InstructorCourseList(Address),
     /// Maximum number of courses an instructor can register
     MaxCoursesPerInstructor,
-    MaxPendingCoursesPerInstructor,
     /// Minimum ledger sequences required between course registration and approval
     MinReviewDelay,
-    /// Default minimum ledger sequences required between enroll() and
-    /// mark_completed() for newly-registered courses (admin-configurable).
-    DefaultMinCompletionLedgers,
     /// Refund window delay in ledger sequences
     RefundWindow,
     /// Admin-configurable processing deadline (in ledger sequences) for a
@@ -1100,11 +1070,6 @@ pub enum DataKey {
     /// Archived past `Enrollment` records for a (student, course_id) pair,
     /// preserved when a completed or expired student re-enrolls via
     /// `re_enroll()`.
-    EnrollmentHistory(Address, String),
-    /// Ordered list of all registered course IDs (on-chain catalog)
-    CourseList,
-    /// Archived past `Enrollment` records for a (student, course_id) pair,
-    /// preserved when a completed student re-enrolls via `re_enroll()`.
     EnrollmentHistory(Address, String),
     /// Aggregate reputation stats for an instructor (total students,
     /// completions, certificates issued) — see `InstructorStats`.
@@ -1164,6 +1129,16 @@ pub enum DataKey {
     /// enrollment. When the count reaches CIRCUIT_BREAKER_THRESHOLD the
     /// course is automatically paused.
     CourseFailureCount(String),
+}
+
+/// Overflow keys split out to avoid the #[contracttype] variant-count limit.
+#[contracttype]
+pub enum DataKey2 {
+    /// Maximum pending courses per instructor limit
+    MaxPendingCoursesPerInstructor,
+    /// Default minimum ledger sequences required between enroll() and
+    /// mark_completed() for newly-registered courses (admin-configurable).
+    DefaultMinCompletionLedgers,
     /// Tokens classified as BTC/ETH-denominated for risk-surcharge pricing.
     BtcEthToken(Address),
     /// Ordered list of all whitelisted token addresses.
@@ -1172,17 +1147,20 @@ pub enum DataKey {
     ApprovedTokenList,
     /// Lifetime enrollment count per student (new-customer risk flag).
     StudentEnrollmentCount(Address),
+    /// Legacy instance-storage key for the per-instructor course count.
+    /// Retained only so the migration helper can read and clear the old
+    /// instance entry; new writes go to `InstructorCourseCountPersistent`.
+    InstructorCourseCountLegacy(Address),
+    /// Legacy instance-storage key for the per-instructor pending count.
+    /// Retained only so the migration helper can read and clear the old
+    /// instance entry; new writes go to `InstructorPendingCountPersistent`.
+    InstructorPendingCountLegacy(Address),
     /// Persistent per-instructor course count (migrated out of instance
     /// storage so instance size no longer grows with the instructor count).
     InstructorCourseCountPersistent(Address),
     /// Persistent per-instructor pending course count (migrated out of
     /// instance storage so instance size no longer grows with the instructor count).
-    InstructorPendingCourseCountPersistent(Address),
-}
-
-/// Overflow keys split out to avoid the #[contracttype] variant-count limit.
-#[contracttype]
-pub enum DataKey2 {
+    InstructorPendingCountPersistent(Address),
     /// Threshold price (in stroops) above which a course is "high-value"
     /// and requires co-signature from two different admins to approve
     HighValueCourseThreshold,
@@ -1216,6 +1194,14 @@ pub enum DataKey2 {
     /// Ordered (append-only) list of certificate IDs issued to a student (#414).
     /// Populated by `issue_certificate` and read by `get_certificates_by_student`.
     StudentCertificates(Address),
+    /// Accumulated in-contract platform fees awaiting sweep.
+    PlatformFeesAccumulated(Address),
+    /// Pending co-instructor revenue share keyed by (course_id, address).
+    PendingCoInstructor(String, Address),
+    /// List of pending co-instructor addresses for a course.
+    PendingCoInstructorList(String),
+    /// Hot enrollment and earnings counters for a course.
+    CourseStats(String),
 }
 
 /// A proposed contract code upgrade awaiting its governance time-lock.
@@ -1229,13 +1215,6 @@ pub struct PendingUpgrade {
     pub proposed_at_ledger: u32,
     /// Ledger sequence at or after which `upgrade_contract` may execute.
     pub effective_ledger: u32,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, PartialEq)]
-pub struct CourseRegisteredEvent {
-    #[topic]
-    pub course_id: String,
 }
 
 // ============================================================
@@ -1479,15 +1458,39 @@ impl HamplardContract {
             .instance()
             .set(&DataKey::InitLedger, &env.ledger().sequence());
 
-        InitializedEvent {
-            admin: admin.clone(),
+        env.events().publish(
+            (Symbol::new(&env, "initialized"), admin.clone()),
+            (
+                admin,
+                secondary_admin,
+                treasury,
+                default_fee_pct,
+                max_courses_per_instructor,
+                refund_window_ledgers,
+            ),
+        );
+    }
+
+    pub fn init(
+        env: Env,
+        admin: Address,
+        secondary_admin: Address,
+        treasury: Address,
+        default_fee_pct: u32,
+        max_courses_per_instructor: u32,
+        refund_window_ledgers: u32,
+        revocation_challenge_period: u32,
+    ) {
+        Self::__constructor(
+            env,
+            admin,
             secondary_admin,
             treasury,
             default_fee_pct,
             max_courses_per_instructor,
             refund_window_ledgers,
-        }
-        .publish(&env);
+            revocation_challenge_period,
+        );
     }
 
     /// Admin sets (or rotates) the moderator address.
@@ -1546,20 +1549,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -1576,7 +1573,12 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "enrollment_start_set"), course_id.clone()),
-            (course_id.clone(), caller.clone(), env.ledger().sequence(), enrollment_start_ledger),
+            (
+                course_id.clone(),
+                caller.clone(),
+                env.ledger().sequence(),
+                enrollment_start_ledger,
+            ),
         );
     }
 
@@ -1601,19 +1603,24 @@ impl HamplardContract {
     ///   as a floor on the live per-token fee.
     /// - `content_hash`     — 32-byte hash of the off-chain course content at registration time
     fn normalize_course_id(env: &Env, input: &String) -> String {
-        let raw = input.to_bytes();
-        let mut out = Bytes::new(env);
-        let mut i = 0;
-        while i < raw.len() {
-            let b = raw.get(i).unwrap();
-            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+        let len = input.len() as usize;
+        if len == 0 {
+            panic!("course_id must not be empty");
+        }
+        let mut buf = [0u8; 128];
+        if len > buf.len() {
+            panic!("course_id exceeds maximum length");
+        }
+        input.copy_into_slice(&mut buf[..len]);
+        for b in &mut buf[..len] {
+            if *b == b' ' || *b == b'\t' || *b == b'\n' || *b == b'\r' {
                 panic!("course_id must not contain whitespace");
             }
-            out.push_back(if b'A' <= b && b <= b'Z' { b + 32 } else { b });
-            i += 1;
+            if b'A' <= *b && *b <= b'Z' {
+                *b += 32;
+            }
         }
-        if out.len() == 0 { panic!("course_id must not be empty"); }
-        String::from_bytes(env, &out)
+        String::from_bytes(env, &buf[..len])
     }
 
     pub fn register_course(
@@ -1684,8 +1691,6 @@ impl HamplardContract {
             // Exclude null (0x00) and other control chars (0x01-0x1F, 0x7F)
             if *byte < 0x20 || *byte > 0x7E {
                 soroban_sdk::panic_with_error!(&env, Error::InvalidCourseInput);
-            if !(0x20..=0x7E).contains(byte) {
-                panic!("course_id contains invalid characters (must be printable ASCII)");
             }
         }
 
@@ -1747,7 +1752,7 @@ impl HamplardContract {
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
 
-        let course_count_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+        let course_count_key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
         let current_count: u32 = Self::read_instructor_course_count(&env, &instructor);
         // A stored limit of 0 would block every instructor from registering
         // (current_count >= 0 is always true). Reject it defensively so a
@@ -1757,15 +1762,11 @@ impl HamplardContract {
             panic!("max courses per instructor must be greater than zero");
         }
 
-        let course_count_key = DataKey::InstructorCourseCount(instructor.clone());
-        let current_count: u32 = env.storage().instance().get(&course_count_key).unwrap_or(0);
-
         if current_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
 
-        let pending_count_key =
-            DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+        let pending_count_key = DataKey2::InstructorPendingCountPersistent(instructor.clone());
         let current_pending_count = Self::read_instructor_pending_course_count(&env, &instructor);
 
         if current_pending_count >= Self::effective_max_pending_courses(&env, max_courses) {
@@ -1797,7 +1798,7 @@ impl HamplardContract {
         let min_completion_ledgers: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::DefaultMinCompletionLedgers)
+            .get(&DataKey2::DefaultMinCompletionLedgers)
             .unwrap_or(0);
 
         let course = Course {
@@ -1829,7 +1830,7 @@ impl HamplardContract {
             archived_at_ledger: None,
             categories,
             co_instructors: Vec::new(&env),
-            paused_by: None,
+            paused_by: PausedBy::None,
         };
 
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
@@ -1894,7 +1895,11 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "course_registered"), course_id.clone()),
-            (course_id.clone(), instructor.clone(), env.ledger().sequence()),
+            (
+                course_id.clone(),
+                instructor.clone(),
+                env.ledger().sequence(),
+            ),
         );
 
         course_id
@@ -1955,11 +1960,6 @@ impl HamplardContract {
             }
         }
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let delay = env
             .storage()
             .instance()
@@ -2006,8 +2006,7 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
-        let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+        let pending_key = DataKey2::InstructorPendingCountPersistent(course.instructor.clone());
         let pending_count = Self::read_instructor_pending_course_count(&env, &course.instructor);
         let new_pending_count = pending_count
             .checked_sub(1)
@@ -2065,11 +2064,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         if course.status != CourseStatus::Pending {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPending);
         }
@@ -2080,15 +2074,12 @@ impl HamplardContract {
 
         // #376 — Decrement the total course count so a rejected course does
         // not permanently occupy a slot against MaxCoursesPerInstructor.
-        let count_key =
-            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+        let count_key = DataKey2::InstructorCourseCountPersistent(course.instructor.clone());
         let count = Self::read_instructor_course_count(&env, &course.instructor);
         let new_count = count
             .checked_sub(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
-        env.storage()
-            .persistent()
-            .set(&count_key, &new_count);
+        env.storage().persistent().set(&count_key, &new_count);
         env.storage().persistent().extend_ttl(
             &count_key,
             Self::PERSISTENT_TTL_THRESHOLD,
@@ -2096,10 +2087,8 @@ impl HamplardContract {
         );
 
         // The course was Pending when rejected, so also release the pending slot.
-        let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
-        let pending_count =
-            Self::read_instructor_pending_course_count(&env, &course.instructor);
+        let pending_key = DataKey2::InstructorPendingCountPersistent(course.instructor.clone());
+        let pending_count = Self::read_instructor_pending_course_count(&env, &course.instructor);
         let new_pending_count = pending_count
             .checked_sub(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
@@ -2160,8 +2149,7 @@ impl HamplardContract {
             .instance()
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
-        let current_pending =
-            Self::read_instructor_pending_course_count(&env, &instructor);
+        let current_pending = Self::read_instructor_pending_course_count(&env, &instructor);
         if current_pending >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
         }
@@ -2182,8 +2170,7 @@ impl HamplardContract {
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
 
         // Increment both the total and pending counters.
-        let count_key =
-            DataKey::InstructorCourseCountPersistent(instructor.clone());
+        let count_key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
         env.storage()
             .persistent()
             .set(&count_key, &(current_count + 1));
@@ -2193,8 +2180,7 @@ impl HamplardContract {
             Self::PERSISTENT_TTL_EXTEND_TO,
         );
 
-        let pending_key =
-            DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+        let pending_key = DataKey2::InstructorPendingCountPersistent(instructor.clone());
         env.storage()
             .persistent()
             .set(&pending_key, &(current_pending + 1));
@@ -2219,20 +2205,12 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
-            panic!("unauthorized");
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
         if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
@@ -2247,11 +2225,11 @@ impl HamplardContract {
         }
 
         course.status = CourseStatus::Paused;
-        course.paused_by = Some(if is_admin {
+        course.paused_by = if is_admin {
             PausedBy::Admin
         } else {
             PausedBy::Instructor
-        });
+        };
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
@@ -2273,31 +2251,20 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
-        if !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
-            panic!("unauthorized");
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
 
         // freeze_instructor() auto-pauses the instructor's courses; a frozen
         // instructor must not be able to undo that by unpausing them.
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin
+            && !Self::is_moderator(&env, &caller)
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        Self::require_admin_or_instructor(&env, &caller, &course);
-
-        // freeze_instructor() auto-pauses the instructor's courses; a frozen
-        // instructor must not be able to undo that by unpausing them.
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-        if !is_admin && !Self::is_moderator(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         env.storage()
@@ -2308,12 +2275,12 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPaused);
         }
 
-        if course.paused_by == Some(PausedBy::Admin) && !is_admin {
+        if course.paused_by == PausedBy::Admin && !is_admin {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
 
         course.status = CourseStatus::Active;
-        course.paused_by = None;
+        course.paused_by = PausedBy::None;
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
@@ -2354,11 +2321,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         if instructor != course.instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
@@ -2390,7 +2352,7 @@ impl HamplardContract {
             .get(&DataKey::MaxCoursesPerInstructor)
             .unwrap_or(50);
 
-        let new_count_key = DataKey::InstructorCourseCountPersistent(new_instructor.clone());
+        let new_count_key = DataKey2::InstructorCourseCountPersistent(new_instructor.clone());
         let new_count = Self::read_instructor_course_count(&env, &new_instructor);
         if new_count >= max_courses {
             soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
@@ -2398,7 +2360,7 @@ impl HamplardContract {
 
         if course.status == CourseStatus::Pending {
             let new_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(new_instructor.clone());
+                DataKey2::InstructorPendingCountPersistent(new_instructor.clone());
             let new_pending = Self::read_instructor_pending_course_count(&env, &new_instructor);
             if new_pending >= Self::effective_max_pending_courses(&env, max_courses) {
                 soroban_sdk::panic_with_error!(&env, Error::InstructorCourseLimitReached);
@@ -2411,7 +2373,7 @@ impl HamplardContract {
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist_course(&env, &course_id, &course);
 
-        let old_count_key = DataKey::InstructorCourseCountPersistent(previous_instructor.clone());
+        let old_count_key = DataKey2::InstructorCourseCountPersistent(previous_instructor.clone());
         let old_count = Self::read_instructor_course_count(&env, &previous_instructor);
         let decremented_old = old_count
             .checked_sub(1)
@@ -2435,7 +2397,7 @@ impl HamplardContract {
 
         if course.status == CourseStatus::Pending {
             let old_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(previous_instructor.clone());
+                DataKey2::InstructorPendingCountPersistent(previous_instructor.clone());
             let old_pending =
                 Self::read_instructor_pending_course_count(&env, &previous_instructor);
             let decremented_pending = old_pending
@@ -2451,7 +2413,7 @@ impl HamplardContract {
             );
 
             let new_pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(new_instructor.clone());
+                DataKey2::InstructorPendingCountPersistent(new_instructor.clone());
             let new_pending = Self::read_instructor_pending_course_count(&env, &new_instructor);
             env.storage()
                 .persistent()
@@ -2528,11 +2490,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         if !matches!(
             &course.status,
             &CourseStatus::Paused | &CourseStatus::Pending | &CourseStatus::Rejected
@@ -2550,16 +2507,6 @@ impl HamplardContract {
         let mut total_refunded = 0i128;
 
         if let Some(ref students) = students_to_refund {
-            let token_client = token::Client::new(&env, &course.token);
-
-            let treasury = Self::effective_treasury(&env);
-            let treasury: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Treasury)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::InvalidTreasury));
-            let treasury: Address = Self::read_treasury(&env);
-
             for student in students.iter() {
                 let enrollment_key = DataKey::Enrollment(student.clone(), course_id.clone());
                 if env.storage().persistent().has(&enrollment_key) {
@@ -2572,60 +2519,13 @@ impl HamplardContract {
                         refund_count = refund_count.checked_add(1).unwrap_or_else(|| {
                             soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
                         });
-                        if platform_amount > 0 {
-                            Self::pay_platform_refund(
-                                &env,
-                                &course.token,
-                                &student,
-                                platform_amount,
-                            );
-                        }
-
-                        if instructor_amount > 0 {
-                            Self::debit_instructor_earnings(
-                                &env,
-                                &course.instructor,
-                                &course.token,
-                                instructor_amount,
-                            );
-                            token_client.transfer(
-                                &env.current_contract_address(),
-                                &student,
-                                &instructor_amount,
-                            );
-                        }
-
-                        // Archive the refunded enrollment before removing the active record.
-                        let mut archived_enrollment: Enrollment = enrollment.clone();
-                        archived_enrollment.is_refunded = true;
-                        let history_key =
-                            DataKey::EnrollmentHistory(student.clone(), course_id.clone());
-                        let mut history: Vec<Enrollment> = env
-                            .storage()
-                            .persistent()
-                            .get(&history_key)
-                            .unwrap_or_else(|| Vec::new(&env));
-                        history.push_back(archived_enrollment);
-                        Self::persist(&env, &history_key, &history);
-
-                        env.storage().persistent().remove(&enrollment_key);
-
-                        refund_count = refund_count
-                            .checked_add(1)
-                            .unwrap_or_else(|| panic!("refund count overflow"));
                         total_refunded = total_refunded
-                            .checked_add(breakdown.platform_refund + breakdown.instructor_refund)
-                            .unwrap_or_else(|| panic!("total_refunded overflow"));
-
-                            .checked_add(platform_amount + instructor_amount)
+                            .checked_add(breakdown.refund_amount)
                             .unwrap_or_else(|| {
                                 soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
                             });
 
                         let mut stats = Self::read_course_stats(&env, &course_id, &course);
-                        if stats.active_enrollments > 0 {
-                            stats.active_enrollments -= 1;
-                        }
                         // Capacity is a lifetime cap on non-refunded
                         // enrollments, so a refund releases the seat. (#324)
                         if stats.total_enrollments > 0 {
@@ -2634,21 +2534,6 @@ impl HamplardContract {
                         Self::write_course_stats(&env, &course_id, &stats);
                         course.active_enrollments = stats.active_enrollments;
                         course.total_enrollments = stats.total_enrollments;
-
-                        if enrollment.amount_paid > 0 {
-                            let total_active: u32 = env
-                                .storage()
-                                .instance()
-                                .get(&DataKey::TotalActiveEnrollments)
-                                .unwrap_or(0);
-                            if total_active > 0 {
-                                env.storage()
-                                    .instance()
-                                    .set(&DataKey::TotalActiveEnrollments, &(total_active - 1));
-                            }
-                        }
-
-                        Self::dec_total_active(&env);
 
                         // Decrement total_students in InstructorStats so
                         // archive-refunded enrollments no longer count toward
@@ -2661,9 +2546,9 @@ impl HamplardContract {
                             &env,
                             &course_id,
                             &student,
-                            platform_amount + instructor_amount,
-                            platform_amount,
-                            instructor_amount,
+                            breakdown.refund_amount,
+                            breakdown.platform_refund,
+                            breakdown.instructor_refund,
                         );
 
                         // Resolve any pending refund request so it cannot get stuck
@@ -2678,7 +2563,7 @@ impl HamplardContract {
                         {
                             if refund_req.status == RefundStatus::Pending {
                                 refund_req.status = RefundStatus::Approved;
-                                refund_req.refund_amount = Some(platform_amount + instructor_amount);
+                                refund_req.refund_amount = Some(breakdown.refund_amount);
                                 Self::persist(&env, &refund_req_key, &refund_req);
                             }
                         }
@@ -2725,15 +2610,12 @@ impl HamplardContract {
 
         // #376 — Decrement the total course count so an archived course does
         // not permanently occupy a slot against MaxCoursesPerInstructor.
-        let count_key =
-            DataKey::InstructorCourseCountPersistent(course.instructor.clone());
+        let count_key = DataKey2::InstructorCourseCountPersistent(course.instructor.clone());
         let count = Self::read_instructor_course_count(&env, &course.instructor);
         let new_count = count
             .checked_sub(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
-        env.storage()
-            .persistent()
-            .set(&count_key, &new_count);
+        env.storage().persistent().set(&count_key, &new_count);
         env.storage().persistent().extend_ttl(
             &count_key,
             Self::PERSISTENT_TTL_THRESHOLD,
@@ -2742,15 +2624,12 @@ impl HamplardContract {
 
         // If the archived course was still Pending, release the pending slot too.
         if pre_archive_status == CourseStatus::Pending {
-            let pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(course.instructor.clone());
+            let pending_key = DataKey2::InstructorPendingCountPersistent(course.instructor.clone());
             let pending_count =
                 Self::read_instructor_pending_course_count(&env, &course.instructor);
             let new_pending_count = pending_count
                 .checked_sub(1)
-                .unwrap_or_else(|| {
-                    soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow)
-                });
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CounterUnderflow));
             env.storage()
                 .persistent()
                 .set(&pending_key, &new_pending_count);
@@ -2765,7 +2644,6 @@ impl HamplardContract {
         // the operation without replaying every enrollment history entry.
         env.events().publish(
             (Symbol::new(&env, "course_archived"), course_id.clone()),
-            (course_id.clone(), admin1.clone(), admin2.clone(), env.ledger().sequence()),
             (
                 course_id.clone(),
                 admin1.clone(),
@@ -2803,7 +2681,10 @@ impl HamplardContract {
         env.storage().instance().remove(&DataKey::PendingTreasury);
 
         env.events().publish(
-            (Symbol::new(&env, "treasury_update_cancelled"), admin1.clone()),
+            (
+                Symbol::new(&env, "treasury_update_cancelled"),
+                admin1.clone(),
+            ),
             (pending.address, pending.effective_ledger, admin1, admin2),
         );
     }
@@ -2824,20 +2705,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -2924,20 +2799,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -2993,12 +2862,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3008,8 +2871,6 @@ impl HamplardContract {
 
         if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         course.enrollment_expiry_ledgers = expiry_ledgers;
@@ -3044,20 +2905,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -3096,12 +2951,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        Self::require_admin_or_instructor(&env, &caller, &course);
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3111,8 +2960,6 @@ impl HamplardContract {
 
         if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {
@@ -3169,11 +3016,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
@@ -3185,12 +3027,6 @@ impl HamplardContract {
         // admin may still update it as an administrative intervention.
         if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        Self::require_admin_or_instructor(&env, &caller, &course);
-
-        // A frozen instructor may not alter the content commitment, but an
-        // admin may still update it as an administrative intervention.
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
         }
 
         if course.status == CourseStatus::Archived {
@@ -3231,20 +3067,14 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
 
         if !is_admin && !is_instructor {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
 
-        if Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -3425,7 +3255,9 @@ impl HamplardContract {
             );
             pending_addresses.push_back(co.address.clone());
         }
-        env.storage().persistent().set(&pending_list_key, &pending_addresses);
+        env.storage()
+            .persistent()
+            .set(&pending_list_key, &pending_addresses);
         env.storage().persistent().extend_ttl(
             &pending_list_key,
             Self::PERSISTENT_TTL_THRESHOLD,
@@ -3433,7 +3265,10 @@ impl HamplardContract {
         );
 
         env.events().publish(
-            (Symbol::new(&env, "co_instructors_proposed"), course_id.clone()),
+            (
+                Symbol::new(&env, "co_instructors_proposed"),
+                course_id.clone(),
+            ),
             (course_id, co_instructors, env.ledger().sequence()),
         );
     }
@@ -3497,14 +3332,18 @@ impl HamplardContract {
         // Add to the live co-instructor list on the course.
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| panic!("course not found"));
-        course
-            .co_instructors
-            .push_back(CoInstructor { address: co_instructor.clone(), share_bps });
+        course.co_instructors.push_back(CoInstructor {
+            address: co_instructor.clone(),
+            share_bps,
+        });
         course.last_updated_ledger = env.ledger().sequence();
         Self::persist(&env, &DataKey::Course(course_id.clone()), &course);
 
         env.events().publish(
-            (Symbol::new(&env, "co_instructor_accepted"), course_id.clone()),
+            (
+                Symbol::new(&env, "co_instructor_accepted"),
+                course_id.clone(),
+            ),
             (co_instructor, course_id, share_bps, env.ledger().sequence()),
         );
     }
@@ -3618,7 +3457,6 @@ impl HamplardContract {
 
         total_paid
     }
-
 
     fn validate_enrollment(env: &Env, student: &Address, course_id: &String) {
         let course =
@@ -3735,11 +3573,6 @@ impl HamplardContract {
                 CapacityMode::Concurrent => course.active_enrollments,
             };
             if count >= cap {
-                panic!("course has reached maximum enrollment capacity");
-            soroban_sdk::panic_with_error!(&env, Error::AlreadyEnrolled);
-        }
-        if let Some(cap) = course.max_capacity {
-            if course.total_enrollments >= cap {
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
             }
         }
@@ -3816,7 +3649,6 @@ impl HamplardContract {
 
             if !has_valid_certificate {
                 Self::emit_enrollment_failed(env, student, course_id, "PREREQUISITE_NOT_MET");
-                panic!("prerequisite course not completed");
                 soroban_sdk::panic_with_error!(&env, Error::InvalidPrerequisite);
             }
         }
@@ -3830,25 +3662,7 @@ impl HamplardContract {
             let total_active: u32 = Self::read_total_active_enrollments(env);
             if total_active >= platform_cap {
                 Self::emit_enrollment_failed(env, student, course_id, "PLATFORM_CAP_EXCEEDED");
-                panic!("platform has reached maximum total enrollment capacity");
                 soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-        // Check the platform-wide cap for paid courses only. Free courses do
-        // not consume platform capacity and must remain enrollable even when
-        // the paid-enrollment cap is full.
-        if course.price > 0 {
-            if let Some(platform_cap) = env
-                .storage()
-                .instance()
-                .get::<DataKey, u32>(&DataKey::PlatformEnrollmentCap)
-            {
-                let total_active: u32 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::TotalActiveEnrollments)
-                    .unwrap_or(0);
-                if total_active >= platform_cap {
-                    panic!("platform has reached maximum total enrollment capacity");
-                }
             }
         }
     }
@@ -3882,13 +3696,6 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(env, course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-        let mut course =
-            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
-
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
 
         let token_client = token::Client::new(env, &course.token);
 
@@ -3946,6 +3753,7 @@ impl HamplardContract {
         // 3. Publishes RiskFeeApplied event when surcharge applies
         // Quote and enrollment share the same risk flags and course-aware fee split.
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(env, student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
@@ -3974,7 +3782,7 @@ impl HamplardContract {
                 env.storage().instance().remove(&DataKey::PendingTreasury);
             }
         }
-        let treasury: Address = Self::read_treasury(env);
+        let treasury: Address = Self::read_treasury(&env);
 
         // Transfer full price from student to contract, then distribute platform fee.
         //
@@ -3996,15 +3804,6 @@ impl HamplardContract {
         let new_failure_count = failure_count
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage()
-            .persistent()
-            .set(&failure_key, &new_failure_count);
-        env.storage().persistent().extend_ttl(
-            &failure_key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("failure counter overflow"));
         Self::persist(&env, &failure_key, &new_failure_count);
 
         let actual_amount_paid = if course.price > 0 {
@@ -4034,14 +3833,21 @@ impl HamplardContract {
             // pushing it to the treasury on every enrollment.  The fee is
             // swept to the treasury in a single call to sweep_platform_fees().
             if platform_amount > 0 {
-                token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                let acc_key = DataKey2::PlatformFeesAccumulated(course.token.clone());
+                let current: i128 = env.storage().instance().get(&acc_key).unwrap_or(0);
+                let new_total = current.checked_add(platform_amount).unwrap_or_else(|| {
+                    soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
+                });
+                env.storage().instance().set(&acc_key, &new_total);
                 Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
+                    (Symbol::new(&env, "platform_fee_accrued"), course_id.clone()),
                     (
-                        Symbol::new(&env, "platform_fee_accrued"),
-                        course_id.clone(),
+                        course.token.clone(),
+                        platform_amount,
+                        new_total,
+                        env.ledger().sequence(),
                     ),
-                    (course.token.clone(), platform_amount, new_total, env.ledger().sequence()),
                 );
             }
 
@@ -4171,7 +3977,9 @@ impl HamplardContract {
         });
         if course.price > 0 {
             Self::update_instructor_stats(env, &course.instructor, |s| {
-                s.total_students = s.total_students.checked_add(1)
+                s.total_students = s
+                    .total_students
+                    .checked_add(1)
                     .unwrap_or_else(|| panic!("instructor stats overflow"));
             });
         }
@@ -4205,17 +4013,14 @@ impl HamplardContract {
     /// Callers must ensure `validate_enrollment()` was already called for
     /// this `(student, course_id)` pair in the same transaction. Direct
     /// external callers must use `enroll_internal()` instead.
-    fn enroll_internal_validated(env: &Env, student: &Address, course_id: &String) -> i128 {
-        let mut course = Self::get_course_internal(env, course_id)
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
     fn enroll_internal_validated(
         env: &Env,
         student: &Address,
         course_id: &String,
         max_price: i128,
     ) -> i128 {
-        let mut course =
-            Self::get_course_internal(env, course_id).unwrap_or_else(|| panic!("course not found"));
+        let mut course = Self::get_course_internal(env, course_id)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
         // #361 — See enroll_internal().
         Self::assert_price_within_limit(course.price, max_price);
@@ -4235,6 +4040,7 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
         }
 
+        let course_fee_override_bps = Self::course_fee_override_bps(env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             env,
             &course.token,
@@ -4262,7 +4068,7 @@ impl HamplardContract {
                 env.storage().instance().remove(&DataKey::PendingTreasury);
             }
         }
-        let treasury: Address = Self::read_treasury(env);
+        let treasury: Address = Self::read_treasury(&env);
 
         let actual_amount_paid = if course.price > 0 {
             let balance_before = token_client.balance(&env.current_contract_address());
@@ -4279,14 +4085,21 @@ impl HamplardContract {
 
             // #368 — Accumulate the platform fee in-contract (same as enroll_internal).
             if platform_amount > 0 {
-                token_client.transfer(&env.current_contract_address(), &treasury, &platform_amount);
+                let acc_key = DataKey2::PlatformFeesAccumulated(course.token.clone());
+                let current: i128 = env.storage().instance().get(&acc_key).unwrap_or(0);
+                let new_total = current.checked_add(platform_amount).unwrap_or_else(|| {
+                    soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow)
+                });
+                env.storage().instance().set(&acc_key, &new_total);
                 Self::increment_platform_fees_collected(env, &course.token, platform_amount);
                 env.events().publish(
+                    (Symbol::new(env, "platform_fee_accrued"), course_id.clone()),
                     (
-                        Symbol::new(env, "platform_fee_accrued"),
-                        course_id.clone(),
+                        course.token.clone(),
+                        platform_amount,
+                        new_total,
+                        env.ledger().sequence(),
                     ),
-                    (course.token.clone(), platform_amount, new_total, env.ledger().sequence()),
                 );
             }
 
@@ -4374,7 +4187,9 @@ impl HamplardContract {
         });
         if course.price > 0 {
             Self::update_instructor_stats(env, &course.instructor, |s| {
-                s.total_students = s.total_students.checked_add(1)
+                s.total_students = s
+                    .total_students
+                    .checked_add(1)
                     .unwrap_or_else(|| panic!("instructor stats overflow"));
             });
         }
@@ -4426,11 +4241,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         if Self::is_student_blocked_internal(&env, &student) {
             soroban_sdk::panic_with_error!(&env, Error::StudentBlocked);
         }
@@ -4475,30 +4285,10 @@ impl HamplardContract {
             .get(&enrollment_key)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError));
 
-        if !previous_enrollment.completed {
-            soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
         let previous_enrollment_expired =
             Self::is_enrollment_expired(&env, &course, &previous_enrollment);
         if !previous_enrollment.completed && !previous_enrollment_expired {
-            panic!("current enrollment has not been completed yet");
-        }
-
-        if let Some(cap) = course.max_capacity {
-            let count = match course.capacity_mode {
-                CapacityMode::Lifetime => course.total_enrollments,
-                CapacityMode::Concurrent => course.active_enrollments,
-            };
-            if count >= cap {
-                panic!("course has reached maximum enrollment capacity");
-            if course.total_enrollments >= cap {
-                soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-            }
-        }
-
-        if let Some(expiry) = course.expires_at_ledger {
-            if env.ledger().sequence() >= expiry {
-                soroban_sdk::panic_with_error!(&env, Error::CourseNotAvailable);
-            }
+            soroban_sdk::panic_with_error!(&env, Error::EnrollmentStateError);
         }
 
         let token_client = token::Client::new(&env, &course.token);
@@ -4508,6 +4298,7 @@ impl HamplardContract {
         // 2. Risk-based surcharges for large payments, new customers, and BTC/ETH
         // 3. Publishes RiskFeeApplied event when surcharge applies
         let (is_new_customer, is_btc_eth) = Self::resolve_risk_flags(&env, &student, &course.token);
+        let course_fee_override_bps = Self::course_fee_override_bps(&env, &course.id);
         let (instructor_amount, platform_amount) = Self::deduct_fee(
             &env,
             &course.token,
@@ -4535,7 +4326,7 @@ impl HamplardContract {
                 env.storage().instance().remove(&DataKey::PendingTreasury);
             }
         }
-        let treasury: Address = Self::read_treasury(env);
+        let treasury: Address = Self::read_treasury(&env);
 
         if course.price > 0 {
             let balance_before = token_client.balance(&env.current_contract_address());
@@ -4614,7 +4405,6 @@ impl HamplardContract {
             .total_enrollments
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-            .unwrap_or_else(|| panic!("enrollment count overflow"));
 
         // A completed attempt was already removed from the active counters
         // by mark_completed(). An expired attempt is still counted as active,
@@ -4634,45 +4424,8 @@ impl HamplardContract {
         Self::persist_course(&env, &course_id, &course);
         Self::write_course_stats(&env, &course_id, &stats);
 
-        // Increment platform-wide active enrollment counter
-        let total_active: u32 = Self::read_total_active_enrollments(&env);
-        Self::write_total_active_enrollments(
-            &env,
-            total_active
-        // Update platform-wide active enrollment counter. Replacing an
         // expired attempt is net-zero; re-enrolling after completion adds one.
-        let total_active: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalActiveEnrollments)
-            .unwrap_or(0);
-        let total_active = if !previous_was_completed && total_active > 0 {
-            total_active - 1
-        } else {
-            total_active
-        };
-        env.storage().instance().set(
-            &DataKey::TotalActiveEnrollments,
-            &(total_active
-                .checked_add(1)
-                .expect("platform enrollment counter overflow"),
-        );
         Self::inc_total_active(&env);
-        // Increment the platform-wide paid-enrollment counter. Free courses
-        // are intentionally excluded so they cannot exhaust paid capacity.
-        if course.price > 0 {
-            let total_active: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalActiveEnrollments)
-                .unwrap_or(0);
-            env.storage().instance().set(
-                &DataKey::TotalActiveEnrollments,
-                &(total_active
-                    .checked_add(1)
-                    .unwrap_or_else(|| panic!("platform enrollment counter overflow"))),
-            );
-        }
 
         Self::update_instructor_stats(&env, &course.instructor, |s| {
             s.total_students = s
@@ -4680,12 +4433,6 @@ impl HamplardContract {
                 .checked_add(1)
                 .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
         });
-        if course.price > 0 {
-            Self::update_instructor_stats(&env, &course.instructor, |s| {
-                s.total_students = s.total_students.checked_add(1)
-                    .unwrap_or_else(|| panic!("instructor stats overflow"));
-            });
-        }
 
         Self::increment_student_enrollment_count(&env, &student);
 
@@ -4837,19 +4584,13 @@ impl HamplardContract {
         );
 
         env.events().publish(
-            (Symbol::new(env, "earnings_withdrawn"), instructor.clone()),
             (
-                instructor.clone(),
-                token.clone(),
-                withdraw_amount,
-                recipient,
-            (
-                Symbol::new(&env, "earnings_withdrawn"),
+                Symbol::new(env, "earnings_withdrawn"),
                 instructor.clone(),
                 token.clone(),
             ),
             (
-                token,
+                token.clone(),
                 withdraw_amount,
                 recipient,
                 new_balance,
@@ -4876,13 +4617,6 @@ impl HamplardContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-    /// Get the instructor's lifetime net earnings across all tokens.
-    ///
-    /// This is a cumulative figure: it increases when instructor revenue is
-    /// credited and decreases when a refund debits the instructor's share.
-    /// Withdrawing earnings does **not** reduce this value. Use
-    /// `get_instructor_earnings()` for the currently withdrawable balance.
-    pub fn get_instructor_total_earnings(env: Env, instructor: Address) -> i128 {
     /// Get lifetime net earnings for an instructor in a specific token.
     ///
     /// This counter is credited on enrollment and debited on refunds, and is
@@ -4893,6 +4627,19 @@ impl HamplardContract {
             .persistent()
             .get(&DataKey::InstructorLifetimeEarnings(instructor, token))
             .unwrap_or(0)
+    }
+
+    /// Get lifetime net earnings for an instructor across all tokens.
+    pub fn get_instructor_total_earnings(env: Env, instructor: Address) -> i128 {
+        let mut total: i128 = 0;
+        for token in Self::get_instructor_earning_tokens(env.clone(), instructor.clone()).iter() {
+            total = total.saturating_add(Self::get_instructor_lifetime_earnings(
+                env.clone(),
+                instructor.clone(),
+                token,
+            ));
+        }
+        total
     }
 
     /// Internal helper: returns the total tracked liabilities for a token
@@ -5138,7 +4885,7 @@ impl HamplardContract {
             .persistent()
             .get(&history_key)
             .unwrap_or_else(|| Vec::new(&env));
-        history.push_back(enrollment);
+        history.push_back(enrollment.clone());
         env.storage().persistent().set(&history_key, &history);
         env.storage().persistent().extend_ttl(
             &history_key,
@@ -5293,11 +5040,6 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         // Check per-course certificate limit against *live* certificates
         // (issued minus revoked).  Revocations free a slot so it can be reused.
         if let Some(max_certs) = course.max_certificates {
@@ -5405,7 +5147,13 @@ impl HamplardContract {
                 Symbol::new(&env, "certificate_issued"),
                 certificate_id.clone(),
             ),
-            (certificate_id.clone(), student, course_id, admin, issued_at_ledger),
+            (
+                certificate_id.clone(),
+                student,
+                course_id,
+                admin,
+                issued_at_ledger,
+            ),
         );
 
         certificate_id
@@ -5787,6 +5535,7 @@ impl HamplardContract {
         let available_surplus = contract_balance.saturating_sub(total_liabilities);
         if amount > available_surplus {
             panic!("withdraw_tokens: cannot withdraw below tracked liabilities");
+        }
 
         // Arbitration fees are held in reserve for open cases and must not be
         // swept by the emergency withdrawal path.
@@ -5803,7 +5552,14 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "tokens_withdrawn"), admin1.clone()),
-            (admin1, admin2, token, amount, destination, env.ledger().sequence()),
+            (
+                admin1,
+                admin2,
+                token,
+                amount,
+                destination,
+                env.ledger().sequence(),
+            ),
         );
     }
 
@@ -6095,6 +5851,7 @@ impl HamplardContract {
             .instance()
             .get::<DataKey, TreasuryUpdate>(&DataKey::PendingTreasury)
             .filter(|p| env.ledger().sequence() < p.effective_ledger)
+    }
     /// Apply a matured pending treasury update and emit `treasury_activated`.
     ///
     /// This function is **permissionless** — any caller may invoke it once
@@ -6182,12 +5939,12 @@ impl HamplardContract {
         let mut list: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env));
         list.push_back(token.clone());
         env.storage()
             .instance()
-            .set(&DataKey::ApprovedTokenList, &list);
+            .set(&DataKey2::ApprovedTokenList, &list);
 
         env.events().publish(
             (Symbol::new(&env, "token_whitelisted"), admin.clone()),
@@ -6212,11 +5969,11 @@ impl HamplardContract {
         if is_btc_eth {
             env.storage()
                 .instance()
-                .set(&DataKey::BtcEthToken(token.clone()), &true);
+                .set(&DataKey2::BtcEthToken(token.clone()), &true);
         } else {
             env.storage()
                 .instance()
-                .remove(&DataKey::BtcEthToken(token.clone()));
+                .remove(&DataKey2::BtcEthToken(token.clone()));
         }
 
         env.events().publish(
@@ -6235,9 +5992,7 @@ impl HamplardContract {
     /// No authentication required — instructors call this before registering a
     /// course to confirm their chosen token is accepted by the platform.
     pub fn is_token_approved(env: Env, token: Address) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::ApprovedToken(token))
+        env.storage().instance().has(&DataKey::ApprovedToken(token))
     }
 
     /// Returns the full list of whitelisted token addresses.
@@ -6250,7 +6005,7 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "get_approved_tokens");
         env.storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -6269,13 +6024,13 @@ impl HamplardContract {
             .remove(&DataKey::ApprovedToken(token.clone()));
         env.storage()
             .instance()
-            .remove(&DataKey::BtcEthToken(token.clone()));
+            .remove(&DataKey2::BtcEthToken(token.clone()));
 
         // Remove the token from the ordered list maintained for get_approved_tokens().
         let list: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::ApprovedTokenList)
+            .get(&DataKey2::ApprovedTokenList)
             .unwrap_or_else(|| Vec::new(&env));
         let mut updated = Vec::new(&env);
         for i in 0..list.len() {
@@ -6286,7 +6041,7 @@ impl HamplardContract {
         }
         env.storage()
             .instance()
-            .set(&DataKey::ApprovedTokenList, &updated);
+            .set(&DataKey2::ApprovedTokenList, &updated);
 
         env.events().publish(
             (
@@ -6341,10 +6096,13 @@ impl HamplardContract {
         let old_max: u32 = Self::get_max_pending_limit(env.clone());
         env.storage()
             .instance()
-            .set(&DataKey::MaxPendingCoursesPerInstructor, &new_max);
+            .set(&DataKey2::MaxPendingCoursesPerInstructor, &new_max);
 
         env.events().publish(
-            (Symbol::new(&env, "max_pending_limit_updated"), admin.clone()),
+            (
+                Symbol::new(&env, "max_pending_limit_updated"),
+                admin.clone(),
+            ),
             (admin, old_max, new_max, env.ledger().sequence()),
         );
     }
@@ -6362,7 +6120,7 @@ impl HamplardContract {
     fn effective_max_pending_courses(env: &Env, max_courses: u32) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::MaxPendingCoursesPerInstructor)
+            .get(&DataKey2::MaxPendingCoursesPerInstructor)
             .unwrap_or(max_courses)
     }
     /// Admin freezes/blocks a specific instructor address.
@@ -6408,7 +6166,11 @@ impl HamplardContract {
 
                         env.events().publish(
                             (Symbol::new(&env, "course_paused"), course_id.clone()),
-                            (course_id.clone(), instructor.clone(), env.ledger().sequence()),
+                            (
+                                course_id.clone(),
+                                instructor.clone(),
+                                env.ledger().sequence(),
+                            ),
                         );
                     }
                 }
@@ -6523,7 +6285,6 @@ impl HamplardContract {
         );
         env.events().publish(
             (Symbol::new(&env, "student_blocked"), student.clone()),
-            (student, admin, env.ledger().sequence()),
             (student, admin, reason),
         );
     }
@@ -6636,7 +6397,10 @@ impl HamplardContract {
         admin.require_auth();
         Self::require_admin(&env, &admin, "set_platform_enrollment_cap");
 
-        let old_cap: Option<u32> = env.storage().instance().get(&DataKey::PlatformEnrollmentCap);
+        let old_cap: Option<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlatformEnrollmentCap);
 
         if let Some(cap_value) = cap {
             env.storage()
@@ -6678,10 +6442,6 @@ impl HamplardContract {
             return count;
         }
         env.storage().instance().get(&key).unwrap_or(0)
-    /// Get the current total active paid enrollments platform-wide.
-    /// Free-course enrollments are excluded.
-    pub fn get_total_active_enrollments(env: Env) -> u32 {
-        Self::read_total_active_enrollments(&env)
     }
 
     fn write_total_active_enrollments(env: &Env, count: u32) {
@@ -6707,7 +6467,10 @@ impl HamplardContract {
 
         admin.require_auth();
         Self::require_admin(&env, &admin, "update_min_review_delay");
-        assert!(delay <= MAX_REVIEW_DELAY_LEDGERS, "review delay exceeds maximum");
+        assert!(
+            delay <= MAX_REVIEW_DELAY_LEDGERS,
+            "review delay exceeds maximum"
+        );
         let old_delay: u32 = env
             .storage()
             .instance()
@@ -6744,7 +6507,7 @@ impl HamplardContract {
         let old_ledgers: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::DefaultMinCompletionLedgers)
+            .get(&DataKey2::DefaultMinCompletionLedgers)
             .unwrap_or(0);
         env.storage()
             .instance()
@@ -6760,7 +6523,7 @@ impl HamplardContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::DefaultMinCompletionLedgers, &ledgers);
+            .set(&DataKey2::DefaultMinCompletionLedgers, &ledgers);
 
         env.events().publish(
             (
@@ -6775,7 +6538,7 @@ impl HamplardContract {
     pub fn get_min_completion_ledgers(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::DefaultMinCompletionLedgers)
+            .get(&DataKey2::DefaultMinCompletionLedgers)
             .unwrap_or(0)
     }
 
@@ -6923,13 +6686,6 @@ impl HamplardContract {
             .checked_sub(enrollment.enrolled_at_ledger)
             .unwrap_or(0);
 
-        if elapsed > refund_window {
-            soroban_sdk::panic_with_error!(&env, Error::RefundError);
-        }
-
-        let key = DataKey::RefundRequest(student.clone(), course_id.clone());
-        if env.storage().persistent().has(&key) {
-            soroban_sdk::panic_with_error!(&env, Error::RefundError);
         let key = DataKey::RefundRequest(student.clone(), course_id.clone());
 
         // Check for an existing record before the window check so we can
@@ -6939,11 +6695,6 @@ impl HamplardContract {
             .persistent()
             .get::<DataKey, RefundRequest>(&key)
         {
-            // A cancelled request frees the slot for a fresh request within
-            // the window; any other prior request still blocks a new one.
-            if existing.status != RefundStatus::Cancelled {
-                panic!("refund request already exists");
-            }
             match existing.status {
                 // Pending or Approved requests block any new request to
                 // prevent double refunds.
@@ -6957,6 +6708,11 @@ impl HamplardContract {
                         panic!("refund window has closed for resubmission");
                     }
                     // Fall through to overwrite the rejected record below.
+                }
+                RefundStatus::Cancelled => {
+                    if elapsed > refund_window {
+                        panic!("refund window has expired");
+                    }
                 }
             }
         } else {
@@ -6989,7 +6745,12 @@ impl HamplardContract {
 
         env.events().publish(
             (Symbol::new(&env, "refund_requested"), course_id.clone()),
-            (student, course_id, enrollment.amount_paid, env.ledger().sequence()),
+            (
+                student,
+                course_id,
+                enrollment.amount_paid,
+                env.ledger().sequence(),
+            ),
         );
     }
 
@@ -7286,9 +7047,7 @@ impl HamplardContract {
             platform_refund,
             instructor_refund,
         }
-        env.storage().persistent().set(&key, &request);
     }
-
     /// Top up the refund reserve for `token`.
     ///
     /// Platform fees are forwarded to the treasury at enrollment, so refunding
@@ -7676,7 +7435,6 @@ impl HamplardContract {
                 Self::PERSISTENT_TTL_THRESHOLD,
                 Self::PERSISTENT_TTL_EXTEND_TO,
             );
-            Self::extend_course_instructor_ref_ttl(&env, &course_id);
             let stats_key = DataKey2::CourseStats(course_id.clone());
             if env.storage().persistent().has(&stats_key) {
                 env.storage().persistent().extend_ttl(
@@ -7937,23 +7695,16 @@ impl HamplardContract {
     /// - `Some(false)` — enrolled but not yet completed
     /// - `Some(true)`  — enrollment exists and is marked completed
     pub fn has_completed(env: Env, student: Address, course_id: String) -> Option<bool> {
-        env.storage()
+        if let Some(enrollment) = env
+            .storage()
             .persistent()
             .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id))
-            .map(|enrollment| enrollment.completed)
-            .get::<DataKey, Enrollment>(&DataKey::Enrollment(student, course_id.clone()))
         {
             if enrollment.completed {
                 return Some(true);
             }
             // Not yet completed — expired and active-but-incomplete both
             // report `Some(false)`.
-            // Not yet completed — check if the enrollment window has expired
-            if let Some(course) = Self::get_course_internal(&env, &course_id) {
-                if Self::is_enrollment_expired_internal(&env, &course, &enrollment) {
-                    return Some(false); // Expired — treat as inactive
-                }
-            }
             Some(false)
         } else {
             None
@@ -7986,37 +7737,6 @@ impl HamplardContract {
                 // or immediately if no deadline was recorded (legacy/direct revocation).
                 Some(deadline) if env.ledger().sequence() < deadline => {}
                 _ => return CertificateStatus::Revoked,
-    /// A certificate with a pending revocation (revoked == true but
-    /// revocation_deadline in the future) is still considered valid until
-    /// the challenge period expires.
-    ///
-    /// When invoked in an on-chain transaction and the certificate is valid,
-    /// its persistent storage TTL is extended. Note that read-only RPC
-    /// simulations do not persist TTL extensions; verifiers or keepers should
-    /// submit `extend_certificate_ttl` on-chain to keep certificates live.
-    pub fn verify_certificate(env: Env, certificate_id: String) -> bool {
-        let key = DataKey::Certificate(certificate_id);
-        if let Some(cert) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, Certificate>(&key)
-        {
-            if cert.revoked {
-                // Revocation is permanent only after the challenge period expires
-                if let Some(deadline) = cert.revocation_deadline {
-                    if env.ledger().sequence() >= deadline {
-                        return false;
-                    }
-                    // Within challenge period — still valid (pending revocation)
-                    env.storage().persistent().extend_ttl(
-                        &key,
-                        Self::PERSISTENT_TTL_THRESHOLD,
-                        Self::PERSISTENT_TTL_EXTEND_TO,
-                    );
-                    return true;
-                }
-                // Revoked without a deadline (legacy or direct revocation)
-                return false;
             }
         }
 
@@ -8024,14 +7744,6 @@ impl HamplardContract {
             if env.ledger().sequence() >= expiry {
                 return CertificateStatus::Expired;
             }
-            env.storage().persistent().extend_ttl(
-                &key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
-            true
-        } else {
-            false
         }
 
         CertificateStatus::Valid
@@ -8196,6 +7908,8 @@ impl HamplardContract {
         }
 
         treasury
+    }
+
     /// Emit the shared per-student refund event used by both
     /// `process_refund()` and `archive_course()`.
     fn emit_refund_issued(
@@ -8217,6 +7931,7 @@ impl HamplardContract {
                 env.ledger().sequence(),
             ),
         );
+    }
     /// Persist a value and extend its TTL in one step.
     ///
     /// Every persistent write must go through this helper so a key can never
@@ -8264,6 +7979,56 @@ impl HamplardContract {
         );
     }
 
+    fn persist_course(env: &Env, course_id: &String, course: &Course) {
+        Self::persist(env, &DataKey::Course(course_id.clone()), course);
+    }
+
+    fn is_moderator(env: &Env, caller: &Address) -> bool {
+        if let Some(moderator) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Moderator)
+        {
+            moderator == *caller
+        } else {
+            false
+        }
+    }
+
+    fn require_moderator_or_admin(env: &Env, caller: &Address, _op: &str) {
+        if !Self::is_admin(env, caller) && !Self::is_moderator(env, caller) {
+            panic!("unauthorized");
+        }
+    }
+
+    fn read_course_stats(env: &Env, course_id: &String, course: &Course) -> CourseStats {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, CourseStats>(&DataKey2::CourseStats(course_id.clone()))
+            .unwrap_or(CourseStats {
+                total_enrollments: course.total_enrollments,
+                active_enrollments: course.active_enrollments,
+                total_earned: course.total_earned,
+            })
+    }
+
+    fn write_course_stats(env: &Env, course_id: &String, stats: &CourseStats) {
+        Self::persist(env, &DataKey2::CourseStats(course_id.clone()), stats);
+    }
+
+    fn merge_course_stats(env: &Env, course_id: &String, mut course: Course) -> Course {
+        if let Some(stats) = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, CourseStats>(&DataKey2::CourseStats(course_id.clone()))
+        {
+            course.total_enrollments = stats.total_enrollments;
+            course.active_enrollments = stats.active_enrollments;
+            course.total_earned = stats.total_earned;
+        }
+        course
+    }
+
     fn get_course_internal(env: &Env, course_id: &String) -> Option<Course> {
         if let Some(course) = env
             .storage()
@@ -8300,7 +8065,11 @@ impl HamplardContract {
         }
     }
 
-    fn is_enrollment_expired_internal(env: &Env, _course: &Course, enrollment: &Enrollment) -> bool {
+    fn is_enrollment_expired_internal(
+        env: &Env,
+        _course: &Course,
+        enrollment: &Enrollment,
+    ) -> bool {
         if let Some(expiry_ledgers) = enrollment.enrollment_expiry_ledgers {
             let expiry_at = enrollment
                 .enrolled_at_ledger
@@ -8365,7 +8134,7 @@ impl HamplardContract {
     fn get_student_enrollment_count_internal(env: &Env, student: &Address) -> u32 {
         env.storage()
             .persistent()
-            .get(&DataKey::StudentEnrollmentCount(student.clone()))
+            .get(&DataKey2::StudentEnrollmentCount(student.clone()))
             .unwrap_or(0)
     }
 
@@ -8399,24 +8168,17 @@ impl HamplardContract {
     }
 
     fn increment_student_enrollment_count(env: &Env, student: &Address) {
-        let key = DataKey::StudentEnrollmentCount(student.clone());
+        let key = DataKey2::StudentEnrollmentCount(student.clone());
         let count = Self::get_student_enrollment_count_internal(env, student)
             .checked_add(1)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage().persistent().set(&key, &count);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("student enrollment count overflow"));
-        Self::persist(&env, &key, &count);
+        Self::persist(env, &key, &count);
     }
 
     fn is_btc_eth_token_internal(env: &Env, token: &Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::BtcEthToken(token.clone()))
+            .get(&DataKey2::BtcEthToken(token.clone()))
             .unwrap_or(false)
     }
 
@@ -8452,10 +8214,7 @@ impl HamplardContract {
                 env.storage().instance().remove(&DataKey::PendingTreasury);
 
                 env.events().publish(
-                    (
-                        Symbol::new(env, "treasury_activated"),
-                        new_treasury.clone(),
-                    ),
+                    (Symbol::new(env, "treasury_activated"), new_treasury.clone()),
                     (new_treasury.clone(), env.ledger().sequence()),
                 );
 
@@ -8666,7 +8425,6 @@ impl HamplardContract {
                 distributed = distributed
                     .checked_add(share_amount)
                     .unwrap_or_else(|| panic!("co-instructor share total overflow"));
-
             }
         }
 
@@ -8764,14 +8522,7 @@ impl HamplardContract {
         let new_balance = current
             .checked_add(amount)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-        env.storage().persistent().set(&key, &new_balance);
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_TTL_THRESHOLD,
-            Self::PERSISTENT_TTL_EXTEND_TO,
-        );
-            .unwrap_or_else(|| panic!("overflow computing instructor earnings"));
-        Self::persist(&env, &key, &new_balance);
+        Self::persist(env, &key, &new_balance);
         if new_balance > 0 {
             Self::add_instructor_earning_token(env, instructor, token);
         }
@@ -8805,8 +8556,6 @@ impl HamplardContract {
         env.storage()
             .instance()
             .set(&outstanding_key, &new_outstanding);
-            .unwrap_or_else(|| panic!("overflow computing instructor total earnings"));
-        Self::persist(&env, &total_key, &new_total);
     }
 
     /// Read an instructor's total course count.
@@ -8815,13 +8564,13 @@ impl HamplardContract {
     /// entry for instructors whose counters were written before the
     /// storage-layout migration. See `migrate_instructor_counters`.
     fn read_instructor_course_count(env: &Env, instructor: &Address) -> u32 {
-        let key = DataKey::InstructorCourseCountPersistent(instructor.clone());
-        if let Some(count) = env.storage().persistent().get::<DataKey, u32>(&key) {
+        let key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
+        if let Some(count) = env.storage().persistent().get::<DataKey2, u32>(&key) {
             return count;
         }
         env.storage()
             .instance()
-            .get::<DataKey, u32>(&DataKey::InstructorCourseCountLegacy(instructor.clone()))
+            .get::<DataKey2, u32>(&DataKey2::InstructorCourseCountLegacy(instructor.clone()))
             .unwrap_or(0)
     }
 
@@ -8831,13 +8580,13 @@ impl HamplardContract {
     /// entry for instructors whose counters were written before the
     /// storage-layout migration. See `migrate_instructor_counters`.
     fn read_instructor_pending_course_count(env: &Env, instructor: &Address) -> u32 {
-        let key = DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
-        if let Some(count) = env.storage().persistent().get::<DataKey, u32>(&key) {
+        let key = DataKey2::InstructorPendingCountPersistent(instructor.clone());
+        if let Some(count) = env.storage().persistent().get::<DataKey2, u32>(&key) {
             return count;
         }
         env.storage()
             .instance()
-            .get::<DataKey, u32>(&DataKey::InstructorPendingCourseCountLegacy(instructor.clone()))
+            .get::<DataKey2, u32>(&DataKey2::InstructorPendingCountLegacy(instructor.clone()))
             .unwrap_or(0)
     }
 
@@ -8846,7 +8595,7 @@ impl HamplardContract {
     ///
     /// Must be called by the admin after upgrading to the version that
     /// introduced `InstructorCourseCountPersistent` /
-    /// `InstructorPendingCourseCountPersistent`. For each instructor in
+    /// `InstructorPendingCountPersistent`. For each instructor in
     /// `instructors`, the legacy instance entries are copied to persistent
     /// storage (if not already present) and then removed from instance
     /// storage, so the instance entry stops growing with the instructor
@@ -8859,10 +8608,10 @@ impl HamplardContract {
         Self::require_admin(&env, &admin, "migrate_instructor_counters");
 
         for instructor in instructors.iter() {
-            let course_key = DataKey::InstructorCourseCountPersistent(instructor.clone());
+            let course_key = DataKey2::InstructorCourseCountPersistent(instructor.clone());
             if !env.storage().persistent().has(&course_key) {
-                let legacy_key = DataKey::InstructorCourseCountLegacy(instructor.clone());
-                if let Some(count) = env.storage().instance().get::<DataKey, u32>(&legacy_key) {
+                let legacy_key = DataKey2::InstructorCourseCountLegacy(instructor.clone());
+                if let Some(count) = env.storage().instance().get::<DataKey2, u32>(&legacy_key) {
                     env.storage().persistent().set(&course_key, &count);
                     env.storage().persistent().extend_ttl(
                         &course_key,
@@ -8873,14 +8622,12 @@ impl HamplardContract {
             }
             env.storage()
                 .instance()
-                .remove(&DataKey::InstructorCourseCountLegacy(instructor.clone()));
+                .remove(&DataKey2::InstructorCourseCountLegacy(instructor.clone()));
 
-            let pending_key =
-                DataKey::InstructorPendingCourseCountPersistent(instructor.clone());
+            let pending_key = DataKey2::InstructorPendingCountPersistent(instructor.clone());
             if !env.storage().persistent().has(&pending_key) {
-                let legacy_key =
-                    DataKey::InstructorPendingCourseCountLegacy(instructor.clone());
-                if let Some(count) = env.storage().instance().get::<DataKey, u32>(&legacy_key) {
+                let legacy_key = DataKey2::InstructorPendingCountLegacy(instructor.clone());
+                if let Some(count) = env.storage().instance().get::<DataKey2, u32>(&legacy_key) {
                     env.storage().persistent().set(&pending_key, &count);
                     env.storage().persistent().extend_ttl(
                         &pending_key,
@@ -8891,7 +8638,7 @@ impl HamplardContract {
             }
             env.storage()
                 .instance()
-                .remove(&DataKey::InstructorPendingCourseCountLegacy(instructor.clone()));
+                .remove(&DataKey2::InstructorPendingCountLegacy(instructor.clone()));
         }
     }
 
@@ -8951,7 +8698,11 @@ impl HamplardContract {
     /// Remove `token` from `instructor`'s non-zero earning tokens set.
     fn remove_instructor_earning_token(env: &Env, instructor: &Address, token: &Address) {
         let key = DataKey2::InstructorEarningTokens(instructor.clone());
-        if let Some(tokens) = env.storage().persistent().get::<DataKey2, Vec<Address>>(&key) {
+        if let Some(tokens) = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, Vec<Address>>(&key)
+        {
             let mut updated = Vec::new(env);
             for t in tokens.iter() {
                 if t != *token {
@@ -9005,7 +8756,7 @@ impl HamplardContract {
         let token_client = token::Client::new(env, &course.token);
         // Apply any matured pending treasury update so the refund uses the
         // effective treasury, not a stale one. (#326)
-        let treasury: Address = Self::read_treasury(env);
+        let treasury: Address = Self::read_treasury(&env);
 
         if platform_refund > 0 {
             token_client.transfer(&treasury, student, &platform_refund);
@@ -9023,7 +8774,7 @@ impl HamplardContract {
             .persistent()
             .get(&history_key)
             .unwrap_or_else(|| Vec::new(env));
-        history.push_back(enrollment);
+        history.push_back(enrollment.clone());
         env.storage().persistent().set(&history_key, &history);
         env.storage().persistent().extend_ttl(
             &history_key,
@@ -9077,39 +8828,6 @@ impl HamplardContract {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &new_balance);
-        }
-        // Refunds reduce lifetime net earnings as well as the withdrawable
-        // balance. Withdrawals never touch this accumulator.
-        let total_key = DataKey::InstructorTotalEarnings(instructor.clone());
-        let current_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
-        if amount > current_total {
-            panic!("inconsistent instructor total earnings state");
-        }
-        let new_total = current_total - amount;
-        if new_total == 0 {
-            env.storage().persistent().remove(&total_key);
-        // Decrement the token-scoped lifetime net earnings accumulator. Use a
-        // saturating subtraction so refunds for enrollments created before this
-        // key existed cannot be blocked by an unmigrated (zero) counter.
-        let lifetime_key = DataKey::InstructorLifetimeEarnings(instructor.clone(), token.clone());
-        let current_lifetime: i128 = env.storage().persistent().get(&lifetime_key).unwrap_or(0);
-        let new_lifetime = current_lifetime.saturating_sub(amount);
-        if new_lifetime == 0 {
-            env.storage().persistent().remove(&lifetime_key);
-        } else {
-            env.storage().persistent().set(&lifetime_key, &new_lifetime);
-        }
-
-        // Decrement total outstanding instructor earnings for this token
-        let outstanding_key = DataKey2::TotalInstructorEarnings(token.clone());
-        let current_outstanding: i128 = env.storage().instance().get(&outstanding_key).unwrap_or(0);
-        let new_outstanding = current_outstanding.saturating_sub(amount);
-        if new_outstanding == 0 {
-            env.storage().instance().remove(&outstanding_key);
-        } else {
-            env.storage()
-                .instance()
-                .set(&outstanding_key, &new_outstanding);
         }
     }
 
@@ -9487,7 +9205,7 @@ impl HamplardContract {
         // `get_risk_fee_config()`: a stored override if present, otherwise
         // the default RiskFeeConfig. This keeps quotes and charges in sync
         // when risk pricing is enabled without a stored config.
-        let config = Self::get_risk_fee_config(env);
+        let config = Self::get_risk_fee_config(env.clone());
 
         let mut score: u32 = 0;
         let mut surcharge_bps: u32 = 0;
@@ -9639,18 +9357,6 @@ impl HamplardContract {
             return (0, 0, None);
         }
 
-        let breakdown =
-            Self::compute_fee_breakdown(env, token, amount, is_new_customer, is_btc_eth);
-        // An explicit registration-time override is a floor on the live fee.
-        let platform_fee = if let Some(override_bps) = course_fee_override_bps {
-            let floor = amount
-                .checked_mul(override_bps as i128)
-                .map(|v| v / 10000)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::ArithmeticOverflow));
-            breakdown.platform_fee.max(floor)
-        } else {
-            breakdown.platform_fee
-        };
         let breakdown = Self::compute_fee_breakdown(
             env,
             token,
@@ -9692,10 +9398,10 @@ impl HamplardContract {
             .storage()
             .persistent()
             .has(&DataKey::Enrollment(caller.clone(), course_id.clone()));
-        let is_historical_student = env
-            .storage()
-            .persistent()
-            .has(&DataKey::EnrollmentHistory(caller.clone(), course_id.clone()));
+        let is_historical_student = env.storage().persistent().has(&DataKey::EnrollmentHistory(
+            caller.clone(),
+            course_id.clone(),
+        ));
 
         if !is_instructor && !is_current_student && !is_historical_student {
             panic!(
@@ -10012,15 +9718,8 @@ impl HamplardContract {
             }
         }
 
-        if new_waitlist.len() > 0 {
-            Self::persist(&env, &waitlist_key, &new_waitlist);
         if !new_waitlist.is_empty() {
-            env.storage().persistent().set(&waitlist_key, &new_waitlist);
-            env.storage().persistent().extend_ttl(
-                &waitlist_key,
-                Self::PERSISTENT_TTL_THRESHOLD,
-                Self::PERSISTENT_TTL_EXTEND_TO,
-            );
+            Self::persist(&env, &waitlist_key, &new_waitlist);
         } else {
             env.storage().persistent().remove(&waitlist_key);
         }
@@ -10050,8 +9749,6 @@ impl HamplardContract {
         let waitlist: Option<Vec<Address>> = env.storage().persistent().get(&waitlist_key);
 
         if let Some(list) = waitlist {
-            if list.len() > 0 {
-        if let Some(mut list) = waitlist {
             if !list.is_empty() {
                 let next_student = list.get(0).unwrap();
 
@@ -10061,15 +9758,8 @@ impl HamplardContract {
                     new_waitlist.push_back(list.get(i).unwrap());
                 }
 
-                if new_waitlist.len() > 0 {
-                    Self::persist(&env, &waitlist_key, &new_waitlist);
                 if !new_waitlist.is_empty() {
-                    env.storage().persistent().set(&waitlist_key, &new_waitlist);
-                    env.storage().persistent().extend_ttl(
-                        &waitlist_key,
-                        Self::PERSISTENT_TTL_THRESHOLD,
-                        Self::PERSISTENT_TTL_EXTEND_TO,
-                    );
+                    Self::persist(env, &waitlist_key, &new_waitlist);
                 } else {
                     env.storage().persistent().remove(&waitlist_key);
                 }
