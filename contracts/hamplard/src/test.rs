@@ -16047,8 +16047,8 @@ fn test_escalation_escrows_fee_in_contract() {
     );
 }
 
-/// The escalation event carries the caller, the course and the fee paid, so
-/// indexers do not have to reconstruct it from the case record.
+/// The escalation event includes the unique case ID as a topic and carries
+/// the caller, course, and fee in its data.
 #[test]
 fn test_escalation_event_carries_fee_payload() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
@@ -16080,6 +16080,9 @@ fn test_escalation_event_carries_fee_payload() {
         seen += 1;
         let topic_course: String = topics.get(1).unwrap().try_into_val(&env).unwrap();
         assert_eq!(topic_course, course_id);
+        let topic_case_id: String = topics.get(2).unwrap().try_into_val(&env).unwrap();
+        let case = client.get_arbitration_case(&student, &course_id).unwrap();
+        assert_eq!(topic_case_id, case.case_id);
 
         let (event_caller, event_course, event_fee): (Address, String, i128) =
             data.try_into_val(&env).unwrap();
@@ -16132,6 +16135,70 @@ fn test_escalation_creates_retrievable_arbitration_case() {
         DisputeStatus::Open,
         "newly created case must be Open"
     );
+    assert_ne!(
+        case.case_id, course_id,
+        "case ID must not be the course ID"
+    );
+
+    let another_student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&another_student, &100_000_000_000);
+    client.enroll(&another_student, &course_id, &i128::MAX);
+    client.escalate_to_arbitration(&another_student, &course_id);
+    let another_case = client
+        .get_arbitration_case(&another_student, &course_id)
+        .expect("second arbitration case must be retrievable");
+    assert_ne!(
+        case.case_id, another_case.case_id,
+        "cases for the same course must have distinct IDs"
+    );
+}
+
+#[test]
+fn test_arbitration_allowed_on_paused_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let fee_per_case = 5_000_000i128;
+    let student = setup_arbitration(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-PAUSED",
+        fee_per_case,
+    );
+    let course_id = String::from_str(&env, "COURSE-ARB-PAUSED");
+
+    client.pause_course(&instructor, &course_id);
+    client.escalate_to_arbitration(&student, &course_id);
+
+    assert!(client.get_arbitration_case(&student, &course_id).is_some());
+}
+
+#[test]
+fn test_arbitration_allowed_on_archived_course() {
+    let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let fee_per_case = 5_000_000i128;
+    let course_id = String::from_str(&env, "COURSE-ARB-ARCHIVED");
+
+    client.set_arbitration_fee_config(&admin, &token_id, &fee_per_case);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-ARB-ARCHIVED",
+        1_000_000_000,
+    );
+    client.pause_course(&instructor, &course_id);
+    client.archive_course(&admin, &sec_admin, &course_id, &None);
+    token::StellarAssetClient::new(&env, &token_id).mint(&instructor, &fee_per_case);
+
+    client.escalate_to_arbitration(&instructor, &course_id);
+
+    assert!(client.get_arbitration_case(&instructor, &course_id).is_some());
 }
 
 /// #257 — a second escalation for the same (student, course_id) must be rejected.
