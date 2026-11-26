@@ -1763,6 +1763,35 @@ fn test_pause_and_unpause_course() {
     assert_eq!(course.status, CourseStatus::Active);
 }
 
+#[test]
+fn test_moderator_can_pause_and_unpause_course() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let moderator = Address::generate(&env);
+    let course_id = String::from_str(&env, "COURSE-MODERATOR-PAUSE");
+
+    client.set_moderator(&admin, &moderator);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-MODERATOR-PAUSE",
+        100_000_000,
+    );
+
+    client.pause_course(&moderator, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Paused);
+    assert_eq!(course.paused_by, Some(PausedBy::Moderator));
+
+    client.unpause_course(&moderator, &course_id);
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.status, CourseStatus::Active);
+    assert_eq!(course.paused_by, None);
+}
+
 /// Double-pause must be rejected (Active-status precondition)
 #[test]
 #[should_panic(expected = "Error(Contract, #20)")]

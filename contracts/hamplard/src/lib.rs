@@ -92,7 +92,6 @@
 //! the Admin, and must sign.
 //!
 //! - `set_enrollment_start_ledger` — optional ledger when enrollment opens
-//! - `pause_course` / `unpause_course` — pause or restore the course
 //! - `update_course` — update price and/or capacity
 //! - `clear_course_max_capacity` — remove the capacity cap
 //! - `set_enrollment_expiry` — optional per-enrollment expiry duration
@@ -103,6 +102,10 @@
 //! - `set_co_instructors` — configure co-instructors and basis-point shares;
 //!   total shares cannot exceed 10 000 bps and the split is locked after the
 //!   first enrollment
+//!
+//! ## Course Pause Operations — Lead Instructor, Admin, or Moderator
+//! - `pause_course` / `unpause_course` — pause or restore a course; the caller
+//!   must be one of these roles and must sign.
 //!
 //! ## Privileged Operations — Instructor only
 //! - `register_course` — the instructor registers the course and must sign
@@ -154,8 +157,8 @@
 //! ## Moderator Role
 //! - `set_moderator` — sets the moderator address (admin only)
 //! - The moderator may perform day-to-day moderation: `approve_course`,
-//!   `reject_course`, `pause_course`, `block_student`, `unblock_student`,
-//!   and `mark_completed`.
+//!   `reject_course`, `pause_course`, `unpause_course`, `block_student`,
+//!   `unblock_student`, and `mark_completed`.
 //! - The moderator may NOT move funds (`withdraw_tokens`, `process_refund`,
 //!   `archive_course`) or change configuration (`update_default_fee`,
 //!   `set_fee_config`, `add_approved_token`, `transfer_admin`, etc.).
@@ -673,13 +676,13 @@ pub enum CapacityMode {
     Concurrent,
 }
 
-/// Identifies which role paused a course so moderation pauses by an admin
-/// cannot be undone by the course instructor.
+/// Identifies which role or system state paused a course.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PausedBy {
     Instructor,
     Admin,
+    Moderator,
 }
 
 /// A course listing stored on-chain
@@ -1493,7 +1496,7 @@ impl HamplardContract {
     /// Admin sets (or rotates) the moderator address.
     ///
     /// The moderator is a hot key permitted to perform day-to-day moderation
-    /// (approve/reject/pause courses, block/unblock students, mark completions)
+    /// (approve/reject/pause/unpause courses, block/unblock students, mark completions)
     /// without holding the admin key that can move funds or change config.
     ///
     /// # Arguments
@@ -2210,7 +2213,7 @@ impl HamplardContract {
         );
     }
 
-    /// Instructor or admin pauses a course.
+    /// Instructor, admin, or moderator pauses a course.
     /// Existing enrollments are unaffected — students can still access content.
     /// New enrollments are blocked until the course is unpaused.
     pub fn pause_course(env: Env, caller: Address, course_id: String) {
@@ -2219,22 +2222,21 @@ impl HamplardContract {
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
+        let is_moderator = Self::is_moderator(&env, &caller);
 
-        if !is_admin && !is_instructor {
+        if !is_admin && !is_instructor && !is_moderator {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
-            panic!("unauthorized");
         }
-        Self::require_admin_or_instructor(&env, &caller, &course);
+        if is_admin {
+            Self::require_admin(&env, &caller, "pause_course");
+        }
 
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
+        if !is_admin
+            && is_instructor
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
             soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
@@ -2249,6 +2251,8 @@ impl HamplardContract {
         course.status = CourseStatus::Paused;
         course.paused_by = Some(if is_admin {
             PausedBy::Admin
+        } else if is_moderator {
+            PausedBy::Moderator
         } else {
             PausedBy::Instructor
         });
@@ -2266,38 +2270,31 @@ impl HamplardContract {
         );
     }
 
-    /// Instructor or admin unpauses a Paused course, restoring it to Active.
+    /// Instructor, admin, or moderator unpauses a Paused course, restoring it to Active.
     pub fn unpause_course(env: Env, caller: Address, course_id: String) {
         caller.require_auth();
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
 
-        // #361 — Guard against a price change between the price the student
-        // approved and execution: revert before any payment is attempted when
-        // the current price exceeds the student's stated maximum.
-        Self::assert_price_within_limit(course.price, max_price);
-
         let is_admin = Self::is_admin(&env, &caller);
         let is_instructor = caller == course.instructor;
+        let is_moderator = Self::is_moderator(&env, &caller);
 
-        if !is_admin && !is_instructor {
+        if !is_admin && !is_instructor && !is_moderator {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        if !is_admin && !is_instructor && !Self::is_moderator(&env, &caller) {
-            panic!("unauthorized");
         }
 
-        // freeze_instructor() auto-pauses the instructor's courses; a frozen
-        // instructor must not be able to undo that by unpausing them.
-        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
-        Self::require_admin_or_instructor(&env, &caller, &course);
+        if is_admin {
+            Self::require_admin(&env, &caller, "unpause_course");
+        }
 
-        // freeze_instructor() auto-pauses the instructor's courses; a frozen
-        // instructor must not be able to undo that by unpausing them.
-        if !Self::is_admin(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-        if !is_admin && !Self::is_moderator(&env, &caller) && Self::is_instructor_frozen_internal(&env, &course.instructor) {
-            panic!("instructor is frozen");
+        // A frozen instructor must not be able to undo the pause themselves.
+        if !is_admin
+            && is_instructor
+            && Self::is_instructor_frozen_internal(&env, &course.instructor)
+        {
+            soroban_sdk::panic_with_error!(&env, Error::InstructorFrozen);
         }
 
         env.storage()
@@ -2308,7 +2305,11 @@ impl HamplardContract {
             soroban_sdk::panic_with_error!(&env, Error::CourseNotPaused);
         }
 
-        if course.paused_by == Some(PausedBy::Admin) && !is_admin {
+        if (course.paused_by == Some(PausedBy::Admin)
+            || course.paused_by == Some(PausedBy::Moderator))
+            && !is_admin
+            && !is_moderator
+        {
             soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
         }
 
@@ -6428,6 +6429,7 @@ impl HamplardContract {
         if !Self::is_instructor_frozen_internal(&env, &instructor) {
             soroban_sdk::panic_with_error!(&env, Error::InstructorState);
         }
+
         env.storage()
             .instance()
             .remove(&DataKey::InstructorBlocked(instructor.clone()));
