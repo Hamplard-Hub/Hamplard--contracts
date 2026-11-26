@@ -18,6 +18,16 @@ fi
 : "${REFUND_WINDOW_LEDGERS:?Set REFUND_WINDOW_LEDGERS}"
 : "${REVOCATION_CHALLENGE_PERIOD:?Set REVOCATION_CHALLENGE_PERIOD}"
 
+admin_signer_address=$(stellar keys public-key "$STELLAR_ACCOUNT") || {
+	printf 'Unable to resolve STELLAR_ACCOUNT identity: %s\n' "$STELLAR_ACCOUNT" >&2
+	exit 1
+}
+
+if [ "$admin_signer_address" != "$ADMIN_ADDRESS" ]; then
+	printf '%s\n' 'STELLAR_ACCOUNT identity must resolve to ADMIN_ADDRESS because the admin must authorize __constructor.' >&2
+	exit 1
+fi
+
 if [ ! -f "$wasm_path" ]; then
 	printf 'Optimized WASM not found: %s\n' "$wasm_path" >&2
 	exit 1
