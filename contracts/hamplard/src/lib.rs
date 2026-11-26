@@ -2704,6 +2704,14 @@ impl HamplardContract {
 
         // One authorization path and one frozen-instructor guard (#639).
         Self::require_admin_or_instructor(&env, &caller, &course);
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
         if !Self::is_admin(&env, &caller)
             && Self::is_instructor_frozen_internal(&env, &course.instructor)
         {
@@ -2808,6 +2816,14 @@ impl HamplardContract {
 
         // One authorization path and one frozen-instructor guard (#639).
         Self::require_admin_or_instructor(&env, &caller, &course);
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        if !is_admin && Self::is_instructor_frozen_internal(&env, &course.instructor) {
         if !Self::is_admin(&env, &caller)
             && Self::is_instructor_frozen_internal(&env, &course.instructor)
         {
@@ -2890,6 +2906,13 @@ impl HamplardContract {
 
         let mut course = Self::get_course_internal(&env, &course_id)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
+
+        let is_admin = Self::is_admin(&env, &caller);
+        let is_instructor = caller == course.instructor;
+
+        if !is_admin && !is_instructor {
+            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
+        }
 
         // One authorization path and one frozen-instructor guard (#639).
         // A frozen instructor may not alter the content commitment, but an
