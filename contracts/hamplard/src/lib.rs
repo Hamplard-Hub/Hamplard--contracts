@@ -4407,6 +4407,10 @@ impl HamplardContract {
     /// Paid-enrollment counters are decremented exactly once; a second call
     /// fails because the active enrollment no longer exists.
     ///
+    /// If students are on the course waitlist, the next eligible student is
+    /// dequeued and notified via a `waitlist_ready` event so they can
+    /// self-enroll (matching the waitlist notification model used by refunds).
+    ///
     /// Refunds are explicitly out of scope: this function only releases the
     /// active-enrollment counters.
     pub fn expire_enrollment(env: Env, student: Address, course_id: String) {
@@ -4477,8 +4481,10 @@ impl HamplardContract {
         let expired_at_ledger = env.ledger().sequence();
         env.events().publish(
             (Symbol::new(&env, "enrollment_expired"), course_id.clone()),
-            (student, course_id, expired_at_ledger),
+            (student, course_id.clone(), expired_at_ledger),
         );
+
+        Self::promote_from_waitlist(&env, &course_id);
     }
 
     /// Issue an on-chain certificate to a student who has completed a course.
@@ -9365,7 +9371,8 @@ impl HamplardContract {
 
     /// Student joins the waitlist for a course that has reached capacity.
     /// When a spot opens up (via refund or enrollment expiry), the first
-    /// waitlisted student will be automatically promoted to enrolled status.
+    /// eligible waitlisted student is dequeued and notified via a
+    /// `waitlist_ready` event so they can self-enroll.
     ///
     /// # Arguments
     /// - `student`   — student's address (must sign)
@@ -9496,8 +9503,9 @@ impl HamplardContract {
         env.storage().persistent().get(&waitlist_key)
     }
 
-    /// Internal helper to promote the first waitlisted student to enrolled status
-    /// when capacity opens. Called automatically when a refund or expiry creates space.
+    /// Internal helper to notify the first eligible waitlisted student
+    /// (`waitlist_ready` event) when capacity opens via a refund or enrollment
+    /// expiry so they can self-enroll.
     fn promote_from_waitlist(env: &Env, course_id: &String) {
         let waitlist_key = DataKey::CourseWaitlist(course_id.clone());
         let waitlist: Option<Vec<Address>> = env.storage().persistent().get(&waitlist_key);

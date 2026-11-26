@@ -8749,6 +8749,130 @@ fn test_expire_enrollment_releases_active_counters_and_emits_event() {
 }
 
 #[test]
+fn test_expire_enrollment_promotes_next_waitlisted_student() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let enrolled = Address::generate(&env);
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&enrolled, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRE-WAITLIST");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRE-WAITLIST",
+        100_000_000,
+    );
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(50u32));
+
+    client.enroll(&enrolled, &course_id, &i128::MAX);
+    client.join_waitlist(&first, &course_id);
+    client.join_waitlist(&second, &course_id);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 60;
+    });
+    client.expire_enrollment(&enrolled, &course_id);
+
+    let (ready_student, ready_course_id): (Address, String) =
+        last_event_val(&env, &contract_id, "waitlist_ready")
+            .try_into_val(&env)
+            .unwrap();
+    assert_eq!(ready_student, first);
+    assert_eq!(ready_course_id, course_id);
+
+    let remaining = client.get_waitlist(&course_id).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining.get(0).unwrap(), second);
+}
+
+#[test]
+fn test_expire_enrollment_skips_blocked_waitlisted_student_and_clears_when_empty() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let enrolled = Address::generate(&env);
+    let blocked = Address::generate(&env);
+    let eligible = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&enrolled, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRE-WAITLIST-SKIP");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRE-WAITLIST-SKIP",
+        100_000_000,
+    );
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(50u32));
+
+    client.enroll(&enrolled, &course_id, &i128::MAX);
+    client.join_waitlist(&blocked, &course_id);
+    client.join_waitlist(&eligible, &course_id);
+    client.block_student(&admin, &blocked);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 60;
+    });
+    client.expire_enrollment(&enrolled, &course_id);
+
+    let (ready_student, ready_course_id): (Address, String) =
+        last_event_val(&env, &contract_id, "waitlist_ready")
+            .try_into_val(&env)
+            .unwrap();
+    assert_eq!(ready_student, eligible);
+    assert_eq!(ready_course_id, course_id);
+    assert!(client.get_waitlist(&course_id).is_none());
+}
+
+#[test]
+fn test_expire_enrollment_all_blocked_waitlist_clears_without_promotion() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let enrolled = Address::generate(&env);
+    let blocked = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&enrolled, &1_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-EXPIRE-WAITLIST-ALL-BLOCKED");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-EXPIRE-WAITLIST-ALL-BLOCKED",
+        100_000_000,
+    );
+    client.update_course(&instructor, &course_id, &None, &Some(Some(1u32)), &None);
+    client.set_enrollment_expiry(&instructor, &course_id, &Some(50u32));
+
+    client.enroll(&enrolled, &course_id, &i128::MAX);
+    client.join_waitlist(&blocked, &course_id);
+    client.block_student(&admin, &blocked);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 60;
+    });
+    client.expire_enrollment(&enrolled, &course_id);
+
+    assert!(client.get_waitlist(&course_id).is_none());
+    let has_waitlist_ready = env.events().all().iter().any(|(_, topics, _)| {
+        topics
+            .get(0)
+            .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+            == Some(Symbol::new(&env, "waitlist_ready"))
+    });
+    assert!(!has_waitlist_ready);
+}
+
+#[test]
 #[should_panic(expected = "enrollment has not expired")]
 fn test_expire_enrollment_before_expiry_rejected() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
