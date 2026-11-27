@@ -358,16 +358,19 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | Function | Returns |
 |---|---|
 | `get_course(course_id)` | Full `Course` struct |
-| `get_enrollment(caller, student, course_id)` | `Enrollment` (student, course instructor, or admin only) |
+| `get_enrollment(caller, student, course_id)` | `Enrollment` (permissionless; `caller` is retained for client compatibility and ignored) |
+| `get_enrollment_history(caller, student, course_id)` | Archived `Enrollment` records (permissionless; `caller` is retained for client compatibility and ignored) |
 | `quote_enrollment(course_id, student)` | `(price, platform_fee, instructor_share)` using the current enrollment fee calculation |
-| `get_certificate(caller, certificate_id)` | `Certificate` (student, course instructor, or admin only) |
+| `get_certificate(caller, certificate_id)` | `Certificate` (permissionless; `caller` is retained for client compatibility and ignored) |
 | `get_certificate_status(certificate_id)` | `CertificateStatus` — reports whether the certificate is valid, disputed, revoked, expired, or missing |
 | `is_enrolled(student, course_id)` | `bool` |
 | `get_enrollment_status(student, course_id)` | `EnrollmentStatus` |
 | `has_completed(student, course_id)` | `Option<bool>` |
 | `verify_certificate(certificate_id)` | `bool` — true only when the certificate is valid, unexpired, and has no unresolved revocation dispute (extends TTL when called on-chain for a valid cert) |
 | `extend_certificate_ttl(certificate_id)` | `()` — permissionlessly extends a certificate's persistent storage TTL |
-| `get_platform_fee(admin)` | `u32` — current default fee percentage (admin only) |
+| `get_platform_fee(admin)` | `u32` — current default fee percentage (permissionless; `admin` is retained for client compatibility and ignored) |
+| `get_approved_tokens(admin)` | `Vec<Address>` — current approved-token list (permissionless; `admin` is retained for client compatibility and ignored) |
+| `get_all_instructors(admin)` | `Vec<Address>` — registered instructor list (permissionless; `admin` is retained for client compatibility and ignored) |
 | `get_instructor_earnings(instructor, token)` | `i128` — withdrawable balance |
 
 > The full, generated interface includes many more configuration and query
