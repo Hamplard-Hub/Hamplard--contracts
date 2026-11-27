@@ -3381,6 +3381,57 @@ fn test_enroll_succeeds_after_token_removed_from_whitelist_is_re_added() {
     assert!(client.is_enrolled(&student, &course_id));
 }
 
+#[test]
+fn test_remove_approved_token_clears_fee_configs_and_reports_course_token() {
+    let (env, contract_id, token_id, admin, _sec_admin, _, instructor) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+    let other_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    client.add_approved_token(&admin, &other_token);
+
+    client.set_fee_config(&admin, &token_id, &1_500u32);
+    client.set_arbitration_fee_config(&admin, &token_id, &2_000_000i128);
+    client.set_fee_config(&admin, &other_token, &2_500u32);
+    client.set_arbitration_fee_config(&admin, &other_token, &3_000_000i128);
+
+    let course_id = String::from_str(&env, "COURSE-REMOVED-TOKEN");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-REMOVED-TOKEN",
+        500_000_000,
+    );
+
+    client.remove_approved_token(&admin, &token_id);
+
+    assert!(!client.is_token_approved(&token_id));
+    assert_eq!(client.get_fee_config(&token_id).fee_bps, 2_000);
+    assert_eq!(
+        client.get_arbitration_fee_config(&token_id).fee_per_case,
+        0
+    );
+    assert_eq!(client.get_fee_config(&other_token).fee_bps, 2_500);
+    assert_eq!(
+        client
+            .get_arbitration_fee_config(&other_token)
+            .fee_per_case,
+        3_000_000
+    );
+
+    let course = client.get_course(&course_id).unwrap();
+    assert_eq!(course.token, token_id);
+    let (event_admin, event_token): (Address, Address) =
+        last_event_val(&env, &contract_id, "token_removed_from_whitelist")
+            .try_into_val(&env)
+            .unwrap();
+    assert_eq!(event_admin, admin);
+    assert_eq!(event_token, token_id);
+}
+
 // ============================================================
 // ISSUE #1: CROSS-COURSE CERTIFICATE ID COLLISION
 // ============================================================

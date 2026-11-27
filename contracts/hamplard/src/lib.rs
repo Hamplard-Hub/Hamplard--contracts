@@ -5752,7 +5752,13 @@ impl HamplardContract {
         Self::get_student_enrollment_count_internal(&env, &student)
     }
 
-    /// Admin removes a token contract address from the enrollment whitelist.
+    /// Admin removes a token contract address from the enrollment whitelist
+    /// and clears its per-token platform and arbitration fee overrides.
+    ///
+    /// Existing courses using this token can no longer be enrolled in until
+    /// the token is approved again. The removal event includes the token
+    /// address; indexers can identify affected courses by paging through
+    /// `list_courses()` and checking each record with `get_course()`.
     pub fn remove_approved_token(env: Env, admin: Address, token: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin, "remove_approved_token");
@@ -5766,6 +5772,12 @@ impl HamplardContract {
         env.storage()
             .instance()
             .remove(&DataKey2::ApprovedTokenDecimals(token.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::FeeConfig(token.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey2::ArbitrationFeeConfig(token.clone()));
 
         // Remove the token from the ordered list maintained for get_approved_tokens().
         let list: Vec<Address> = env
