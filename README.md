@@ -351,7 +351,7 @@ Initialises the contract atomically at deployment time. The admin must sign.
 | `pause_platform(admin)` / `unpause_platform(admin)` | Admin | Halt or restore enrollments |
 | `update_default_fee`, `update_max_courses_limit`, `update_refund_window` | Admin | Global parameters |
 | `block_student` / `unblock_student`, `freeze_instructor` / `unfreeze_instructor` | Admin | Moderation controls |
-| `add_approver` / `remove_approver`, `add_approved_token` / `remove_approved_token` | Admin | Manage approvers and accepted tokens |
+| `add_approver` / `remove_approver`, `add_approved_token` / `remove_approved_token` | Admin | Manage approvers and accepted tokens; removing a token clears its fee overrides |
 
 ### Read-only queries
 
@@ -511,6 +511,7 @@ Returns `true` only if the certificate exists, has not expired, and has no unres
 | `admin_transferred`           | `(previous_admin, new_admin, previous_secondary_admin, new_secondary_admin, ledger)` | Admin pair rotated |
 | `max_pending_limit_updated` | `(admin, old_max, new_max, ledger)` | Admin changes the pending-course limit |
 | `refund_processed`            | `(student, course_id, approved, admin, refund_amount, platform_amount, instructor_amount, ledger)` | Refund request approved or rejected by admin |
+| `token_removed_from_whitelist` | `(admin, token, ledger)` | Token removed; its fee overrides are cleared, and existing courses using it cannot be enrolled in until it is approved again |
 
 ### `student_enrolled` is the single enrollment event
 
@@ -527,6 +528,11 @@ emitted during enrollment. Read the platform fee and `treasury` from
 `student_enrolled`, and per-recipient amounts from `payouts`. Decoders that
 expect a 6-field tuple must be updated to 8 fields.
 See `contracts/hamplard/src/lib.rs` for the complete event list, including waitlist, freeze, blocklist, approver, and configuration events.
+
+The `token_removed_from_whitelist` event identifies the removed token. To find
+existing courses affected by removal, indexers and admins can page through
+`list_courses()` and match each course's `token` using `get_course()`. This
+avoids making token removal scan the unbounded course catalog on-chain.
 
 ---
 
