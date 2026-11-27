@@ -4337,13 +4337,26 @@ fn test_add_approved_token_idempotent() {
 }
 
 #[test]
-#[should_panic(expected = "unauthorized: get_approved_tokens")]
-fn test_get_approved_tokens_unauthorized() {
-    let (env, contract_id, token_id, _admin, _sec_admin, _treasury, instructor) = setup();
+fn test_public_getters_do_not_require_auth() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
-    // Non-admin should not be able to enumerate the whitelist
-    client.get_approved_tokens(&instructor);
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-PUBLIC-GETTERS",
+        100_000_000,
+    );
+
+    env.mock_auths(&[]);
+    let approved_tokens = client.get_approved_tokens(&instructor);
+    assert!(approved_tokens.contains(&token_id));
+    assert_eq!(client.get_platform_fee(&instructor), 20);
+    let instructors = client.get_all_instructors(&instructor);
+    assert!(instructors.contains(&instructor));
 }
 
 #[test]
@@ -5840,8 +5853,7 @@ fn test_get_enrollment_authorized_access() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
-fn test_get_enrollment_unauthorized_access() {
+fn test_get_enrollment_is_permissionless() {
     let (env, contract_id, token_id, admin, sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
     let student = Address::generate(&env);
@@ -5860,8 +5872,11 @@ fn test_get_enrollment_unauthorized_access() {
     let course_id = String::from_str(&env, "COURSE-AUTH-GET-UNAUTH");
     client.enroll(&student, &course_id, &i128::MAX);
 
-    // Random user cannot access
-    client.get_enrollment(&random_user, &student, &course_id);
+    env.mock_auths(&[]);
+    let enrollment = client
+        .get_enrollment(&random_user, &student, &course_id)
+        .unwrap();
+    assert_eq!(enrollment.student, student);
 }
 
 // ============================================================
@@ -7460,8 +7475,7 @@ fn test_re_enroll_multiple_times_accumulates_history() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
-fn test_get_enrollment_history_unauthorized_access() {
+fn test_get_enrollment_history_is_permissionless() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -7489,8 +7503,10 @@ fn test_get_enrollment_history_unauthorized_access() {
     );
     client.re_enroll(&student, &course_id, &i128::MAX);
 
-    // A random address must not be able to read the history
-    client.get_enrollment_history(&random_user, &student, &course_id);
+    env.mock_auths(&[]);
+    let history = client.get_enrollment_history(&random_user, &student, &course_id);
+    assert_eq!(history.len(), 1);
+    assert!(history.get(0).unwrap().completed);
 }
 
 // #374 — Student and admin can read enrollment even when the course entry is absent.
@@ -7830,8 +7846,7 @@ fn test_get_certificate_authorized_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
-fn test_get_certificate_unauthorized_third_party_fails() {
+fn test_get_certificate_is_permissionless() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = HamplardContractClient::new(&env, &contract_id);
 
@@ -7870,20 +7885,20 @@ fn test_get_certificate_unauthorized_third_party_fails() {
     );
 
     let third_party = Address::generate(&env);
+    env.mock_auths(&[]);
+    let cert = client.get_certificate(&third_party, &cert_id);
+    assert_eq!(cert.student, student);
+    assert_eq!(cert.id, cert_id);
+}
 
-    // Mock auth only for third_party's own require_auth() call — a caller who
-    // is not the student, instructor, or admin is denied by default.
-    client
-        .mock_auths(&[MockAuth {
-            address: &third_party,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "get_certificate",
-                args: (third_party.clone(), cert_id.clone()).into_val(&env),
-                sub_invokes: &[],
-            },
-        }])
-        .get_certificate(&third_party, &cert_id);
+#[test]
+#[should_panic(expected = "Error(Contract, #44)")]
+fn test_get_certificate_missing_still_fails_without_auth() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, caller) = setup();
+    let client = HamplardContractClient::new(&env, &contract_id);
+
+    env.mock_auths(&[]);
+    client.get_certificate(&caller, &String::from_str(&env, "MISSING-CERT"));
 }
 
 #[test]
@@ -13201,51 +13216,6 @@ fn test_mark_completed_with_evidence_needs_no_student_signature() {
         .mark_completed(&admin, &student, &course_id, &evidence);
 
     assert_eq!(client.has_completed(&student, &course_id), Some(true));
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #2)")]
-fn test_get_certificate_denies_third_party_even_with_student_auth() {
-    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
-    let client = HamplardContractClient::new(&env, &contract_id);
-
-    let student = Address::generate(&env);
-    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
-
-    register_and_approve_course(
-        &env,
-        &client,
-        &token_id,
-        &admin,
-        &instructor,
-        "COURSE-CERT-DENY",
-        500_000_000,
-    );
-    let course_id = String::from_str(&env, "COURSE-CERT-DENY");
-    client.enroll(&student, &course_id, &i128::MAX);
-    client.mark_completed(
-        &admin,
-        &student,
-        &course_id,
-        &Some(evidence_hash(&env, "evidence")),
-    );
-
-    let cert_id = String::from_str(&env, "CERT-DENY");
-    client.issue_certificate(
-        &admin,
-        &student,
-        &course_id,
-        &cert_id,
-        &String::from_str(&env, "Deny Course"),
-        &String::from_str(&env, "backend-ref-deny"),
-        &None,
-        &None,
-    );
-
-    // All auths are mocked (including the student's), so the old fallback
-    // of `cert.student.require_auth()` would have let this through.
-    let third_party = Address::generate(&env);
-    client.get_certificate(&third_party, &cert_id);
 }
 
 #[test]

@@ -5734,12 +5734,12 @@ impl HamplardContract {
 
     /// Returns the full list of whitelisted token addresses.
     ///
-    /// Admin-only. Returns every address that has been added via
+    /// Permissionless. Returns every address that has been added via
     /// `add_approved_token()` and not yet removed via `remove_approved_token()`.
-    /// The ordering is insertion order (append-only).
+    /// The ordering is insertion order (append-only). The `admin` argument is
+    /// retained for client compatibility and is ignored.
     pub fn get_approved_tokens(env: Env, admin: Address) -> Vec<Address> {
-        admin.require_auth();
-        Self::require_admin(&env, &admin, "get_approved_tokens");
+        let _ = admin;
         env.storage()
             .instance()
             .get(&DataKey2::ApprovedTokenList)
@@ -7011,13 +7011,12 @@ impl HamplardContract {
     }
 
     /// Get the global list of all instructors who have registered courses.
-    /// Admin-only to prevent potential privacy concerns with exposing the full
-    /// instructor list.
+    /// This list is permissionlessly readable; the `admin` argument is
+    /// retained for client compatibility and is ignored.
     ///
     /// Returns an empty list if no instructors have registered yet.
     pub fn get_all_instructors(env: Env, admin: Address) -> Vec<Address> {
-        admin.require_auth();
-        Self::require_admin(&env, &admin, "get_all_instructors");
+        let _ = admin;
 
         env.storage()
             .persistent()
@@ -7257,7 +7256,10 @@ impl HamplardContract {
         env.storage().persistent().get(&key)
     }
 
-    /// Get an enrollment record for a student + course pair
+    /// Get an enrollment record for a student + course pair.
+    ///
+    /// This record is permissionlessly readable. The `caller` argument is
+    /// retained for client compatibility and is ignored.
     ///
     /// Returns `Some(Enrollment)` if the record exists and has not expired.
     /// Returns `None` if:
@@ -7271,22 +7273,7 @@ impl HamplardContract {
         student: Address,
         course_id: String,
     ) -> Option<Enrollment> {
-        caller.require_auth();
-        let is_admin = Self::is_admin(&env, &caller);
-
-        // #374 — Only load the course when we can't already grant access.
-        // Students and admins are always authorised; the course entry is only
-        // needed to check whether the caller is the course instructor.
-        // If the course entry has been archived by TTL, students and admins
-        // can still read their enrollment; a third party gets Unauthorized
-        // rather than a misleading CourseNotFound.
-        if caller != student && !is_admin {
-            let course = Self::get_course_internal(&env, &course_id)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-            if caller != course.instructor {
-                soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-            }
-        }
+        let _ = caller;
 
         env.storage()
             .persistent()
@@ -7295,25 +7282,15 @@ impl HamplardContract {
 
     /// Get the archived enrollment history (past completed or expired
     /// attempts) for a student/course pair, populated by `re_enroll()`.
-    /// Access follows the same rules as `get_enrollment`.
+    /// This history is permissionlessly readable. The `caller` argument is
+    /// retained for client compatibility and is ignored.
     pub fn get_enrollment_history(
         env: Env,
         caller: Address,
         student: Address,
         course_id: String,
     ) -> Vec<Enrollment> {
-        caller.require_auth();
-        let is_admin = Self::is_admin(&env, &caller);
-
-        // #374 — Same lazy course-load logic as get_enrollment: students and
-        // admins are always authorised without needing the course entry.
-        if caller != student && !is_admin {
-            let course = Self::get_course_internal(&env, &course_id)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CourseNotFound));
-            if caller != course.instructor {
-                soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-            }
-        }
+        let _ = caller;
 
         env.storage()
             .persistent()
@@ -7323,25 +7300,14 @@ impl HamplardContract {
 
     /// Get a certificate by ID.
     ///
-    /// Only the certificate's student, the course instructor, or the admin
-    /// may read it; any other caller is rejected (same rules as
-    /// `get_enrollment`).
+    /// Certificate records are permissionlessly readable. The `caller`
+    /// argument is retained for client compatibility and is ignored.
     pub fn get_certificate(env: Env, caller: Address, certificate_id: String) -> Certificate {
-        caller.require_auth();
-        let cert = env
-            .storage()
+        let _ = caller;
+        env.storage()
             .persistent()
             .get::<DataKey, Certificate>(&DataKey::Certificate(certificate_id))
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError));
-
-        let is_admin = Self::is_admin(&env, &caller);
-        let is_instructor = caller == cert.instructor;
-        let is_student = caller == cert.student;
-
-        if !is_student && !is_admin && !is_instructor {
-            soroban_sdk::panic_with_error!(&env, Error::Unauthorized);
-        }
-        cert
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, Error::CertificateError))
     }
 
     /// List every certificate ID issued for a course, in issuance order.
@@ -7705,10 +7671,12 @@ impl HamplardContract {
         page
     }
 
-    /// Get the current platform fee percentage (Admin only)
+    /// Get the current platform fee percentage.
+    ///
+    /// This value is permissionlessly readable. The `admin` argument is
+    /// retained for client compatibility and is ignored.
     pub fn get_platform_fee(env: Env, admin: Address) -> u32 {
-        admin.require_auth();
-        Self::require_admin(&env, &admin, "get_platform_fee");
+        let _ = admin;
         env.storage()
             .instance()
             .get::<DataKey, u32>(&DataKey::DefaultFee)
